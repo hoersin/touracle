@@ -39,5 +39,7 @@ project/data/*.gpx
 data/*.gpx
 data/session_state.json
 
+# --- Archives ---
+*.zip
 # --- Logs ---
 *.log
