@@ -35,6 +35,7 @@ debug_output/
 
 # --- Local runtime data (ignore all GPX files) ---
 project/data/*.gpx
+!project/data/milano_to_rome_demo.gpx
 data/*.gpx
 data/session_state.json
 
