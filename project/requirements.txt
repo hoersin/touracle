@@ -1,0 +1,7 @@
+flask
+meteostat
+pandas
+numpy
+gpxpy
+cairosvg
+requests

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Glyph PNGs</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 8px; }
+    .card img { width: 100%; height: auto; }
+    .meta { font-size: 12px; color: #555; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Glyph Preview (PNG)</h1>
+  <div id="grid" class="grid"></div>
+  <script>
+    async function load() {
+      try {
+        const resp = await fetch('/debug/debug_summary.json');
+        const data = await resp.json();
+        const res = data.results || [];
+        const grid = document.getElementById('grid');
+        grid.innerHTML = '';
+        res.forEach((r, idx) => {
+          const i = idx + 1;
+          const div = document.createElement('div');
+          div.className = 'card';
+          div.innerHTML = `<img src="/debug/glyph_point_${i}.png" alt="glyph ${i}"/>` +
+                          `<div class="meta">Point ${i}<br/>` +
+                          `Route: ${r.route_lat.toFixed(4)}, ${r.route_lon.toFixed(4)}<br/>` +
+                          `Station: ${r.station_name} (${r.distance_km.toFixed(1)} km)</div>`;
+          grid.appendChild(div);
+        });
+      } catch (e) {
+        document.getElementById('grid').innerText = 'Failed to load glyphs';
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

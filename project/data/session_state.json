@@ -1,0 +1,23 @@
+{
+  "last_gpx_path": "/Users/ingolfhorsch/Projekte/WeatherMap/project/data/uploaded_1771687046.gpx",
+  "start_date": "2026-09-10",
+  "tour_days": 6,
+  "glyph_spacing_km": 50.0,
+  "first_year": 2021,
+  "num_years": 5,
+  "reverse": false,
+  "tour_summary": {
+    "total_days": 6,
+    "rain_days": 3,
+    "headwind_days": 0,
+    "tailwind_days": 5,
+    "comfort_days": 3,
+    "extreme_days_hot": 0,
+    "extreme_days_cold": 0,
+    "median_temperature": 18.725,
+    "max_temperature": 19.8,
+    "min_temperature": 16.9,
+    "total_precipitation": 23.4,
+    "mean_wind_speed": 9.225
+  }
+}

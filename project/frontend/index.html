@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bikepacking Weather Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { height: 100%; margin: 0; overflow-x: hidden; }
+    #controls { position: absolute; z-index: 1000; background: rgba(255,255,255,0.9); padding: 8px 10px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); left: 60px; top: 10px; }
+    #map { height: calc(100% - 160px); }
+    #profilePanel { height: 160px; border-top: 1px solid #ddd; background: #fafafa; }
+    #profileCanvas { width: 100%; height: 100%; display: block; }
+    /* Resize handle at top edge of profile canvas */
+    #profileResizeHandle { 
+      position: absolute; 
+      top: 0; 
+      left: 0; 
+      right: 0; 
+      height: 8px; 
+      z-index: 1700; 
+      background: transparent;
+      cursor: ns-resize; 
+      cursor: row-resize; 
+      touch-action: none;
+      border-bottom: 2px solid rgba(0,0,0,0.1);
+    }
+    #profileResizeHandle:hover { 
+      background: rgba(0,0,0,0.05); 
+      border-bottom-color: rgba(0,0,0,0.25);
+    }
+    .glyph { width: 64px; height: 64px; }
+    .tooltip { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; }
+    /* Weather tooltip: compact, readable, max ~6 lines */
+    .tooltip.wm-tip {
+      font-size: 11px;
+      line-height: 1.25;
+      background: rgba(255,255,255,0.75);
+      border: 1px solid rgba(0,0,0,0.2);
+      border-radius: 6px;
+      padding: 6px 8px;
+      backdrop-filter: blur(2px);
+    }
+    .wm-tip-content { white-space: nowrap; }
+    .wm-tip-line { margin: 0; }
+    /* Smooth appearance */
+    .leaflet-tooltip { transition: opacity 0.15s ease; }
+
+    /* Lightweight progress bar */
+    .wm-progress { display: inline-block; width: 120px; height: 6px; background: #eee; border-radius: 4px; overflow: hidden; margin-left: 8px; vertical-align: middle; position: relative; }
+    .wm-progress .bar { position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: #1e90ff; }
+    .wm-progress.loading .bar { width: 30%; animation: wm-indeterminate 1.2s ease-in-out infinite; }
+    @keyframes wm-indeterminate { 0% { left: -30%; } 50% { left: 50%; } 100% { left: 100%; } }
+    
+    /* Prominent weather fetch button */
+    #fetchWeather {
+      background: #28a745;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(40, 167, 69, 0.3);
+      transition: all 0.2s ease;
+    }
+    #fetchWeather:hover:not(:disabled) {
+      background: #218838;
+      box-shadow: 0 4px 8px rgba(40, 167, 69, 0.4);
+      transform: translateY(-1px);
+    }
+    #fetchWeather:disabled {
+      background: #6c757d;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    
+    /* Stop button */
+    #stopWeather {
+      background: #dc3545;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
+      transition: all 0.2s ease;
+      display: none;
+    }
+    #stopWeather:hover {
+      background: #c82333;
+      box-shadow: 0 4px 8px rgba(220, 53, 69, 0.4);
+      transform: translateY(-1px);
+    }
+    
+    /* Position Leaflet attribution inside map bounds, lower right corner */
+    .leaflet-control-attribution {
+      position: absolute !important;
+      bottom: 60px !important;
+      right: 8px !important;
+      background: rgba(255,255,255,0.8) !important;
+      padding: 2px 6px !important;
+      font-size: 10px !important;
+      border-radius: 3px !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15) !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label for="startDate">Start Date:</label>
+      <input type="date" id="startDate" />
+      <label for="tourDays">Days:</label>
+      <input type="number" id="tourDays" min="1" max="60" value="7" style="width:64px" />
+      <label style="display:flex; align-items:center; gap:6px;">
+        <input type="checkbox" id="reverse" />
+        <span>Reverse Tour</span>
+      </label>
+      <button id="settings">Settings ⚙️</button>
+      <button id="share">Share 📸</button>
+      
+    </div>
+    <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#2a7a2a; cursor:pointer;">Drop GPX here to load route (or click to choose)</div>
+    <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
+    <div style="margin-top:8px; display:flex; gap:10px;">
+      <button id="fetchWeather">Get Weather Data</button>
+      <button id="stopWeather">Stop</button>
+    </div>
+    <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">
+      <div class="bar"></div>
+    </div>
+    <div id="sseStatus" style="margin-top:6px; font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#555;">Stream: idle</div>
+  </div>
+  <!-- Settings Modal -->
+  <div id="settingsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.25); z-index:2000; align-items:center; justify-content:center;">
+    <div style="background:#fff; padding:14px 16px; border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,0.2); min-width:300px;">
+      <h3 style="margin:0 0 10px 0; font-family:system-ui, -apple-system, sans-serif; font-size:14px;">Settings</h3>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; align-items:center; font-family:system-ui, -apple-system, sans-serif; font-size:12px;">
+        <label for="setGlyphType">Glyph type</label>
+        <select id="setGlyphType">
+          <option value="classic">Classic (icons + rosette)</option>
+          <option value="svg">Inline SVG preview</option>
+          <option value="cyclist">Cyclist (wind-first)</option>
+        </select>
+        <label for="setStepKm">Glyph spacing (km)</label>
+        <input type="number" id="setStepKm" min="5" max="200" step="5" />
+        <label for="setHistStart">First historical year</label>
+        <input type="number" id="setHistStart" min="1970" max="2025" step="1" />
+        <label for="setHistYears">Number of historical years</label>
+        <input type="number" id="setHistYears" min="1" max="50" step="1" />
+        <label for="setTempCold">Comfort min temp (°C)</label>
+        <input type="number" id="setTempCold" min="-40" max="30" step="1" />
+        <label for="setTempHot">Comfort max temp (°C)</label>
+        <input type="number" id="setTempHot" min="5" max="60" step="1" />
+        <label for="setRainHigh">Comfort max rain (mm/day)</label>
+        <input type="number" id="setRainHigh" min="0" max="100" step="1" />
+        <label for="setWindHeadComfort">Comfort max headwind (m/s)</label>
+        <input type="number" id="setWindHeadComfort" min="0" max="20" step="0.5" />
+        <label for="setWindTailComfort">Comfort max tailwind (m/s)</label>
+        <input type="number" id="setWindTailComfort" min="0" max="30" step="0.5" />
+      </div>
+      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+        <button id="settingsCancel">Cancel</button>
+        <button id="settingsSave">Save</button>
+      </div>
+    </div>
+  </div>
+  <div id="map"></div>
+  <div id="profilePanel" style="position:relative; width:100vw">
+    <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
+    <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
+      <div id="tourSummaryBadges" style="display:flex; gap:18px; align-items:center; justify-content:center; flex-wrap:wrap; padding:6px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box;"></div>
+      <!-- Hover tooltip for badges (styled like other tooltips) -->
+      <div id="tourSummaryTooltip" class="tooltip wm-tip" style="position:absolute; left:50%; transform:translateX(-50%); bottom:80px; display:none; z-index:1600; pointer-events:none;"></div>
+    </div>
+    <!-- Drag handle on the upper edge to resize the profile panel height -->
+    <div id="profileResizeHandle" style="position:absolute; top:0; left:0; right:0; height:8px; z-index:1700; background:transparent;"></div>
+    <canvas id="profileCanvas"></canvas>
+    <canvas id="profileCursorCanvas" style="position:absolute; inset:0; pointer-events:none"></canvas>
+    <!-- Profile tooltip positioned in upper left corner, 33% of canvas width -->
+    <div id="profileTooltip" style="position:absolute; left:12px; top:12px; width:33%; min-width:260px; max-width:380px; height:auto; min-height:fit-content; z-index:1500; font-family:system-ui, -apple-system, sans-serif; font-size:9px; line-height:1.3; color:#222; background:rgba(255,255,255,0.85); border:1px solid rgba(0,0,0,0.15); border-radius:6px; padding:8px 7px; display:none; white-space:normal; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12)"></div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="/profile.js?v=1"></script>
+  <script src="/map.js?v=24"></script>
+  <script>
+    // Assisted test helpers: always available in Console
+    window.setTestDemoSettings = function() {
+      try {
+        const cfg = { stepKm: 100, histStartYear: 2024, histYears: 1 };
+        localStorage.setItem('wm_settings', JSON.stringify(cfg));
+        const btn = document.getElementById('reload');
+        if (btn) btn.click(); else location.reload();
+        console.log('[Test] Applied demo settings:', cfg);
+      } catch (e) {
+        console.warn('setTestDemoSettings error', e);
+      }
+    };
+    window.enableProfileMouseKmTest = function() {
+      try {
+        window.DEBUG_CURSOR_LOG = true;
+        console.log('[Test] Mouse→km console logging enabled');
+      } catch (e) {
+        console.warn('enableProfileMouseKmTest error', e);
+      }
+    };
+    // Auto-run assisted mouse/km test when query param present
+    (function(){
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('autotest') || params.has('mousekmtest')) {
+          // Apply settings and enable logging; then prompt user to move mouse
+          window.setTestDemoSettings();
+          window.enableProfileMouseKmTest();
+          const s = document.getElementById('sseStatus');
+          if (s) s.textContent = 'Assisted test: Move mouse to leftmost/rightmost within profile and watch [MouseKM] logs';
+          console.log('[Test] Assisted mouse→km test enabled via query param.');
+        }
+      } catch (e) {
+        console.warn('auto test init error', e);
+      }
+    })();
+  </script>
+</body>
+</html>

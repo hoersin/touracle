@@ -1,0 +1,44 @@
+{
+  "FALLBACK_NE": {
+    "temperature_c": 15.0,
+    "precipitation_mm": 0.0,
+    "wind_speed_ms": 2.0,
+    "wind_dir_deg": 0.0,
+    "wind_var_deg": 180.0,
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\" viewBox=\"0 0 64 64\"><circle cx=\"32.0\" cy=\"32.0\" r=\"0.0\" fill=\"none\" stroke=\"#1e90ff\" stroke-width=\"1\"/><path d=\"M 32.00,2.00 A 30.00,30.00 0 0 1 57.98,47.00 L 54.52,45.00 A 26.00,26.00 0 0 0 32.00,6.00 Z\" fill=\"#ff7f0e\" stroke=\"none\"/><path d=\"M 32.0,32.0 L 32.00,8.00 A 24.00,24.00 0 0 1 32.00,56.00 Z\" fill=\"rgba(128,128,128,0.25)\" stroke=\"none\"/><g transform=\"rotate(0.0,32.0,32.0)\"><line x1=\"32.0\" y1=\"32.0\" x2=\"50.80\" y2=\"32.00\" stroke=\"#333\" stroke-width=\"2\"/><polygon points=\"50.80,32.00 44.80,29.00 44.80,35.00\" fill=\"#333\"/></g></svg>",
+    "station_id": "FALLBACK_NE",
+    "station_name": "Fallback NE",
+    "station_lat": 44.576209999999996,
+    "station_lon": 4.777655,
+    "min_distance_to_route_km": 129.17158948474054,
+    "usage_count": 5
+  },
+  "FALLBACK_C": {
+    "temperature_c": 15.0,
+    "precipitation_mm": 0.0,
+    "wind_speed_ms": 2.0,
+    "wind_dir_deg": 0.0,
+    "wind_var_deg": 180.0,
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\" viewBox=\"0 0 64 64\"><circle cx=\"32.0\" cy=\"32.0\" r=\"0.0\" fill=\"none\" stroke=\"#1e90ff\" stroke-width=\"1\"/><path d=\"M 32.00,2.00 A 30.00,30.00 0 0 1 57.98,47.00 L 54.52,45.00 A 26.00,26.00 0 0 0 32.00,6.00 Z\" fill=\"#ff7f0e\" stroke=\"none\"/><path d=\"M 32.0,32.0 L 32.00,8.00 A 24.00,24.00 0 0 1 32.00,56.00 Z\" fill=\"rgba(128,128,128,0.25)\" stroke=\"none\"/><g transform=\"rotate(0.0,32.0,32.0)\"><line x1=\"32.0\" y1=\"32.0\" x2=\"50.80\" y2=\"32.00\" stroke=\"#333\" stroke-width=\"2\"/><polygon points=\"50.80,32.00 44.80,29.00 44.80,35.00\" fill=\"#333\"/></g></svg>",
+    "station_id": "FALLBACK_C",
+    "station_name": "Fallback Center",
+    "station_lat": 42.869736,
+    "station_lon": 1.0563859999999998,
+    "min_distance_to_route_km": 53.94661286583677,
+    "usage_count": 24
+  },
+  "FALLBACK_SW": {
+    "temperature_c": 15.0,
+    "precipitation_mm": 0.0,
+    "wind_speed_ms": 2.0,
+    "wind_dir_deg": 0.0,
+    "wind_var_deg": 180.0,
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"64\" height=\"64\" viewBox=\"0 0 64 64\"><circle cx=\"32.0\" cy=\"32.0\" r=\"0.0\" fill=\"none\" stroke=\"#1e90ff\" stroke-width=\"1\"/><path d=\"M 32.00,2.00 A 30.00,30.00 0 0 1 57.98,47.00 L 54.52,45.00 A 26.00,26.00 0 0 0 32.00,6.00 Z\" fill=\"#ff7f0e\" stroke=\"none\"/><path d=\"M 32.0,32.0 L 32.00,8.00 A 24.00,24.00 0 0 1 32.00,56.00 Z\" fill=\"rgba(128,128,128,0.25)\" stroke=\"none\"/><g transform=\"rotate(0.0,32.0,32.0)\"><line x1=\"32.0\" y1=\"32.0\" x2=\"50.80\" y2=\"32.00\" stroke=\"#333\" stroke-width=\"2\"/><polygon points=\"50.80,32.00 44.80,29.00 44.80,35.00\" fill=\"#333\"/></g></svg>",
+    "station_id": "FALLBACK_SW",
+    "station_name": "Fallback SW",
+    "station_lat": 41.163262,
+    "station_lon": -2.664883,
+    "min_distance_to_route_km": 192.9046836967174,
+    "usage_count": 1
+  }
+}

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WeatherMap Vivid Color Scales</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; color: #222; }
+    .row { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: center; margin-bottom: 18px; }
+    .bar { height: 24px; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; position: relative; }
+    .samples { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { width: 28px; height: 28px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.15); position: relative; }
+    .chip::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; border: 2px solid var(--col); }
+    .label { font-size: 13px; font-weight: 600;}
+    .note { font-size: 12px; color: #555; }
+    .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; align-items: center; }
+  </style>
+</head>
+<body>
+  <h1>Vivid Temperature Color Scales</h1>
+  <p class="note">Comparison of three saturated palettes for mapping −20..40°C. Each shows a gradient bar and circle chips at −20, −10, 0, 10, 20, 30, 40°C with a white center and colored ring.</p>
+
+  <div id="grid"></div>
+
+  <script>
+    const TEMPS = [-20,-10,0,10,20,30,40];
+    const palettes = [
+      {
+        name: 'A — Blue→Cyan→Green→Yellow→Orange→Red',
+        anchors: [
+          { t: -20.0, c: [0x00, 0x66, 0xff] },
+          { t: -10.0, c: [0x00, 0xa6, 0xff] },
+          { t: 0.0,   c: [0x00, 0xd4, 0xff] },
+          { t: 15.0,  c: [0x00, 0xe6, 0x76] },
+          { t: 20.0,  c: [0xff, 0xea, 0x00] },
+          { t: 25.0,  c: [0xff, 0x98, 0x00] },
+          { t: 30.0,  c: [0xff, 0x3b, 0x30] },
+          { t: 40.0,  c: [0xd5, 0x00, 0x00] },
+        ]
+      },
+      {
+        name: 'B — Blue→Teal→Lime→Yellow→Orange→Crimson',
+        anchors: [
+          { t: -20.0, c: [0x00, 0x5b, 0xff] },
+          { t: -10.0, c: [0x00, 0xb3, 0xcc] },
+          { t: 0.0,   c: [0x00, 0xd9, 0xa3] },
+          { t: 15.0,  c: [0x7d, 0xff, 0x00] },
+          { t: 20.0,  c: [0xff, 0xf2, 0x00] },
+          { t: 25.0,  c: [0xff, 0x99, 0x33] },
+          { t: 30.0,  c: [0xff, 0x33, 0x33] },
+          { t: 40.0,  c: [0xcc, 0x00, 0x00] },
+        ]
+      },
+      {
+        name: 'C — Blue→Cyan→Yellow→Orange→Red (no green)',
+        anchors: [
+          { t: -20.0, c: [0x00, 0x5a, 0xff] },
+          { t: -10.0, c: [0x00, 0xa8, 0xff] },
+          { t: 0.0,   c: [0x00, 0xe5, 0xff] },
+          { t: 15.0,  c: [0xff, 0xf2, 0x33] },
+          { t: 20.0,  c: [0xff, 0xdd, 0x00] },
+          { t: 25.0,  c: [0xff, 0x96, 0x00] },
+          { t: 30.0,  c: [0xff, 0x3b, 0x30] },
+          { t: 40.0,  c: [0xd5, 0x00, 0x00] },
+        ]
+      }
+    ];
+
+    function interp(anchors, t){
+      const tt = Math.max(anchors[0].t, Math.min(anchors[anchors.length-1].t, Number(t)));
+      for (let i = 0; i < anchors.length - 1; i++) {
+        const a0 = anchors[i], a1 = anchors[i+1];
+        if (a0.t <= tt && tt <= a1.t) {
+          const u = (a1.t === a0.t) ? 1 : (tt - a0.t) / (a1.t - a0.t);
+          const r = Math.round(a0.c[0] + u * (a1.c[0] - a0.c[0]));
+          const g = Math.round(a0.c[1] + u * (a1.c[1] - a0.c[1]));
+          const b = Math.round(a0.c[2] + u * (a1.c[2] - a0.c[2]));
+          return `rgb(${r},${g},${b})`;
+        }
+      }
+      const c = anchors[anchors.length-1].c; return `rgb(${c[0]},${c[1]},${c[2]})`;
+    }
+
+    const grid = document.getElementById('grid');
+    palettes.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = p.name;
+
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      const grad = [];
+      for (let i = 0; i <= 100; i++) {
+        const t = -20 + (60 * i / 100);
+        grad.push(`${interp(p.anchors, t)} ${i}%`);
+      }
+      bar.style.background = `linear-gradient(90deg, ${grad.join(',')})`;
+
+      const chips = document.createElement('div');
+      chips.className = 'grid';
+      TEMPS.forEach(t => {
+        const chip = document.createElement('div');
+        chip.className = 'chip';
+        chip.style.setProperty('--col', interp(p.anchors, t));
+        const label = document.createElement('div');
+        label.style.textAlign = 'center';
+        label.style.fontSize = '11px';
+        label.textContent = `${t}°`;
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex';
+        wrap.style.flexDirection = 'column';
+        wrap.style.alignItems = 'center';
+        wrap.style.gap = '4px';
+        wrap.appendChild(chip);
+        wrap.appendChild(label);
+        chips.appendChild(wrap);
+      });
+
+      row.appendChild(label);
+      const right = document.createElement('div');
+      right.appendChild(bar);
+      right.appendChild(chips);
+      grid.appendChild(row);
+      grid.appendChild(right);
+    });
+  </script>
+</body>
+</html>
