@@ -1,6 +1,18 @@
-# Bikepacking Weather Planning Map (Prototype)
 
-Minimal prototype showing a GPX route and weather glyphs along sampled points for a selected day-of-year.
+# Touracle: Bikepacking Weather Planning Map
+
+Touracle is an interactive tool for planning long-distance bikepacking or cycling tours with weather awareness. Upload a GPX route and instantly visualize historical and forecasted weather conditions—temperature, rain probability, and wind—at sampled points along your journey. The app helps you pick the best dates, prepare for weather risks, and share route insights with others.
+
+## Features
+
+- Upload or use the included Milano-to-Rome demo GPX route
+- Visualize route on an interactive map (Leaflet-based UI)
+- See weather glyphs (temperature, rain, wind) at sampled points along the route
+- Select any day-of-year to view typical and historical weather (uses Open-Meteo/Meteostat)
+- Download and share weather summaries
+- Works locally—no private data leaves your machine
+
+## Quick Start
 
 ## Quick Start
 
@@ -19,7 +31,7 @@ Mac/Linux
 	```bash
 	PORT=5002 python project/backend/app.py
 	```
-4. Open http://localhost:5002
+4. Open http://localhost:5002 in your browser
 
 Windows (PowerShell)
 
@@ -36,22 +48,32 @@ Windows (PowerShell)
 	```powershell
 	$env:PORT=5002; python project/backend/app.py
 	```
-4. Open http://localhost:5002
+4. Open http://localhost:5002 in your browser
 
-## Structure
 
-- project/backend: Flask API, route sampling, weather, glyph generation
-- project/frontend: Leaflet UI
-- project/data: Example GPX route
+## Project Structure
+
+- `project/backend/`: Flask API, route sampling, weather, glyph generation
+- `project/frontend/`: Leaflet UI (map, upload, weather display)
+- `project/data/`: Demo GPX route (milano_to_rome_demo.gpx)
+
 
 ## Notes
 
-- Uses Open-Meteo/Meteostat; requires internet for live data. Falls back where possible.
+- Uses Open-Meteo/Meteostat; requires internet for live data. Falls back to historical data where possible.
 - Date selector uses month-day; year is for historical span.
-- Example GPX: see `project/data/example_route.gpx`. Upload via the UI or replace with your own.
+- Example GPX: see `project/data/milano_to_rome_demo.gpx`. Upload your own via the UI or replace the demo file.
+
 
 ## Demo & Sharing
 
-- Same Wi‑Fi: Share http://YOUR_IP:5002 to colleagues on the same network.
-- Quick tunnel: Cloudflare Tunnel or Ngrok can expose http://localhost:5002 with an HTTPS URL.
-- No network exposure: screen share a local demo.
+- On the same Wi‑Fi: Share http://YOUR_IP:5002 so others can access your running app.
+- For remote demos: Use Cloudflare Tunnel or Ngrok to expose http://localhost:5002 with an HTTPS URL.
+- For private demos: Screen share your browser window.
+
+## Contributing & Testing
+
+Anyone can clone and test the app. For private repositories, invite collaborators via GitHub. For public repos, simply share the link.
+
+---
+Touracle is a prototype—feedback and contributions are welcome!
