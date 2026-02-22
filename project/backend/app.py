@@ -11,8 +11,8 @@ import logging
 from route_sampling import sample_route, haversine_km
 from weather import compute_weather_statistics
 from glyph_geometry import generate_glyph_v2
-from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_hourly_weather_same_day, reset_api_disable, set_force_online
-from weather_service import WeatherService
+from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_daily_weather_window, fetch_hourly_weather_same_day, reset_api_disable, set_force_online
+from weather_service import WeatherService, reset_api_disable as reset_service_api_disable
 from weather import compute_daytime_temperature_statistics
 
 app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / 'frontend'))
@@ -591,6 +591,7 @@ def api_map_stream():
             try:
                 if str(reset_api_param).lower() in ('1','true','yes'):
                     reset_api_disable()
+                    reset_service_api_disable()
             except Exception:
                 try:
                     td = _parse_tour_days(tour_days_param)
@@ -607,6 +608,12 @@ def api_map_stream():
                     })
                 except Exception:
                     pass
+            # Optional: force online/offline for debugging
+            try:
+                if force_online_param is not None:
+                    set_force_online(str(force_online_param).lower() in ('1', 'true', 'yes'))
+            except Exception:
+                pass
             step_km = float(step_km_param) if step_km_param else 25.0
             sampled_points, route_feature = sample_route(str(gpx_path), step_km=step_km)
             # Denser sampling for elevation profile (no weather fetching)
@@ -1249,17 +1256,39 @@ def api_map_stream():
                     if assigned_date is not None:
                         mm = assigned_date.month
                         dd = assigned_date.day
-                    # Fetch daily data using assigned mm/dd and cache per date
-                    key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}"
-                    if key in df_cache:
-                        df = df_cache[key]
-                    else:
-                        if fetch_mode == 'single_day':
-                            df = fetch_daily_weather_same_day(qlat, qlon, mm, dd, years_window=years_window)
+                    # Tour optimization: when start_date+tour_days is known, fetch ONE contiguous
+                    # daily window per year for the whole tour, then reuse it for all points.
+                    use_tour_window = bool(segment_length and start_date is not None and tour_days is not None)
+                    if use_tour_window:
+                        span_days = int(tour_days)
+                        window_key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:window:{start_date.isoformat()}:{span_days}:{int(years_window)}"
+                        if window_key in df_cache:
+                            df = df_cache[window_key]
                         else:
-                            df = fetch_daily_weather(qlat, qlon, mm, dd, years_window=years_window)
-                        df_cache[key] = df
-                    if df is None or len(df) < (1 if fetch_mode == 'single_day' else 30):
+                            df = fetch_daily_weather_window(
+                                qlat,
+                                qlon,
+                                start_date.month,
+                                start_date.day,
+                                span_days,
+                                years_window=years_window,
+                            )
+                            df_cache[window_key] = df
+                        min_rows = max(1, int(span_days))
+                    else:
+                        # Fetch daily data using assigned mm/dd and cache per date
+                        key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}"
+                        if key in df_cache:
+                            df = df_cache[key]
+                        else:
+                            if fetch_mode == 'single_day':
+                                df = fetch_daily_weather_same_day(qlat, qlon, mm, dd, years_window=years_window)
+                            else:
+                                df = fetch_daily_weather(qlat, qlon, mm, dd, years_window=years_window)
+                            df_cache[key] = df
+                        min_rows = (1 if fetch_mode == 'single_day' else 30)
+
+                    if df is None or len(df) < int(min_rows):
                         # Emit a dummy glyph for this point
                         base_t = 15.0 if mm in (4,5,6,9,10) else (25.0 if mm in (7,8) else (5.0 if mm in (1,2,12) else 12.0))
                         stats = {
@@ -1286,7 +1315,7 @@ def api_map_stream():
                                 "min_distance_to_route_km": 0.0,
                                 "usage_count": 1,
                                 "_match_days": [],
-                                "_source_mode": f"per_point_{fetch_mode}_dummy",
+                                "_source_mode": f"per_point_{fetch_mode}_window_dummy" if use_tour_window else f"per_point_{fetch_mode}_dummy",
                                 "_grid_deg": grid_deg,
                                 "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
                             }
@@ -1339,7 +1368,7 @@ def api_map_stream():
                             "min_distance_to_route_km": 0.0,
                             "usage_count": 1,
                             "_match_days": matching,
-                            "_source_mode": f"per_point_{fetch_mode}",
+                            "_source_mode": f"per_point_{fetch_mode}_window" if use_tour_window else f"per_point_{fetch_mode}",
                             "_grid_deg": grid_deg,
                             "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
                         }

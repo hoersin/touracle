@@ -3,7 +3,7 @@ Provides a unified interface `fetch_daily_weather(lat, lon, month, day, years_wi
 which returns a pandas DataFrame with columns: date, tavg, prcp, wspd, wdir.
 Requests only single calendar days per year (no multi-year windows).
 """
-from datetime import date
+from datetime import date, timedelta
 from typing import Tuple, Optional
 import logging
 import requests
@@ -15,6 +15,10 @@ import json
 import calendar
 import threading
 from weather_service import WeatherService
+from weather_meteostat import (
+    fetch_daily_weather_same_day_meteostat,
+    fetch_daily_weather_window_meteostat,
+)
 
 log = logging.getLogger('pipeline.weather.openmeteo')
 
@@ -401,9 +405,114 @@ def fetch_daily_weather_same_day(lat: float, lon: float, month: int, day: int, y
     df = pd.DataFrame(rows)
     if len(df) == 0:
         log.info('[WEATHER] Rows retrieved (oneday per-year): 0')
+        # Fallback: Meteostat (useful when Open-Meteo is hard rate-limited)
+        try:
+            df2 = fetch_daily_weather_same_day_meteostat(lat, lon, month, day, years_window=years_window)
+            if df2 is not None and len(df2) > 0:
+                log.info('[WEATHER] Fallback provider=Meteostat rows=%d', len(df2))
+                return df2
+        except Exception as e:
+            log.warning('[WEATHER] Meteostat fallback failed: %s', e)
         return df
     df['date'] = pd.to_datetime(df['date'])
     for c in ['tavg','prcp','wspd','wdir']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
+    df['_provider'] = 'openmeteo'
     log.info('[WEATHER] Rows retrieved (oneday per-year): %d', len(df))
+    return df
+
+
+def fetch_daily_weather_window(lat: float, lon: float, start_month: int, start_day: int, span_days: int, years_window: int = 10) -> Optional[pd.DataFrame]:
+    """Fetch daily weather for a contiguous date window per year across the last `years_window` years.
+
+    This is an optimization for tour mode: instead of one API call per (year, day), it does
+    one API call per year for the full window and builds a DataFrame with columns:
+    date, tavg, prcp, wspd, wdir.
+
+    The resulting DataFrame can be filtered by (month, day) to compute per-tour-day stats.
+    """
+    lat2 = round(lat, 1)
+    lon2 = round(lon, 1)
+    span_days = int(span_days)
+    if span_days < 1:
+        raise ValueError('span_days must be >= 1')
+    # Avoid extremely large window fetches; tours are typically far smaller.
+    if span_days > 180:
+        log.warning('[API] tour span_days=%d capped to 180', span_days)
+        span_days = 180
+
+    def _to_float(v):
+        try:
+            fv = float(v)
+            return fv
+        except Exception:
+            return float('nan')
+
+    today = date.today()
+    start_year = today.year - years_window
+    end_year = today.year - 1
+    rows = []
+
+    for y in range(start_year, end_year + 1):
+        try:
+            d0 = date(y, int(start_month), int(start_day))
+        except ValueError:
+            log.warning('[API] Skipping invalid window start %04d-%02d-%02d', y, int(start_month), int(start_day))
+            continue
+        d1 = d0 + timedelta(days=span_days - 1)
+        try:
+            j = WeatherService.get_daily_range(lat2, lon2, d0, d1, dry_run=False)
+        except Exception as e:
+            log.warning('[API] daily range fetch failed y=%d: %s', y, e)
+            continue
+
+        daily = (j or {}).get('daily', {}) or {}
+        times = daily.get('time', []) or []
+        tavg = daily.get('temperature_2m_mean', []) or []
+        prcp = daily.get('precipitation_sum', []) or []
+        wspd = daily.get('windspeed_10m_mean', []) or []
+        wdir = daily.get('winddirection_10m_dominant', []) or []
+
+        if not times:
+            continue
+        n = min(len(times), len(tavg) if tavg else 0, len(prcp) if prcp else 0, len(wspd) if wspd else 0, len(wdir) if wdir else 0)
+        if n <= 0:
+            continue
+
+        for i in range(n):
+            try:
+                dt = pd.to_datetime(times[i])
+            except Exception:
+                continue
+            rows.append({
+                'date': dt,
+                'tavg': _to_float(tavg[i]) if tavg else float('nan'),
+                'prcp': _to_float(prcp[i]) if prcp else float('nan'),
+                'wspd': _to_float(wspd[i]) if wspd else float('nan'),
+                'wdir': _to_float(wdir[i]) if wdir else float('nan'),
+            })
+
+    df = pd.DataFrame(rows)
+    if len(df) == 0:
+        log.info('[WEATHER] Rows retrieved (window per-year): 0')
+        # Fallback: Meteostat (useful when Open-Meteo is hard rate-limited)
+        try:
+            df2 = fetch_daily_weather_window_meteostat(lat, lon, start_month, start_day, span_days, years_window=years_window)
+            if df2 is not None and len(df2) > 0:
+                log.info('[WEATHER] Fallback provider=Meteostat rows=%d', len(df2))
+                return df2
+        except Exception as e:
+            log.warning('[WEATHER] Meteostat fallback failed: %s', e)
+        return df
+    try:
+        df['date'] = pd.to_datetime(df['date'])
+    except Exception:
+        pass
+    for c in ['tavg', 'prcp', 'wspd', 'wdir']:
+        try:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        except Exception:
+            pass
+    df['_provider'] = 'openmeteo'
+    log.info('[WEATHER] Rows retrieved (window per-year): %d', len(df))
     return df

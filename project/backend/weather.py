@@ -5,6 +5,13 @@ import pandas as pd
 import logging
 from datetime import date
 
+try:
+    # Meteostat v2.x exposes functional APIs: `daily(point, start, end)`.
+    from meteostat import Point, daily  # type: ignore
+except Exception:
+    Point = None  # type: ignore
+    daily = None  # type: ignore
+
 log = logging.getLogger('pipeline.weather')
 
 
@@ -33,6 +40,8 @@ def fetch_weather_data_point(lat: float, lon: float, start_year: int = 2000, yea
     """Fetch Meteostat Daily(Point) data for the last `years` years starting from `start_year`.
     Returns DataFrame indexed by date with available columns.
     """
+    if Point is None or daily is None:
+        raise RuntimeError('meteostat is not installed')
     start = datetime(start_year, 1, 1)
     end = datetime(start_year + years - 1, 12, 31)
     log.info('[WEATHER] Fetching data for lat=%.5f lon=%.5f', lat, lon)
@@ -86,7 +95,7 @@ def compute_weather_statistics_daily(df: pd.DataFrame, month: int, day: int) -> 
         rain_days = int((prcp_series > 0.1).sum())
         rain_prob = float(rain_days / valid_days) if valid_days > 0 else 0.0
         typical_rain = float(np.nanmedian(prcp_series[prcp_series > 0.1])) if (prcp_series > 0.1).any() else 0.0
-        prcp_med = float(np.nanmedian(prcp_series))
+        prcp_med = float(np.nanmedian(prcp_series)) if valid_days > 0 else 0.0
         log.info('[WEATHER] Rain probability: %.1f%% (%d/%d)', rain_prob * 100.0, rain_days, valid_days)
         log.info('[WEATHER] Typical rain amount: %.2f mm (median of >0.1mm)', typical_rain)
     else:
@@ -94,7 +103,13 @@ def compute_weather_statistics_daily(df: pd.DataFrame, month: int, day: int) -> 
         prcp_med = 0.0
         rain_prob = 0.0
         typical_rain = 0.0
-    wspd_med = float(np.nanmedian(subset['wspd'])) if 'wspd' in subset.columns else 0.0
+    # Open-Meteo and Meteostat daily wind speeds are typically in km/h; the rest of this
+    # project labels the field as m/s, so we convert here.
+    if 'wspd' in subset.columns and subset['wspd'].notna().any():
+        wspd_kmh = float(np.nanmedian(pd.to_numeric(subset['wspd'], errors='coerce')))
+        wspd_med = wspd_kmh / 3.6
+    else:
+        wspd_med = 0.0
     wdir_series = pd.to_numeric(subset.get('wdir'), errors='coerce') if 'wdir' in subset.columns else pd.Series(dtype=float)
     wind_stats = compute_wind_statistics(wdir_series)
     stats = {

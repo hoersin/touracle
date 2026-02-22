@@ -23,10 +23,24 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 CACHE_DIR = BASE_DIR / 'cache' / 'openmeteo_daily'
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-RATE_LIMIT_SECONDS = 0.6
+RATE_LIMIT_SECONDS = 1.15
 _api_disabled_until: float = 0.0
 _worker_started = False
 _worker_lock = threading.Lock()
+
+
+def reset_api_disable() -> None:
+    """Reset WeatherService's in-process circuit breaker.
+
+    Note: this is separate from the legacy breaker in `weather_openmeteo.py`.
+    """
+    global _api_disabled_until
+    _api_disabled_until = 0.0
+    try:
+        WeatherService.last_request_ts = 0.0
+    except Exception:
+        pass
+    log.info('[API] WeatherService circuit breaker reset; requests re-enabled')
 
 @dataclass
 class _Pending:
@@ -65,11 +79,31 @@ class WeatherService:
         return CACHE_DIR / name
 
     @staticmethod
+    def _disk_path_daily_range(lat: float, lon: float, start: _date, end: _date) -> Path:
+        qlat = WeatherService._quantize(lat)
+        qlon = WeatherService._quantize(lon)
+        s = start.isoformat().replace('-', '')
+        e = end.isoformat().replace('-', '')
+        name = f"daily_range_lat{qlat:.1f}_lon{qlon:.1f}_{s}_{e}.json"
+        return CACHE_DIR / name
+
+    @staticmethod
     def _build_url_daily(lat: float, lon: float, d: _date) -> str:
         base = "https://archive-api.open-meteo.com/v1/archive"
         params = (
             f"latitude={lat:.6f}&longitude={lon:.6f}"
             f"&start_date={d.isoformat()}&end_date={d.isoformat()}"
+            "&daily=temperature_2m_mean,precipitation_sum,windspeed_10m_mean,winddirection_10m_dominant"
+            "&timezone=UTC"
+        )
+        return f"{base}?{params}"
+
+    @staticmethod
+    def _build_url_daily_range(lat: float, lon: float, start: _date, end: _date) -> str:
+        base = "https://archive-api.open-meteo.com/v1/archive"
+        params = (
+            f"latitude={lat:.6f}&longitude={lon:.6f}"
+            f"&start_date={start.isoformat()}&end_date={end.isoformat()}"
             "&daily=temperature_2m_mean,precipitation_sum,windspeed_10m_mean,winddirection_10m_dominant"
             "&timezone=UTC"
         )
@@ -120,10 +154,19 @@ class WeatherService:
             kind = params['kind']
             lat = float(params['lat'])
             lon = float(params['lon'])
-            d = _date(int(params['year']), int(params['month']), int(params['day']))
             qlat = cls._quantize(lat)
             qlon = cls._quantize(lon)
-            url = cls._build_url_daily(qlat, qlon, d) if kind == 'daily' else cls._build_url_hourly(qlat, qlon, d)
+            if kind in ('daily', 'hourly'):
+                d = _date(int(params['year']), int(params['month']), int(params['day']))
+                url = cls._build_url_daily(qlat, qlon, d) if kind == 'daily' else cls._build_url_hourly(qlat, qlon, d)
+            elif kind == 'daily_range':
+                start = _date.fromisoformat(str(params['start']))
+                end = _date.fromisoformat(str(params['end']))
+                url = cls._build_url_daily_range(qlat, qlon, start, end)
+            else:
+                pending.error = ValueError(f"Unsupported kind: {kind}")
+                pending.event.set()
+                continue
             log.info('[WORKER] fetching key=%s url=%s', key, url)
             # Perform with retries
             delays = [1, 2, 4]
@@ -158,6 +201,10 @@ class WeatherService:
                 pending.error = RuntimeError('Request failed')
                 pending.event.set()
                 continue
+            if resp.status_code != 200:
+                pending.error = RuntimeError(f"HTTP {resp.status_code}")
+                pending.event.set()
+                continue
             try:
                 j = resp.json()
             except Exception as e:
@@ -168,6 +215,16 @@ class WeatherService:
             if kind == 'daily':
                 try:
                     path = cls._disk_path_daily(lat, lon, int(params['year']), int(params['month']), int(params['day']))
+                    with open(path, 'w', encoding='utf-8') as f:
+                        json.dump(j, f)
+                    log.info('[CACHE] disk save %s', path.name)
+                except Exception:
+                    pass
+            elif kind == 'daily_range':
+                try:
+                    start = _date.fromisoformat(str(params['start']))
+                    end = _date.fromisoformat(str(params['end']))
+                    path = cls._disk_path_daily_range(lat, lon, start, end)
                     with open(path, 'w', encoding='utf-8') as f:
                         json.dump(j, f)
                     log.info('[CACHE] disk save %s', path.name)
@@ -232,4 +289,60 @@ class WeatherService:
             pass
         if pending.error:
             raise pending.error
+        return pending.result
+
+    @classmethod
+    def get_daily_range(cls, lat: float, lon: float, start: _date, end: _date, dry_run: bool = False) -> Optional[dict]:
+        """Fetch daily archive data for a contiguous date range.
+        Cache-first, serialized through the same worker.
+        """
+        if dry_run:
+            log.info('[DRYRUN] skip daily_range lat=%s lon=%s start=%s end=%s', lat, lon, start, end)
+            return None
+        cls.ensure_started()
+        qlat = cls._quantize(float(lat))
+        qlon = cls._quantize(float(lon))
+        key = f"daily_range:{qlat:.2f}_{qlon:.2f}_{start.isoformat()}_{end.isoformat()}"
+        if key in cls.memory_cache:
+            log.info('[CACHE] memory hit key=%s', key)
+            return cls.memory_cache[key]
+        path = cls._disk_path_daily_range(lat, lon, start, end)
+        if path.exists():
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                log.info('[CACHE] disk hit key=%s', key)
+                cls.memory_cache[key] = data
+                return data
+            except Exception:
+                pass
+        pending = cls.pending.get(key)
+        if pending is not None:
+            log.info('[QUEUE] duplicate wait key=%s', key)
+            pending.event.wait()
+            if pending.error:
+                raise pending.error
+            return pending.result
+        pending = _Pending(event=threading.Event())
+        cls.pending[key] = pending
+        params = {
+            'lat': float(lat),
+            'lon': float(lon),
+            'kind': 'daily_range',
+            'start': start.isoformat(),
+            'end': end.isoformat(),
+        }
+        cls.request_queue.put((key, params, pending))
+        log.info('[QUEUE] enqueued key=%s', key)
+        pending.event.wait()
+        try:
+            cls.pending.pop(key, None)
+        except Exception:
+            pass
+        if pending.error:
+            raise pending.error
+        try:
+            cls.memory_cache[key] = pending.result  # type: ignore[assignment]
+        except Exception:
+            pass
         return pending.result
