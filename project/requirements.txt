@@ -5,3 +5,4 @@ numpy
 gpxpy
 cairosvg
 requests
+global-land-mask
