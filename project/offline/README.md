@@ -97,12 +97,15 @@ Even with retries/backoff and slower pacing (e.g. 1.2–1.5 sec/request), 10 nig
 
 ## Usage
 
-### Backend (offline-first)
+### Backend (optional integration)
 
-The Flask backend prefers offline tiles automatically when an offline DB is configured.
+This repo includes an offline store reader at `project/backend/offline_weather_store.py`.
 
-- Set `OFFLINE_WEATHER_DB` to the SQLite path (default: `project/cache/offline_weather.sqlite`).
-- Optional: set `OFFLINE_STRICT=1` to disable any online API fallback.
+At the moment, the main Flask app does **not** automatically use the offline store; wiring it into the existing endpoints is a small, separate change.
+
+When/if you wire it in, the intended environment variables are:
+- `OFFLINE_WEATHER_DB`: SQLite path (default: `project/cache/offline_weather.sqlite`)
+- `OFFLINE_STRICT=1`: disable any online API fallback
 
 ### Builder
 
