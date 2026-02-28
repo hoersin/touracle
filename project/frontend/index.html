@@ -7,7 +7,27 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body { height: 100%; margin: 0; overflow-x: hidden; }
-    #controls { position: absolute; z-index: 1000; background: rgba(255,255,255,0.9); padding: 8px 10px; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); left: 60px; top: 10px; }
+    /* Top navigation (segmented control) */
+    #topNav { position: fixed; z-index: 2100; left: 50%; top: 10px; transform: translateX(-50%); }
+    .wm-seg { position: relative; display: inline-flex; gap: 0; padding: 4px; border-radius: 999px; background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-family: system-ui, -apple-system, sans-serif; }
+    .wm-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: 0px; border-radius: 999px; background: #28a745; box-shadow: 0 2px 6px rgba(40,167,69,0.25); transition: transform 260ms ease, width 260ms ease; }
+    .wm-seg-btn { position: relative; z-index: 1; border: none; background: transparent; padding: 8px 12px; border-radius: 999px; cursor: pointer; font-size: 13px; color: #1f2937; transition: color 200ms ease; }
+    .wm-seg-btn[aria-selected="true"] { color: #fff; font-weight: 700; }
+    .wm-seg-btn:focus { outline: none; }
+    .wm-seg-btn:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
+
+    /* Controls panels */
+    #controls, #strategicControls {
+      position: absolute;
+      z-index: 1000;
+      background: rgba(255,255,255,0.9);
+      padding: 8px 10px;
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      left: 60px;
+      top: 58px;
+    }
+    #strategicControls { display: none; }
     #map { height: calc(100% - 160px); }
     #profilePanel { height: 160px; border-top: 1px solid #ddd; background: #fafafa; }
     #profileCanvas { width: 100%; height: 100%; display: block; }
@@ -107,9 +127,37 @@
       border-radius: 3px !important;
       box-shadow: 0 1px 3px rgba(0,0,0,0.15) !important;
     }
+
+    /* Modes */
+    body[data-mode="climate"] #controls { display: none; }
+    body[data-mode="climate"] #strategicControls { display: block; }
+    body[data-mode="climate"] #profilePanel { display: none; }
+    body[data-mode="climate"] #map { height: 100%; }
+
+    body[data-mode="settings"] #controls { display: none; }
+    body[data-mode="settings"] #strategicControls { display: none; }
+    body[data-mode="settings"] #map { display: none; }
+    body[data-mode="settings"] #profilePanel { display: none; }
+    body[data-mode="settings"] #settingsView { display: block; }
+
+    /* Settings view */
+    #settingsView { display: none; position: absolute; inset: 0; padding: 68px 16px 16px 16px; box-sizing: border-box; overflow: auto; background: #f8fafc; }
+    .wm-card { background: #fff; border: 1px solid rgba(0,0,0,0.08); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); max-width: 860px; margin: 0 auto; padding: 14px 16px; }
+    .wm-card h3 { margin: 0 0 10px 0; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
+    .wm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; }
+    .wm-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
   </style>
 </head>
 <body>
+  <div id="topNav">
+    <div class="wm-seg" id="modeNav" role="tablist" aria-label="App mode">
+      <div class="wm-seg-pill" id="modeNavPill" aria-hidden="true"></div>
+      <button class="wm-seg-btn" id="navClimate" type="button" data-mode="climate" role="tab" aria-selected="false">Climatic Map</button>
+      <button class="wm-seg-btn" id="navTour" type="button" data-mode="tour" role="tab" aria-selected="true">Tour Planning</button>
+      <button class="wm-seg-btn" id="navSettings" type="button" data-mode="settings" role="tab" aria-selected="false">Settings</button>
+    </div>
+  </div>
+
   <div id="controls">
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <label for="startDate">Start Date:</label>
@@ -120,7 +168,6 @@
         <input type="checkbox" id="reverse" />
         <span>Reverse Tour</span>
       </label>
-      <button id="settings">Settings ⚙️</button>
       <button id="share">Share 📸</button>
       
     </div>
@@ -135,11 +182,53 @@
     </div>
     <div id="sseStatus" style="margin-top:6px; font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#555;">Stream: idle</div>
   </div>
-  <!-- Settings Modal -->
-  <div id="settingsModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.25); z-index:2000; align-items:center; justify-content:center;">
-    <div style="background:#fff; padding:14px 16px; border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,0.2); min-width:300px;">
-      <h3 style="margin:0 0 10px 0; font-family:system-ui, -apple-system, sans-serif; font-size:14px;">Settings</h3>
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; align-items:center; font-family:system-ui, -apple-system, sans-serif; font-size:12px;">
+
+  <div id="strategicControls">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label for="strategicDate">Day:</label>
+      <input type="date" id="strategicDate" />
+      <label for="strategicLayer">Layer:</label>
+      <select id="strategicLayer">
+        <option value="temperature_ride">Temperature (Ride)</option>
+        <option value="rain_ride">Rain (Ride)</option>
+        <option value="rain_tent">Rain (Tent)</option>
+        <option value="wind_speed">Wind Speed</option>
+        <option value="comfort_ride">Comfort (Ride)</option>
+        <option value="comfort_tent">Comfort (Tent)</option>
+      </select>
+      <span style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#555">(Strategic map rendering in v2.1)</span>
+    </div>
+  </div>
+
+  <div id="settingsView" aria-label="Settings">
+    <div class="wm-card">
+      <h3>Settings</h3>
+      <div class="wm-grid">
+        <label for="setStrategicYear">Strategic year (default)</label>
+        <select id="setStrategicYear">
+          <option value="2025">2025</option>
+          <option value="2024">2024</option>
+        </select>
+
+        <label for="setIncludeSea">Include sea areas</label>
+        <input type="checkbox" id="setIncludeSea" />
+
+        <label for="setInterpolation">Interpolation (strategic)</label>
+        <input type="checkbox" id="setInterpolation" />
+
+        <label for="setWindDensity">Wind density</label>
+        <input type="number" id="setWindDensity" min="1" max="200" step="1" />
+
+        <label for="setAnimSpeed">Animation speed</label>
+        <input type="number" id="setAnimSpeed" min="0.1" max="10" step="0.1" />
+
+        <label for="setGridKm">Grid resolution (km)</label>
+        <select id="setGridKm">
+          <option value="50">50</option>
+          <option value="25">25</option>
+          <option value="100">100</option>
+        </select>
+
         <label for="setGlyphType">Glyph type</label>
         <select id="setGlyphType">
           <option value="classic">Classic (icons + rosette)</option>
@@ -162,10 +251,21 @@
         <input type="number" id="setWindHeadComfort" min="0" max="20" step="0.5" />
         <label for="setWindTailComfort">Comfort max tailwind (m/s)</label>
         <input type="number" id="setWindTailComfort" min="0" max="30" step="0.5" />
+
+        <label for="setRideHours">Ride hours (start-end)</label>
+        <input type="text" id="setRideHours" placeholder="10-16" />
+        <label for="setTentHours">Tent hours (start-end)</label>
+        <input type="text" id="setTentHours" placeholder="18-08" />
+
+        <label for="setWindWeighting">Wind weighting (tactical)</label>
+        <select id="setWindWeighting">
+          <option value="relative">Relative to route (head/tail)</option>
+          <option value="neutral">Direction-independent</option>
+        </select>
       </div>
-      <div style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
-        <button id="settingsCancel">Cancel</button>
-        <button id="settingsSave">Save</button>
+      <div class="wm-actions">
+        <button id="settingsCancel" type="button">Cancel</button>
+        <button id="settingsSave" type="button">Save</button>
       </div>
     </div>
   </div>

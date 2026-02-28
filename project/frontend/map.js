@@ -50,9 +50,14 @@
   const tourDaysInput = document.getElementById('tourDays');
   const fetchWeatherBtn = document.getElementById('fetchWeather');
   const stopWeatherBtn = document.getElementById('stopWeather');
-  const settingsBtn = document.getElementById('settings');
   const shareBtn = document.getElementById('share');
-  const settingsModal = document.getElementById('settingsModal');
+  const navClimate = document.getElementById('navClimate');
+  const navTour = document.getElementById('navTour');
+  const navSettings = document.getElementById('navSettings');
+  const modeNav = document.getElementById('modeNav');
+  const modeNavPill = document.getElementById('modeNavPill');
+
+  const settingsView = document.getElementById('settingsView');
   const setStepKm = document.getElementById('setStepKm');
   const setHistStart = document.getElementById('setHistStart');
   const setHistYears = document.getElementById('setHistYears');
@@ -62,6 +67,18 @@
   const setWindHeadComfort = document.getElementById('setWindHeadComfort');
   const setWindTailComfort = document.getElementById('setWindTailComfort');
   const setGlyphType = document.getElementById('setGlyphType');
+  const setStrategicYear = document.getElementById('setStrategicYear');
+  const setIncludeSea = document.getElementById('setIncludeSea');
+  const setInterpolation = document.getElementById('setInterpolation');
+  const setWindDensity = document.getElementById('setWindDensity');
+  const setAnimSpeed = document.getElementById('setAnimSpeed');
+  const setGridKm = document.getElementById('setGridKm');
+  const setRideHours = document.getElementById('setRideHours');
+  const setTentHours = document.getElementById('setTentHours');
+  const setWindWeighting = document.getElementById('setWindWeighting');
+
+  const strategicDateInput = document.getElementById('strategicDate');
+  const strategicLayerSelect = document.getElementById('strategicLayer');
   const settingsCancel = document.getElementById('settingsCancel');
   const settingsSave = document.getElementById('settingsSave');
   const progressEl = document.getElementById('progress');
@@ -145,6 +162,13 @@
   if (!startDateInput.value) {
     startDateInput.value = today.toISOString().slice(0,10);
   }
+  // Default Strategic date to today if empty
+  if (strategicDateInput && !strategicDateInput.value) {
+    strategicDateInput.value = today.toISOString().slice(0,10);
+  }
+
+  // Initialize top navigation (mode switch)
+  initModeNav();
 
   let routeLayer = null;
   let glyphLayer = null;
@@ -486,28 +510,62 @@
   // Settings persistence
   function loadSettings() {
     const s = localStorage.getItem('wm_settings');
-      if (!s) return { stepKm: 60, histStartYear: 2016, histYears: 10, tempCold: 5, tempHot: 30, rainHigh: 10, windHeadComfort: 4, windTailComfort: 10, useClassicWeatherIcons: true, glyphType: 'classic' };
+    const defaults = {
+      stepKm: 60,
+      histStartYear: 2016,
+      histYears: 10,
+      tempCold: 5,
+      tempHot: 30,
+      rainHigh: 10,
+      windHeadComfort: 4,
+      windTailComfort: 10,
+      useClassicWeatherIcons: true,
+      glyphType: 'classic',
+      // Strategic/tactical settings (Phase 1: persisted but not yet fully used)
+      strategicYear: 2025,
+      includeSea: false,
+      interpolation: true,
+      windDensity: 40,
+      animSpeed: 1.0,
+      gridKm: 50,
+      rideHours: '10-16',
+      tentHours: '18-08',
+      windWeighting: 'relative',
+    };
+    if (!s) return defaults;
     try {
       const j = JSON.parse(s);
       return {
-        stepKm: Number(j.stepKm) || 60,
-        histStartYear: Number(j.histStartYear) || 2016,
-        histYears: Number(j.histYears) || 10,
-        tempCold: Number.isFinite(Number(j.tempCold)) ? Number(j.tempCold) : 5,
-        tempHot: Number.isFinite(Number(j.tempHot)) ? Number(j.tempHot) : 30,
-        rainHigh: Number.isFinite(Number(j.rainHigh)) ? Number(j.rainHigh) : 10,
+        ...defaults,
+        stepKm: Number(j.stepKm) || defaults.stepKm,
+        histStartYear: Number(j.histStartYear) || defaults.histStartYear,
+        histYears: Number(j.histYears) || defaults.histYears,
+        tempCold: Number.isFinite(Number(j.tempCold)) ? Number(j.tempCold) : defaults.tempCold,
+        tempHot: Number.isFinite(Number(j.tempHot)) ? Number(j.tempHot) : defaults.tempHot,
+        rainHigh: Number.isFinite(Number(j.rainHigh)) ? Number(j.rainHigh) : defaults.rainHigh,
         // legacy windThresh retained for backward compatibility if present
-        windHeadComfort: Number.isFinite(Number(j.windHeadComfort)) ? Number(j.windHeadComfort) : (Number.isFinite(Number(j.windThresh)) ? Number(j.windThresh) : 4),
-        windTailComfort: Number.isFinite(Number(j.windTailComfort)) ? Number(j.windTailComfort) : 10,
-          windHeadComfort: Number.isFinite(Number(j.windHeadComfort)) ? Number(j.windHeadComfort) : 4,
-          windTailComfort: Number.isFinite(Number(j.windTailComfort)) ? Number(j.windTailComfort) : 10,
-        glyphType: (typeof j.glyphType === 'string') ? j.glyphType : ((typeof j.useClassicWeatherIcons === 'boolean') ? (j.useClassicWeatherIcons ? 'classic' : 'svg') : 'classic'),
+        windHeadComfort: Number.isFinite(Number(j.windHeadComfort))
+          ? Number(j.windHeadComfort)
+          : (Number.isFinite(Number(j.windThresh)) ? Number(j.windThresh) : defaults.windHeadComfort),
+        windTailComfort: Number.isFinite(Number(j.windTailComfort)) ? Number(j.windTailComfort) : defaults.windTailComfort,
+        glyphType: (typeof j.glyphType === 'string')
+          ? j.glyphType
+          : ((typeof j.useClassicWeatherIcons === 'boolean') ? (j.useClassicWeatherIcons ? 'classic' : 'svg') : defaults.glyphType),
         useClassicWeatherIcons: (typeof j.useClassicWeatherIcons === 'boolean')
           ? j.useClassicWeatherIcons
-          : ((typeof j.glyphType === 'string') ? (j.glyphType === 'classic') : true),
+          : ((typeof j.glyphType === 'string') ? (j.glyphType === 'classic') : defaults.useClassicWeatherIcons),
+        strategicYear: Number(j.strategicYear) || defaults.strategicYear,
+        includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
+        interpolation: (typeof j.interpolation === 'boolean') ? j.interpolation : defaults.interpolation,
+        windDensity: Number(j.windDensity) || defaults.windDensity,
+        animSpeed: Number(j.animSpeed) || defaults.animSpeed,
+        gridKm: Number(j.gridKm) || defaults.gridKm,
+        rideHours: (typeof j.rideHours === 'string') ? j.rideHours : defaults.rideHours,
+        tentHours: (typeof j.tentHours === 'string') ? j.tentHours : defaults.tentHours,
+        windWeighting: (typeof j.windWeighting === 'string') ? j.windWeighting : defaults.windWeighting,
       };
     } catch {
-      return { stepKm: 60, histStartYear: 2016, histYears: 10, tempCold: 5, tempHot: 30, rainHigh: 10, windHeadComfort: 4, windTailComfort: 10, useClassicWeatherIcons: true, glyphType: 'classic' };
+      return defaults;
     }
   }
 
@@ -529,6 +587,115 @@
   let CURSOR_X_SCALE = 1;     // unified scale (no DPR correction)
   let CURSOR_X_OFFSET = 0;    // no offset fudge
   let CURSOR_OFFSET_LOCKED = true; // lock to prevent heuristic changes
+
+  // -------------------- Mode navigation (Phase 1) --------------------
+  function loadMode() {
+    const m = String(localStorage.getItem('wm_mode') || '').trim();
+    return (m === 'climate' || m === 'settings' || m === 'tour') ? m : 'tour';
+  }
+
+  function saveMode(mode) {
+    try { localStorage.setItem('wm_mode', String(mode)); } catch (_) {}
+  }
+
+  let LAST_NON_SETTINGS_MODE = 'tour';
+
+  function updateModeNav(mode) {
+    const btns = [navClimate, navTour, navSettings].filter(Boolean);
+    btns.forEach(btn => {
+      const isActive = btn && btn.dataset && btn.dataset.mode === mode;
+      if (btn) btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+    });
+    if (!modeNav || !modeNavPill) return;
+    const activeBtn = btns.find(b => b && b.dataset && b.dataset.mode === mode);
+    if (!activeBtn) return;
+    const pr = modeNav.getBoundingClientRect();
+    const br = activeBtn.getBoundingClientRect();
+    const dx = Math.max(0, br.left - pr.left);
+    modeNavPill.style.width = `${Math.max(0, br.width)}px`;
+    modeNavPill.style.transform = `translateX(${dx}px)`;
+  }
+
+  function setMode(mode) {
+    if (mode !== 'settings') LAST_NON_SETTINGS_MODE = mode;
+    document.body.dataset.mode = mode;
+    saveMode(mode);
+    updateModeNav(mode);
+    // Map needs a resize nudge when toggling profile/map visibility.
+    if (mode !== 'settings') {
+      setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 60);
+    }
+    // When entering settings, sync form from current settings.
+    if (mode === 'settings') {
+      try { applySettingsToForm(SETTINGS); } catch (_) {}
+    }
+  }
+
+  function initModeNav() {
+    const btns = [navClimate, navTour, navSettings].filter(Boolean);
+    btns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const m = btn.dataset && btn.dataset.mode;
+        if (m) setMode(m);
+      });
+    });
+    window.addEventListener('resize', () => updateModeNav(document.body.dataset.mode || 'tour'));
+    setMode(loadMode());
+  }
+
+  // Settings view wiring
+  function applySettingsToForm(s) {
+    if (!s) return;
+    if (setStepKm) setStepKm.value = s.stepKm;
+    if (setHistStart) setHistStart.value = s.histStartYear;
+    if (setHistYears) setHistYears.value = s.histYears;
+    if (setTempCold) setTempCold.value = s.tempCold;
+    if (setTempHot) setTempHot.value = s.tempHot;
+    if (setRainHigh) setRainHigh.value = s.rainHigh;
+    if (setWindHeadComfort) setWindHeadComfort.value = s.windHeadComfort;
+    if (setWindTailComfort) setWindTailComfort.value = s.windTailComfort;
+    if (setGlyphType) setGlyphType.value = s.glyphType || (s.useClassicWeatherIcons ? 'classic' : 'svg');
+
+    if (setStrategicYear) setStrategicYear.value = String(s.strategicYear || 2025);
+    if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
+    if (setInterpolation) setInterpolation.checked = Boolean(s.interpolation);
+    if (setWindDensity) setWindDensity.value = String(Number(s.windDensity || 40));
+    if (setAnimSpeed) setAnimSpeed.value = String(Number(s.animSpeed || 1.0));
+    if (setGridKm) setGridKm.value = String(Number(s.gridKm || 50));
+    if (setRideHours) setRideHours.value = String(s.rideHours || '10-16');
+    if (setTentHours) setTentHours.value = String(s.tentHours || '18-08');
+    if (setWindWeighting) setWindWeighting.value = String(s.windWeighting || 'relative');
+  }
+
+  function readSettingsFromForm(prev) {
+    const base = prev ? { ...prev } : {};
+    base.stepKm = Number(setStepKm && setStepKm.value) || 60;
+    base.histStartYear = Number(setHistStart && setHistStart.value) || 2016;
+    base.histYears = Number(setHistYears && setHistYears.value) || 10;
+    base.tempCold = Number(setTempCold && setTempCold.value);
+    if (!Number.isFinite(base.tempCold)) base.tempCold = 5;
+    base.tempHot = Number(setTempHot && setTempHot.value);
+    if (!Number.isFinite(base.tempHot)) base.tempHot = 30;
+    base.rainHigh = Number(setRainHigh && setRainHigh.value);
+    if (!Number.isFinite(base.rainHigh)) base.rainHigh = 10;
+    base.windHeadComfort = Number(setWindHeadComfort && setWindHeadComfort.value);
+    if (!Number.isFinite(base.windHeadComfort)) base.windHeadComfort = 4;
+    base.windTailComfort = Number(setWindTailComfort && setWindTailComfort.value);
+    if (!Number.isFinite(base.windTailComfort)) base.windTailComfort = 10;
+    base.glyphType = (setGlyphType && setGlyphType.value) ? setGlyphType.value : 'classic';
+    base.useClassicWeatherIcons = (setGlyphType && setGlyphType.value) ? (setGlyphType.value === 'classic') : true;
+
+    base.strategicYear = Number(setStrategicYear && setStrategicYear.value) || 2025;
+    base.includeSea = Boolean(setIncludeSea && setIncludeSea.checked);
+    base.interpolation = Boolean(setInterpolation && setInterpolation.checked);
+    base.windDensity = Number(setWindDensity && setWindDensity.value) || 40;
+    base.animSpeed = Number(setAnimSpeed && setAnimSpeed.value) || 1.0;
+    base.gridKm = Number(setGridKm && setGridKm.value) || 50;
+    base.rideHours = String(setRideHours && setRideHours.value ? setRideHours.value : '10-16');
+    base.tentHours = String(setTentHours && setTentHours.value ? setTentHours.value : '18-08');
+    base.windWeighting = String(setWindWeighting && setWindWeighting.value ? setWindWeighting.value : 'relative');
+    return base;
+  }
   
   // Debug helper: wait for manual step() call
   async function waitForSpacebar(stepNum, description) {
@@ -2730,48 +2897,31 @@
     }, { passive: false });
   })();
 
-  // Settings modal wiring
-    // Overlay mode control
-    if (overlaySelect) {
-      overlaySelect.addEventListener('change', () => {
-        OVERLAY_MODE = overlaySelect.value;
-        if (LAST_PROFILE) drawProfile(LAST_PROFILE);
-      });
-    }
-  settingsBtn.addEventListener('click', () => {
-    SETTINGS = loadSettings();
-    setStepKm.value = SETTINGS.stepKm;
-    setHistStart.value = SETTINGS.histStartYear;
-    setHistYears.value = SETTINGS.histYears;
-    setTempCold.value = SETTINGS.tempCold;
-    setTempHot.value = SETTINGS.tempHot;
-    setRainHigh.value = SETTINGS.rainHigh;
-    setWindHeadComfort.value = SETTINGS.windHeadComfort;
-    setWindTailComfort.value = SETTINGS.windTailComfort;
-    if (setGlyphType) setGlyphType.value = SETTINGS.glyphType || (SETTINGS.useClassicWeatherIcons ? 'classic' : 'svg');
-    settingsModal.style.display = 'flex';
-  });
-  settingsCancel.addEventListener('click', () => {
-    settingsModal.style.display = 'none';
-  });
-  settingsSave.addEventListener('click', () => {
-    SETTINGS = {
-      stepKm: Number(setStepKm.value) || 60,
-      histStartYear: Number(setHistStart.value) || 2016,
-      histYears: Number(setHistYears.value) || 10,
-      tempCold: Number(setTempCold.value) || 5,
-      tempHot: Number(setTempHot.value) || 30,
-      rainHigh: Number(setRainHigh.value) || 10,
-      windHeadComfort: Number(setWindHeadComfort.value) || 4,
-      windTailComfort: Number(setWindTailComfort.value) || 10,
-      glyphType: setGlyphType ? setGlyphType.value : 'classic',
-      useClassicWeatherIcons: setGlyphType ? (setGlyphType.value === 'classic') : true,
-    };
-    saveSettings(SETTINGS);
-    STEP_KM = SETTINGS.stepKm;
-    settingsModal.style.display = 'none';
-    loadMap();
-  });
+  // UI wiring
+  // Overlay mode control
+  if (overlaySelect) {
+    overlaySelect.addEventListener('change', () => {
+      OVERLAY_MODE = overlaySelect.value;
+      if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+    });
+  }
+
+  if (settingsCancel) {
+    settingsCancel.addEventListener('click', () => {
+      try { applySettingsToForm(SETTINGS); } catch (_) {}
+      setMode(LAST_NON_SETTINGS_MODE || 'tour');
+    });
+  }
+
+  if (settingsSave) {
+    settingsSave.addEventListener('click', () => {
+      SETTINGS = readSettingsFromForm(SETTINGS);
+      saveSettings(SETTINGS);
+      STEP_KM = SETTINGS.stepKm;
+      setMode(LAST_NON_SETTINGS_MODE || 'tour');
+      loadMap();
+    });
+  }
   // Share snapshot: capture full window and share/copy/download
   (function initShare(){
     if (!shareBtn) return;
