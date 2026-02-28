@@ -74,8 +74,15 @@
   const setTentHours = document.getElementById('setTentHours');
   const setWindWeighting = document.getElementById('setWindWeighting');
 
-  const strategicDateInput = document.getElementById('strategicDate');
+  const strategicDayLabel = document.getElementById('strategicDayLabel');
+  const strategicTimelineLabel = document.getElementById('strategicTimelineLabel');
+  const strategicDaySlider = document.getElementById('strategicDaySlider');
+  const strategicPlayBtn = document.getElementById('strategicPlay');
+  const strategicSpeed = document.getElementById('strategicSpeed');
+  const strategicMonthTicks = document.getElementById('strategicMonthTicks');
   const strategicLayerSelect = document.getElementById('strategicLayer');
+  const strategicWindOn = document.getElementById('strategicWindOn');
+  const strategicWindMode = document.getElementById('strategicWindMode');
   const settingsCancel = document.getElementById('settingsCancel');
   const settingsSave = document.getElementById('settingsSave');
   const progressEl = document.getElementById('progress');
@@ -184,10 +191,7 @@
   if (!startDateInput.value) {
     startDateInput.value = today.toISOString().slice(0,10);
   }
-  // Default Strategic date to today if empty
-  if (strategicDateInput && !strategicDateInput.value) {
-    strategicDateInput.value = today.toISOString().slice(0,10);
-  }
+  // Climatic map day is driven by the bottom slider (initialized below).
 
   // Mode navigation is wired externally (inlined in index.html).
 
@@ -630,6 +634,10 @@
     if (m !== 'settings') LAST_NON_SETTINGS_MODE = m;
     try { document.body.dataset.mode = m; } catch (_) {}
 
+    try {
+      strategicSetActive && strategicSetActive(m === 'climate');
+    } catch (_) {}
+
     // Map needs a resize nudge when toggling profile/map visibility.
     if (m !== 'settings') {
       setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 60);
@@ -641,6 +649,845 @@
     }
   }
   try { window.setMode = setMode; } catch (_) {}
+
+  // -------------------- Climatic Map (Strategic) --------------------
+  const STRATEGIC_DEFAULT_YEAR = 2025;
+  const STRATEGIC_CROSSFADE_MS = 300;
+  const STRATEGIC_FETCH_THROTTLE_MS = 180;
+
+  function _clamp01(t) {
+    if (t < 0) return 0;
+    if (t > 1) return 1;
+    return t;
+  }
+  function _lerp(a, b, t) {
+    return a + (b - a) * t;
+  }
+  function _lerpColor(c0, c1, t) {
+    return {
+      r: Math.round(_lerp(c0.r, c1.r, t)),
+      g: Math.round(_lerp(c0.g, c1.g, t)),
+      b: Math.round(_lerp(c0.b, c1.b, t)),
+    };
+  }
+
+  function _paletteSample(stops, t) {
+    // stops: [{t:0..1, c:{r,g,b}}]
+    const tt = _clamp01(t);
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i];
+      const b = stops[i + 1];
+      if (tt >= a.t && tt <= b.t) {
+        const u = (tt - a.t) / Math.max(1e-9, (b.t - a.t));
+        return _lerpColor(a.c, b.c, u);
+      }
+    }
+    return (tt <= stops[0].t) ? stops[0].c : stops[stops.length - 1].c;
+  }
+
+  // Apple-like palettes
+  const PAL_TEMP = [
+    { t: 0.00, c: { r: 15, g: 45, b: 120 } },
+    { t: 0.18, c: { r: 70, g: 130, b: 220 } },
+    { t: 0.38, c: { r: 60, g: 185, b: 140 } },
+    { t: 0.55, c: { r: 240, g: 225, b: 90 } },
+    { t: 0.72, c: { r: 245, g: 160, b: 70 } },
+    { t: 1.00, c: { r: 210, g: 50, b: 45 } },
+  ];
+  const PAL_RAIN = [
+    { t: 0.00, c: { r: 120, g: 200, b: 255 } },
+    { t: 0.45, c: { r: 70, g: 140, b: 235 } },
+    { t: 1.00, c: { r: 55, g: 70, b: 190 } },
+  ];
+  const PAL_COMFORT = [
+    { t: 0.00, c: { r: 210, g: 55, b: 45 } },
+    { t: 0.35, c: { r: 245, g: 140, b: 55 } },
+    { t: 0.70, c: { r: 245, g: 220, b: 90 } },
+    { t: 1.00, c: { r: 60, g: 170, b: 110 } },
+  ];
+  const PAL_WIND = [
+    { t: 0.00, c: { r: 200, g: 215, b: 225 } },
+    { t: 1.00, c: { r: 90, g: 115, b: 140 } },
+  ];
+
+  function _buildYearDates(year) {
+    const y = Number(year);
+    const start = new Date(Date.UTC(y, 0, 1));
+    const end = new Date(Date.UTC(y + 1, 0, 1));
+    const dates = [];
+    for (let d = new Date(start); d < end; d = new Date(d.getTime() + 24 * 3600 * 1000)) {
+      const iso = d.toISOString().slice(0, 10);
+      const mm = d.getUTCMonth() + 1;
+      const dd = d.getUTCDate();
+      const label = `${String(dd).padStart(2, '0')}.${String(mm).padStart(2, '0')}.${y}`;
+      dates.push({ iso, month: mm, day: dd, label });
+    }
+    return dates;
+  }
+
+  function _monthStartsForYearDates(dates) {
+    const starts = [];
+    for (let i = 0; i < dates.length; i++) {
+      const d = dates[i];
+      if (d.day === 1) starts.push({ idx: i, month: d.month });
+    }
+    return starts;
+  }
+
+  function _renderMonthTicks(dates) {
+    if (!strategicMonthTicks) return;
+    strategicMonthTicks.innerHTML = '';
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const starts = _monthStartsForYearDates(dates);
+    const n = Math.max(1, dates.length - 1);
+    starts.forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'wm-tick wm-major';
+      el.style.left = `${(s.idx / n) * 100}%`;
+      strategicMonthTicks.appendChild(el);
+
+      const lab = document.createElement('div');
+      lab.className = 'wm-month-label';
+      lab.style.left = `${(s.idx / n) * 100}%`;
+      lab.textContent = monthNames[(s.month - 1) % 12];
+      strategicMonthTicks.appendChild(lab);
+    });
+  }
+
+  function _fmtISO(iso) {
+    try {
+      const d = new Date(iso);
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const yy = String(d.getUTCFullYear());
+      return `${dd}.${mm}.${yy}`;
+    } catch (_) {
+      return String(iso);
+    }
+  }
+
+  function _comfortScore(tempC, rainMm, windMs, isTent) {
+    const tCold = Number(SETTINGS.tempCold);
+    const tHot = Number(SETTINGS.tempHot);
+    const rMax = Number(SETTINGS.rainHigh);
+    const wMax = Number(SETTINGS.windHeadComfort);
+    const t = Number(tempC);
+    const r = Math.max(0, Number(rainMm));
+    const w = Math.max(0, Number(windMs));
+    if (!Number.isFinite(t) || !Number.isFinite(r) || !Number.isFinite(w)) return null;
+
+    // Temperature: strong mid-range contrast (10–25°C) by using tighter falloff.
+    const fall = isTent ? 12 : 10;
+    let tScore = 1.0;
+    if (t < tCold) tScore = _clamp01(1 - (tCold - t) / fall);
+    if (t > tHot) tScore = _clamp01(1 - (t - tHot) / fall);
+
+    const rHi = Math.max(0.1, rMax);
+    const wHi = Math.max(0.1, wMax);
+    const rScore = _clamp01(1 - (r / (2.0 * rHi)));
+    const wScore = _clamp01(1 - (w / (2.0 * wHi)));
+
+    const score = Math.pow(_clamp01(tScore), 1.0) * Math.pow(_clamp01(rScore), 1.1) * Math.pow(_clamp01(wScore), 1.0);
+    return _clamp01(score);
+  }
+
+  function _makeHeatLayer() {
+    const Layer = L.Layer.extend({
+      onAdd: function(m) {
+        this._map = m;
+        this._container = L.DomUtil.create('div', 'wm-strategic-heat');
+        this._container.style.position = 'absolute';
+        this._container.style.left = '0';
+        this._container.style.top = '0';
+        this._container.style.pointerEvents = 'none';
+
+        this._cA = L.DomUtil.create('canvas', '', this._container);
+        this._cB = L.DomUtil.create('canvas', '', this._container);
+        [this._cA, this._cB].forEach(c => {
+          c.style.position = 'absolute';
+          c.style.left = '0';
+          c.style.top = '0';
+          c.style.width = '100%';
+          c.style.height = '100%';
+          c.style.opacity = '0';
+          c.style.transition = `opacity ${STRATEGIC_CROSSFADE_MS}ms ease`;
+        });
+        this._front = this._cA;
+        this._back = this._cB;
+        this._front.style.opacity = '1';
+        this._back.style.opacity = '0';
+
+        m.getPanes().overlayPane.appendChild(this._container);
+        m.on('moveend zoomend resize', this._reset, this);
+        this._reset();
+      },
+      onRemove: function(m) {
+        m.off('moveend zoomend resize', this._reset, this);
+        try { this._container && this._container.remove(); } catch (_) {}
+        this._map = null;
+      },
+      _reset: function() {
+        if (!this._map || !this._container) return;
+        const size = this._map.getSize();
+        const dpr = (window.devicePixelRatio || 1);
+        this._container.style.width = `${size.x}px`;
+        this._container.style.height = `${size.y}px`;
+        [this._cA, this._cB].forEach(c => {
+          c.width = Math.max(1, Math.floor(size.x * dpr));
+          c.height = Math.max(1, Math.floor(size.y * dpr));
+        });
+      },
+      drawWith: function(drawFn) {
+        if (!this._map) return;
+        this._reset();
+        const dpr = (window.devicePixelRatio || 1);
+        const ctx = this._back.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._back.width, this._back.height);
+        ctx.scale(dpr, dpr);
+        try { drawFn(ctx, this._map.getSize()); } catch (e) { console.error('strategic draw', e); }
+
+        // Crossfade
+        this._back.style.opacity = '1';
+        this._front.style.opacity = '0';
+        const prevFront = this._front;
+        this._front = this._back;
+        this._back = prevFront;
+      },
+    });
+    return new Layer();
+  }
+
+  function _makeWindLayer() {
+    const Layer = L.Layer.extend({
+      onAdd: function(m) {
+        this._map = m;
+        this._container = L.DomUtil.create('div', 'wm-strategic-wind');
+        this._container.style.position = 'absolute';
+        this._container.style.left = '0';
+        this._container.style.top = '0';
+        this._container.style.pointerEvents = 'none';
+        this._canvas = L.DomUtil.create('canvas', '', this._container);
+          this._canvas.style.position = 'absolute';
+        this._canvas.style.left = '0';
+        this._canvas.style.top = '0';
+        this._canvas.style.width = '100%';
+        this._canvas.style.height = '100%';
+        this._anim = null;
+        this._particles = [];
+        m.getPanes().overlayPane.appendChild(this._container);
+        m.on('moveend zoomend resize', this._reset, this);
+        this._reset();
+      },
+      onRemove: function(m) {
+        m.off('moveend zoomend resize', this._reset, this);
+        this.stop();
+        try { this._container && this._container.remove(); } catch (_) {}
+        this._map = null;
+      },
+      _reset: function() {
+        if (!this._map || !this._container) return;
+        const size = this._map.getSize();
+        const dpr = (window.devicePixelRatio || 1);
+        this._container.style.width = `${size.x}px`;
+        this._container.style.height = `${size.y}px`;
+        this._canvas.width = Math.max(1, Math.floor(size.x * dpr));
+        this._canvas.height = Math.max(1, Math.floor(size.y * dpr));
+      },
+      stop: function() {
+        if (this._anim) {
+          try { cancelAnimationFrame(this._anim); } catch (_) {}
+          this._anim = null;
+        }
+      },
+      clear: function() {
+        const ctx = this._canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+      },
+      drawArrows: function(points, sampleFn) {
+        this.stop();
+        this._reset();
+        const m = this._map;
+        if (!m) return;
+        const dpr = (window.devicePixelRatio || 1);
+        const ctx = this._canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+        ctx.scale(dpr, dpr);
+
+        const z = m.getZoom();
+        const baseStep = Math.max(1, Math.round(60 - Math.min(10, Math.max(0, z - 5)) * 4));
+        const density = Math.max(1, Number(SETTINGS.windDensity) || 40);
+        const stride = Math.max(1, Math.round(baseStep * 40 / density));
+        const col = 'rgba(90,115,140,0.65)';
+        ctx.strokeStyle = col;
+        ctx.fillStyle = col;
+        ctx.lineWidth = 1.2;
+
+        let i = 0;
+        for (const p of (points || [])) {
+          i++;
+          if (stride > 1 && (i % stride) !== 0) continue;
+          const lat = Number(p.lat);
+          const lon = Number(p.lon);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+          const s = sampleFn(lat, lon);
+          if (!s || !Number.isFinite(s.wind_speed_ms) || !Number.isFinite(s.wind_dir_deg)) continue;
+          const pt = m.latLngToContainerPoint([lat, lon]);
+          const x = pt.x;
+          const y = pt.y;
+          const sp = Math.max(0, Number(s.wind_speed_ms));
+          const varDeg = Number(s.wind_var_deg);
+          const alpha = (Number.isFinite(varDeg) ? _clamp01(1 - (varDeg / 90)) : 0.7);
+          const len = 8 + Math.min(18, sp * 1.6);
+          // wind_dir_deg is FROM; show TO
+          const theta = ((Number(s.wind_dir_deg) + 180) % 360) * Math.PI / 180;
+          const dx = Math.sin(theta) * len;
+          const dy = -Math.cos(theta) * len;
+          ctx.globalAlpha = 0.25 + 0.65 * alpha;
+          ctx.beginPath();
+          ctx.moveTo(x - dx * 0.5, y - dy * 0.5);
+          ctx.lineTo(x + dx * 0.5, y + dy * 0.5);
+          ctx.stroke();
+          // arrow head
+          const hx = x + dx * 0.5;
+          const hy = y + dy * 0.5;
+          const a = Math.atan2(dy, dx);
+          const ah = 4;
+          ctx.beginPath();
+          ctx.moveTo(hx, hy);
+          ctx.lineTo(hx - Math.cos(a - 0.6) * ah, hy - Math.sin(a - 0.6) * ah);
+          ctx.lineTo(hx - Math.cos(a + 0.6) * ah, hy - Math.sin(a + 0.6) * ah);
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      },
+      startFlow: function(sampleFn) {
+        this.stop();
+        this._reset();
+        const m = this._map;
+        if (!m) return;
+        const dpr = (window.devicePixelRatio || 1);
+        const ctx = this._canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+        ctx.scale(dpr, dpr);
+
+        const size = m.getSize();
+        const speedMul = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
+        const density = Math.max(50, Math.min(1200, Math.round((Number(SETTINGS.windDensity) || 40) * 12)));
+        this._particles = [];
+        for (let i = 0; i < density; i++) {
+          this._particles.push({ x: Math.random() * size.x, y: Math.random() * size.y, a: Math.random() });
+        }
+
+        const step = () => {
+          if (!this._map) return;
+          const m2 = this._map;
+          const sz = m2.getSize();
+          // Fade trails without tinting the map (reduce alpha only)
+          ctx.globalCompositeOperation = 'destination-in';
+          ctx.fillStyle = 'rgba(0,0,0,0.90)';
+          ctx.fillRect(0, 0, sz.x, sz.y);
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.strokeStyle = 'rgba(90,115,140,0.26)';
+          ctx.lineWidth = 1;
+
+          const animSpd = Math.max(0.1, Number(SETTINGS.animSpeed) || 1.0) * speedMul;
+          for (const p of this._particles) {
+            const x0 = p.x;
+            const y0 = p.y;
+            const ll = m2.containerPointToLatLng([x0, y0]);
+            const s = sampleFn(ll.lat, ll.lng);
+            if (!s || !Number.isFinite(s.wind_speed_ms) || !Number.isFinite(s.wind_dir_deg)) {
+              p.x = Math.random() * sz.x; p.y = Math.random() * sz.y;
+              continue;
+            }
+            const sp = Math.max(0, Number(s.wind_speed_ms));
+            const theta = ((Number(s.wind_dir_deg) + 180) % 360) * Math.PI / 180;
+            const mag = (0.35 + 0.10 * sp) * animSpd;
+            p.x += Math.sin(theta) * mag;
+            p.y += -Math.cos(theta) * mag;
+            if (p.x < 0 || p.x > sz.x || p.y < 0 || p.y > sz.y) {
+              p.x = Math.random() * sz.x; p.y = Math.random() * sz.y;
+              continue;
+            }
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(p.x, p.y);
+            ctx.stroke();
+          }
+          this._anim = requestAnimationFrame(step);
+        };
+        this._anim = requestAnimationFrame(step);
+      },
+    });
+    return new Layer();
+  }
+
+  const STRATEGIC_STATE = {
+    active: false,
+    year: Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR),
+    dates: [],
+    dayIndex: 0,
+    layer: (strategicLayerSelect && strategicLayerSelect.value) ? strategicLayerSelect.value : 'temperature_ride',
+    windOn: false,
+    windMode: (strategicWindMode && strategicWindMode.value) ? strategicWindMode.value : 'flow',
+    playing: false,
+    playTimer: null,
+    lastResp: null,
+    lastFetchAt: 0,
+    pendingFetch: null,
+    heatLayer: null,
+    windLayer: null,
+  };
+
+  function _strategicSetLabels() {
+    const d = STRATEGIC_STATE.dates[STRATEGIC_STATE.dayIndex];
+    const txt = d ? d.label : '—';
+    if (strategicDayLabel) strategicDayLabel.textContent = txt;
+    if (strategicTimelineLabel) strategicTimelineLabel.textContent = d ? _fmtISO(d.iso) : '—';
+  }
+
+  function _strategicSetYear(year) {
+    STRATEGIC_STATE.year = Number(year || STRATEGIC_DEFAULT_YEAR);
+    STRATEGIC_STATE.dates = _buildYearDates(STRATEGIC_STATE.year);
+    if (strategicDaySlider) {
+      strategicDaySlider.min = '0';
+      strategicDaySlider.max = String(Math.max(0, STRATEGIC_STATE.dates.length - 1));
+    }
+    _renderMonthTicks(STRATEGIC_STATE.dates);
+  }
+
+  function _strategicSetDayIndex(idx) {
+    const n = STRATEGIC_STATE.dates.length;
+    if (!n) return;
+    const i = Math.max(0, Math.min(n - 1, Math.round(Number(idx) || 0)));
+    STRATEGIC_STATE.dayIndex = i;
+    if (strategicDaySlider) strategicDaySlider.value = String(i);
+    _strategicSetLabels();
+  }
+
+  function _strategicCurrentISO() {
+    const d = STRATEGIC_STATE.dates[STRATEGIC_STATE.dayIndex];
+    return d ? d.iso : null;
+  }
+
+  function _bboxFromResp(resp) {
+    try {
+      const b = resp && resp.bbox;
+      if (Array.isArray(b) && b.length >= 4) {
+        return { latMin: Number(b[0]), latMax: Number(b[1]), lonMin: Number(b[2]), lonMax: Number(b[3]) };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function _makeTileMap(points) {
+    const m = new Map();
+    for (const p of (points || [])) {
+      if (p && p.tile_id) m.set(String(p.tile_id), p);
+    }
+    return m;
+  }
+
+  function _sampleInterpolated(tileMap, meta, lat, lon) {
+    if (!tileMap || !meta) return null;
+    const bbox = meta.bbox;
+    const tileKm = meta.tile_km;
+    if (!bbox || !Number.isFinite(tileKm)) return null;
+    const latMin = bbox.latMin;
+    const lonMin = bbox.lonMin;
+    const stepLat = tileKm / 111.32;
+    const row0 = Math.floor((lat - latMin) / stepLat);
+    const latC0 = latMin + (row0 + 0.5) * stepLat;
+    const latC1 = latC0 + stepLat;
+    const tLat = _clamp01((lat - latC0) / Math.max(1e-9, (latC1 - latC0)));
+
+    function rowValue(row, latC) {
+      const c = Math.max(0.05, Math.cos(latC * Math.PI / 180));
+      const stepLon = tileKm / (111.32 * c);
+      const col0 = Math.floor((lon - lonMin) / stepLon);
+      const lonC0 = lonMin + (col0 + 0.5) * stepLon;
+      const lonC1 = lonC0 + stepLon;
+      const tLon = _clamp01((lon - lonC0) / Math.max(1e-9, (lonC1 - lonC0)));
+      const id00 = `r${row}_c${col0}`;
+      const id01 = `r${row}_c${col0 + 1}`;
+      const p00 = tileMap.get(id00);
+      const p01 = tileMap.get(id01);
+      if (!p00 && !p01) return null;
+
+      // Optional nearest-neighbor sampling (debug setting)
+      if (SETTINGS && SETTINGS.interpolation === false) {
+        const p = p00 || p01;
+        if (!p) return null;
+        return {
+          temperature_c: Number(p.temperature_c),
+          precipitation_mm: Number(p.precipitation_mm),
+          rain_probability: Number(p.rain_probability),
+          rain_typical_mm: Number(p.rain_typical_mm),
+          wind_speed_ms: Number(p.wind_speed_ms),
+          wind_dir_deg: Number(p.wind_dir_deg),
+          wind_var_deg: Number(p.wind_var_deg),
+          temp_day_median: Number(p.temp_day_median),
+          temp_day_p25: Number(p.temp_day_p25),
+          temp_day_p75: Number(p.temp_day_p75),
+        };
+      }
+
+      function num(p, k) {
+        if (!p) return null;
+        const v = Number(p[k]);
+        return Number.isFinite(v) ? v : null;
+      }
+
+      const keys = ['temperature_c','precipitation_mm','rain_probability','rain_typical_mm','wind_speed_ms','wind_dir_deg','wind_var_deg','temp_day_median','temp_day_p25','temp_day_p75'];
+      const out = {};
+      for (const k of keys) {
+        const a = num(p00, k);
+        const b = num(p01, k);
+        if (a === null && b === null) { out[k] = null; continue; }
+        if (a === null) { out[k] = b; continue; }
+        if (b === null) { out[k] = a; continue; }
+        // Special handling for circular wind direction
+        if (k === 'wind_dir_deg') {
+          const ang0 = a * Math.PI / 180;
+          const ang1 = b * Math.PI / 180;
+          const x = _lerp(Math.cos(ang0), Math.cos(ang1), tLon);
+          const y = _lerp(Math.sin(ang0), Math.sin(ang1), tLon);
+          let deg = (Math.atan2(y, x) * 180 / Math.PI);
+          if (deg < 0) deg += 360;
+          out[k] = deg;
+          continue;
+        }
+        out[k] = _lerp(a, b, tLon);
+      }
+      return out;
+    }
+
+    const v0 = rowValue(row0, latC0);
+    const v1 = rowValue(row0 + 1, latC1);
+    if (!v0 && !v1) return null;
+    if (!v0) return v1;
+    if (!v1) return v0;
+
+    const keys = Object.keys(v0);
+    const out = {};
+    for (const k of keys) {
+      const a = v0[k];
+      const b = v1[k];
+      if (a === null && b === null) { out[k] = null; continue; }
+      if (a === null) { out[k] = b; continue; }
+      if (b === null) { out[k] = a; continue; }
+      if (k === 'wind_dir_deg') {
+        const ang0 = a * Math.PI / 180;
+        const ang1 = b * Math.PI / 180;
+        const x = _lerp(Math.cos(ang0), Math.cos(ang1), tLat);
+        const y = _lerp(Math.sin(ang0), Math.sin(ang1), tLat);
+        let deg = (Math.atan2(y, x) * 180 / Math.PI);
+        if (deg < 0) deg += 360;
+        out[k] = deg;
+        continue;
+      }
+      out[k] = _lerp(a, b, tLat);
+    }
+    return out;
+  }
+
+  function _heatColorFor(layer, s) {
+    if (!s) return null;
+    if (layer === 'temperature_ride') {
+      const t = Number(s.temp_day_median);
+      if (!Number.isFinite(t)) return null;
+      // Stronger mid-range contrast: map 10..25C into wider palette space.
+      const tMin = -5;
+      const tMax = 35;
+      let u = (t - tMin) / (tMax - tMin);
+      // Nonlinear boost around mid
+      u = Math.pow(_clamp01(u), 0.85);
+      const c = _paletteSample(PAL_TEMP, u);
+      return { ...c, a: 0.78 };
+    }
+    if (layer === 'rain_ride') {
+      const r = Math.max(0, Number(s.precipitation_mm));
+      if (!Number.isFinite(r)) return null;
+      const rMax = 20;
+      const u = _clamp01(r / rMax);
+      const c = _paletteSample(PAL_RAIN, u);
+      const a = _clamp01(u * 0.85);
+      return { ...c, a };
+    }
+    if (layer === 'rain_tent') {
+      const r = Math.max(0, Number(s.rain_typical_mm));
+      if (!Number.isFinite(r)) return null;
+      const rMax = 12;
+      const u = _clamp01(r / rMax);
+      const c = _paletteSample(PAL_RAIN, u);
+      const a = _clamp01(u * 0.85);
+      return { ...c, a };
+    }
+    if (layer === 'wind_speed') {
+      const w = Math.max(0, Number(s.wind_speed_ms));
+      if (!Number.isFinite(w)) return null;
+      const wMax = 16;
+      const u = _clamp01(w / wMax);
+      const c = _paletteSample(PAL_WIND, u);
+      return { ...c, a: 0.62 };
+    }
+    if (layer === 'wind_dir') {
+      // direction is visualized via wind overlay; keep base transparent
+      return { r: 0, g: 0, b: 0, a: 0 };
+    }
+    if (layer === 'comfort_ride' || layer === 'comfort_tent') {
+      const isTent = (layer === 'comfort_tent');
+      const t = (layer === 'comfort_tent') ? Number(s.temperature_c) : Number(s.temp_day_median);
+      const r = isTent ? Number(s.rain_typical_mm) : Number(s.precipitation_mm);
+      const w = Number(s.wind_speed_ms);
+      const score = _comfortScore(t, r, w, isTent);
+      if (score === null) return null;
+      const c = _paletteSample(PAL_COMFORT, score);
+      return { ...c, a: 0.74 };
+    }
+    return null;
+  }
+
+  async function _fetchStrategicGrid() {
+    if (!STRATEGIC_STATE.active) return;
+    const iso = _strategicCurrentISO();
+    if (!iso) return;
+    const b = map.getBounds();
+    const latMin = b.getSouth();
+    const latMax = b.getNorth();
+    const lonMin = b.getWest();
+    const lonMax = b.getEast();
+    const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(iso)}`
+      + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
+      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
+    const t0 = Date.now();
+    const resp = await fetch(url);
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
+    STRATEGIC_STATE.lastResp = j;
+    STRATEGIC_STATE.lastFetchAt = t0;
+  }
+
+  function _renderStrategic() {
+    if (!STRATEGIC_STATE.active) return;
+    const resp = STRATEGIC_STATE.lastResp;
+    if (!resp || !resp.points) return;
+    if (!STRATEGIC_STATE.heatLayer) return;
+
+    const bboxRaw = _bboxFromResp(resp);
+    const tileKm = Number(resp.tile_km || 50);
+    const meta = bboxRaw ? { bbox: bboxRaw, tile_km: tileKm } : null;
+    const tileMap = _makeTileMap(resp.points);
+    const layer = STRATEGIC_STATE.layer;
+
+    STRATEGIC_STATE.heatLayer.drawWith((ctx, size) => {
+      const w = size.x;
+      const h = size.y;
+      // Render at reduced resolution then upscale for smoothness
+      const target = Math.max(260, Math.min(520, Math.round(Math.min(w, h) * 0.55)));
+      const offW = Math.round(target * (w / Math.max(1, Math.min(w, h))));
+      const offH = Math.round(target * (h / Math.max(1, Math.min(w, h))));
+      const off = document.createElement('canvas');
+      off.width = Math.max(1, offW);
+      off.height = Math.max(1, offH);
+      const octx = off.getContext('2d');
+      if (!octx) return;
+      const img = octx.createImageData(off.width, off.height);
+      const data = img.data;
+      const sx = w / off.width;
+      const sy = h / off.height;
+      for (let y = 0; y < off.height; y++) {
+        for (let x = 0; x < off.width; x++) {
+          const cx = x * sx;
+          const cy = y * sy;
+          const ll = map.containerPointToLatLng([cx, cy]);
+          const s = _sampleInterpolated(tileMap, meta, ll.lat, ll.lng);
+          const col = _heatColorFor(layer, s);
+          const idx = (y * off.width + x) * 4;
+          if (!col) {
+            data[idx + 3] = 0;
+            continue;
+          }
+          data[idx + 0] = col.r;
+          data[idx + 1] = col.g;
+          data[idx + 2] = col.b;
+          data[idx + 3] = Math.round(255 * _clamp01(col.a));
+        }
+      }
+      octx.putImageData(img, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(off, 0, 0, w, h);
+    });
+
+    // Wind overlay
+    const wantWind = Boolean(STRATEGIC_STATE.windOn) || (layer === 'wind_dir');
+    if (strategicWindOn && layer === 'wind_dir' && !strategicWindOn.checked) {
+      strategicWindOn.checked = true;
+      STRATEGIC_STATE.windOn = true;
+    }
+    if (STRATEGIC_STATE.windLayer) {
+      if (!wantWind) {
+        STRATEGIC_STATE.windLayer.stop();
+        STRATEGIC_STATE.windLayer.clear();
+      } else {
+        const sampleFn = (lat, lon) => _sampleInterpolated(tileMap, meta, lat, lon);
+        const mode = STRATEGIC_STATE.windMode;
+        if (mode === 'arrows') {
+          STRATEGIC_STATE.windLayer.drawArrows(resp.points, sampleFn);
+        } else {
+          STRATEGIC_STATE.windLayer.clear();
+          STRATEGIC_STATE.windLayer.startFlow(sampleFn);
+        }
+      }
+    }
+  }
+
+  function _scheduleStrategicFetch() {
+    if (!STRATEGIC_STATE.active) return;
+    const now = Date.now();
+    if (STRATEGIC_STATE.pendingFetch) return;
+    const dt = now - (STRATEGIC_STATE.lastFetchAt || 0);
+    const delay = Math.max(0, STRATEGIC_FETCH_THROTTLE_MS - dt);
+    STRATEGIC_STATE.pendingFetch = setTimeout(async () => {
+      STRATEGIC_STATE.pendingFetch = null;
+      try {
+        await _fetchStrategicGrid();
+        _renderStrategic();
+      } catch (e) {
+        console.error('strategic fetch', e);
+      }
+    }, delay);
+  }
+
+  function strategicSetActive(active) {
+    const on = Boolean(active);
+    if (STRATEGIC_STATE.active === on) return;
+    STRATEGIC_STATE.active = on;
+
+    if (on) {
+      _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR));
+      // Default day: today mapped into selected year (month/day)
+      try {
+        const today = new Date();
+        const y = STRATEGIC_STATE.year;
+        const iso = `${y}-${String(today.getMonth() + 1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+        const idx = STRATEGIC_STATE.dates.findIndex(d => d.iso === iso);
+        _strategicSetDayIndex(idx >= 0 ? idx : 0);
+      } catch (_) {
+        _strategicSetDayIndex(0);
+      }
+      if (strategicLayerSelect) STRATEGIC_STATE.layer = strategicLayerSelect.value;
+      if (strategicWindMode) STRATEGIC_STATE.windMode = strategicWindMode.value;
+      if (strategicWindOn) {
+        // Default: wind overlay on for wind layer, off otherwise
+        const want = (STRATEGIC_STATE.layer === 'wind_speed');
+        strategicWindOn.checked = want;
+        STRATEGIC_STATE.windOn = want;
+      }
+
+      if (!STRATEGIC_STATE.heatLayer) STRATEGIC_STATE.heatLayer = _makeHeatLayer();
+      if (!STRATEGIC_STATE.windLayer) STRATEGIC_STATE.windLayer = _makeWindLayer();
+      try { STRATEGIC_STATE.heatLayer.addTo(map); } catch (_) {}
+      try { STRATEGIC_STATE.windLayer.addTo(map); } catch (_) {}
+
+      _scheduleStrategicFetch();
+    } else {
+      STRATEGIC_STATE.playing = false;
+      if (STRATEGIC_STATE.playTimer) {
+        try { clearTimeout(STRATEGIC_STATE.playTimer); } catch (_) {}
+        STRATEGIC_STATE.playTimer = null;
+      }
+      if (STRATEGIC_STATE.pendingFetch) {
+        try { clearTimeout(STRATEGIC_STATE.pendingFetch); } catch (_) {}
+        STRATEGIC_STATE.pendingFetch = null;
+      }
+      if (STRATEGIC_STATE.windLayer) {
+        STRATEGIC_STATE.windLayer.stop();
+        STRATEGIC_STATE.windLayer.clear();
+        try { map.removeLayer(STRATEGIC_STATE.windLayer); } catch (_) {}
+      }
+      if (STRATEGIC_STATE.heatLayer) {
+        try { map.removeLayer(STRATEGIC_STATE.heatLayer); } catch (_) {}
+      }
+    }
+  }
+
+  // UI wiring
+  if (strategicLayerSelect) {
+    strategicLayerSelect.addEventListener('change', () => {
+      STRATEGIC_STATE.layer = strategicLayerSelect.value;
+      if (strategicWindOn && STRATEGIC_STATE.layer === 'wind_speed' && !strategicWindOn.checked) {
+        strategicWindOn.checked = true;
+        STRATEGIC_STATE.windOn = true;
+      }
+      _renderStrategic();
+    });
+  }
+  if (strategicWindOn) {
+    strategicWindOn.addEventListener('change', () => {
+      STRATEGIC_STATE.windOn = Boolean(strategicWindOn.checked);
+      _renderStrategic();
+    });
+  }
+  if (strategicWindMode) {
+    strategicWindMode.addEventListener('change', () => {
+      STRATEGIC_STATE.windMode = strategicWindMode.value;
+      _renderStrategic();
+    });
+  }
+  if (strategicDaySlider) {
+    strategicDaySlider.addEventListener('input', () => {
+      _strategicSetDayIndex(strategicDaySlider.value);
+      _scheduleStrategicFetch();
+    });
+  }
+  if (strategicPlayBtn) {
+    strategicPlayBtn.addEventListener('click', () => {
+      STRATEGIC_STATE.playing = !STRATEGIC_STATE.playing;
+      strategicPlayBtn.textContent = STRATEGIC_STATE.playing ? 'Pause' : 'Play';
+      if (STRATEGIC_STATE.playTimer) {
+        try { clearTimeout(STRATEGIC_STATE.playTimer); } catch (_) {}
+        STRATEGIC_STATE.playTimer = null;
+      }
+      if (STRATEGIC_STATE.playing) {
+        const tick = () => {
+          if (!STRATEGIC_STATE.playing) return;
+          const sp = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
+          const n = STRATEGIC_STATE.dates.length;
+          if (n) {
+            let i = STRATEGIC_STATE.dayIndex + 1;
+            if (i >= n) i = 0;
+            _strategicSetDayIndex(i);
+            _scheduleStrategicFetch();
+          }
+          const delay = Math.round(650 / sp);
+          STRATEGIC_STATE.playTimer = setTimeout(tick, delay);
+        };
+        const sp0 = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
+        STRATEGIC_STATE.playTimer = setTimeout(tick, Math.round(200 / sp0));
+      }
+    });
+  }
+  if (strategicSpeed) {
+    strategicSpeed.addEventListener('input', () => {
+      // take effect next interval; flow overlay also reads this for motion scaling
+    });
+  }
+
+  map.on('moveend zoomend', () => {
+    if (!STRATEGIC_STATE.active) return;
+    _scheduleStrategicFetch();
+  });
 
   // Settings view wiring
   function applySettingsToForm(s) {

@@ -5,6 +5,7 @@ import os
 import time
 import threading
 import pandas as pd
+import datetime as _dt
 
 
 def _json_default(obj: Any):
@@ -79,6 +80,8 @@ log = logging.getLogger('pipeline')
 
 _OFFLINE_STORE: Optional[Any] = None
 _OFFLINE_STORE_TRIED = False
+_OFFLINE_STORES_BY_YEAR: Dict[int, Any] = {}
+_OFFLINE_STORES_BY_YEAR_LOCK = threading.Lock()
 
 
 def _offline_strict_enabled() -> bool:
@@ -110,6 +113,144 @@ def _get_offline_store() -> Optional[Any]:
         if os.environ.get('OFFLINE_WEATHER_DB') or _offline_strict_enabled():
             log.warning('[OFFLINE] requested but unavailable (db missing/invalid)')
     return _OFFLINE_STORE
+
+
+def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
+    """Return an OfflineWeatherStore for a specific year DB if present.
+
+    This is used by the Strategic/Climatic map, which defaults to year=2025.
+    Falls back to the default offline store selection when the year-specific DB
+    doesn't exist.
+    """
+    # If caller doesn't specify a year, use default selection logic.
+    if year is None:
+        return _get_offline_store()
+
+    try:
+        y = int(year)
+    except Exception:
+        return _get_offline_store()
+
+    with _OFFLINE_STORES_BY_YEAR_LOCK:
+        if y in _OFFLINE_STORES_BY_YEAR:
+            return _OFFLINE_STORES_BY_YEAR[y]
+
+    # Build candidate path: project/cache/offline_weather_<year>.sqlite
+    try:
+        if OfflineWeatherStore is not None:
+            p = Path('project/cache') / f'offline_weather_{y}.sqlite'
+            if p.exists():
+                cfg = OfflineWeatherStore._load_config(p)  # type: ignore[attr-defined]
+                if cfg is not None:
+                    store = OfflineWeatherStore(cfg)
+                    with _OFFLINE_STORES_BY_YEAR_LOCK:
+                        _OFFLINE_STORES_BY_YEAR[y] = store
+                    try:
+                        log.info('[OFFLINE][STRATEGIC] enabled year=%d db=%s', y, p)
+                    except Exception:
+                        pass
+                    return store
+    except Exception:
+        pass
+
+    # Fallback
+    return _get_offline_store()
+
+
+def _parse_mmdd_or_date(raw: str) -> tuple[int, int]:
+    s = str(raw).strip()
+    if len(s) == 10 and s[4] == '-' and s[7] == '-':
+        d = _dt.date.fromisoformat(s)
+        return int(d.month), int(d.day)
+    if len(s) == 5 and s[2] == '-':
+        m, d = s.split('-', 1)
+        return int(m), int(d)
+    raise ValueError('Invalid date; expected YYYY-MM-DD or MM-DD')
+
+
+@app.route('/api/strategic_grid')
+def api_strategic_grid():
+    """Strategic/Climatic map: return offline grid nodes + climatology for a day.
+
+    Query params:
+      - date: YYYY-MM-DD or MM-DD (required)
+      - year: int (optional; default 2025)
+      - lat_min, lat_max, lon_min, lon_max: viewport bounds (required)
+    """
+    if OfflineWeatherStore is None:
+        return jsonify({"error": "Offline store unavailable"}), 400
+
+    date_raw = request.args.get('date')
+    if not date_raw:
+        return jsonify({"error": "Missing 'date'"}), 400
+
+    try:
+        year_raw = request.args.get('year')
+        year = int(year_raw) if year_raw is not None else 2025
+    except Exception:
+        year = 2025
+
+    try:
+        month, day = _parse_mmdd_or_date(date_raw)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    def _f(name: str) -> float:
+        v = request.args.get(name)
+        if v is None:
+            raise ValueError(f"Missing '{name}'")
+        return float(v)
+
+    try:
+        lat_min = _f('lat_min')
+        lat_max = _f('lat_max')
+        lon_min = _f('lon_min')
+        lon_max = _f('lon_max')
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    # Expand bounds slightly to support interpolation near edges.
+    try:
+        pad_lat = 0.6  # ~65km
+        pad_lon = 0.8
+        lat_min_q = min(lat_min, lat_max) - pad_lat
+        lat_max_q = max(lat_min, lat_max) + pad_lat
+        lon_min_q = min(lon_min, lon_max) - pad_lon
+        lon_max_q = max(lon_min, lon_max) + pad_lon
+    except Exception:
+        lat_min_q, lat_max_q, lon_min_q, lon_max_q = lat_min, lat_max, lon_min, lon_max
+
+    store = _get_offline_store_for_year(year)
+    if store is None:
+        return jsonify({"error": "Offline store not configured"}), 400
+
+    try:
+        cfg = getattr(store, 'cfg', None)
+        bbox = cfg.bbox if cfg is not None else None
+        tile_km = float(cfg.tile_km) if cfg is not None else 50.0
+        years = cfg.years if cfg is not None else None
+    except Exception:
+        bbox = None
+        tile_km = 50.0
+        years = None
+
+    try:
+        pts = store.get_climatology_grid(lat_min_q, lat_max_q, lon_min_q, lon_max_q, month, day)
+    except Exception as e:
+        return jsonify({"error": f"Query failed: {e}"}), 500
+
+    return jsonify(
+        {
+            "year": int(year),
+            "month": int(month),
+            "day": int(day),
+            "tile_km": float(tile_km),
+            "bbox": bbox,
+            "years": {"start": int(years[0]), "end": int(years[1])} if years else None,
+            "count": int(len(pts)),
+            "points": pts,
+        }
+    )
 
 
 def _get_offline_stats(lat: float, lon: float, month: int, day: int) -> Optional[Dict[str, Any]]:

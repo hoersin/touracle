@@ -224,6 +224,87 @@ class OfflineWeatherStore:
                 continue
         return out
 
+    def get_climatology_grid(
+        self,
+        lat_min: float,
+        lat_max: float,
+        lon_min: float,
+        lon_max: float,
+        month: int,
+        day: int,
+    ) -> List[Dict[str, Any]]:
+        """Return (tile center + climatology stats) for a given calendar day.
+
+        This is intended for the Strategic/Climatic map: fetch all tile nodes
+        in the current viewport and let the frontend do interpolation + rendering.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT
+                    t.tile_id, t.lat, t.lon, t.row, t.col,
+                    c.temperature_c,
+                    c.precipitation_mm,
+                    c.rain_probability,
+                    c.rain_typical_mm,
+                    c.wind_speed_ms,
+                    c.wind_dir_deg,
+                    c.wind_var_deg,
+                    c.temp_day_median,
+                    c.temp_day_p25,
+                    c.temp_day_p75
+                FROM tiles t
+                LEFT JOIN climatology c
+                  ON c.tile_id = t.tile_id AND c.month = ? AND c.day = ?
+                WHERE t.lat BETWEEN ? AND ? AND t.lon BETWEEN ? AND ?
+                ORDER BY t.row, t.col
+                """,
+                (int(month), int(day), float(lat_min), float(lat_max), float(lon_min), float(lon_max)),
+            ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for r in rows or []:
+            try:
+                (
+                    tile_id,
+                    lat,
+                    lon,
+                    row,
+                    col,
+                    temperature_c,
+                    precipitation_mm,
+                    rain_probability,
+                    rain_typical_mm,
+                    wind_speed_ms,
+                    wind_dir_deg,
+                    wind_var_deg,
+                    temp_day_median,
+                    temp_day_p25,
+                    temp_day_p75,
+                ) = r
+                out.append(
+                    {
+                        "tile_id": str(tile_id),
+                        "lat": float(lat),
+                        "lon": float(lon),
+                        "row": int(row),
+                        "col": int(col),
+                        "temperature_c": temperature_c,
+                        "precipitation_mm": precipitation_mm,
+                        "rain_probability": rain_probability,
+                        "rain_typical_mm": rain_typical_mm,
+                        "wind_speed_ms": wind_speed_ms,
+                        "wind_dir_deg": wind_dir_deg,
+                        "wind_var_deg": wind_var_deg,
+                        "temp_day_median": temp_day_median,
+                        "temp_day_p25": temp_day_p25,
+                        "temp_day_p75": temp_day_p75,
+                    }
+                )
+            except Exception:
+                continue
+        return out
+
     def get_stats_for_tile(self, tile_id: str, month: int, day: int) -> Optional[Dict[str, Any]]:
         """Return stats for an exact (tile_id, month, day)."""
 

@@ -43,6 +43,76 @@
       font-family: inherit;
     }
     #strategicControls { display: none; }
+
+    /* Climate mode base map: desaturated, low contrast, but readable roads */
+    body[data-mode="climate"] .leaflet-tile-pane {
+      filter: saturate(0.45) brightness(1.08) contrast(0.92) sepia(0.12);
+    }
+
+    /* Strategic timeline (bottom slider) */
+    #strategicTimeline {
+      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 2005;
+      background: rgba(255,255,255,0.92);
+      border-top: 1px solid rgba(0,0,0,0.10);
+      backdrop-filter: blur(3px);
+      padding: 10px 12px 12px 12px;
+      box-sizing: border-box;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    body[data-mode="climate"] #strategicTimeline { display: block; }
+    #strategicTimeline .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    #strategicTimeline button {
+      border: 1px solid rgba(0,0,0,0.15);
+      background: #fff;
+      border-radius: 8px;
+      padding: 7px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #strategicTimeline .label {
+      font-size: 12px;
+      color: #334155;
+      min-width: 110px;
+    }
+    #strategicDaySlider {
+      flex: 1;
+      min-width: 260px;
+    }
+    #strategicMonthTicks {
+      position: relative;
+      height: 14px;
+      margin-top: 6px;
+    }
+    .wm-tick {
+      position: absolute;
+      bottom: 0;
+      width: 1px;
+      height: 10px;
+      background: rgba(0,0,0,0.25);
+    }
+    .wm-tick.wm-major { height: 12px; background: rgba(0,0,0,0.35); }
+    .wm-month-label {
+      position: absolute;
+      bottom: 12px;
+      transform: translateX(-50%);
+      font-size: 10px;
+      color: rgba(0,0,0,0.45);
+      user-select: none;
+      pointer-events: none;
+    }
+    #strategicSpeed {
+      width: 120px;
+    }
     #map { height: calc(100% - 160px); }
     #profilePanel { height: 160px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
     #tourSummary { font-family: system-ui, -apple-system, sans-serif; }
@@ -204,19 +274,41 @@
 
   <div id="strategicControls">
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <label for="strategicDate">Day:</label>
-      <input type="date" id="strategicDate" />
+      <span style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#334155">Day:</span>
+      <span id="strategicDayLabel" style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#0f172a;font-weight:700">—</span>
       <label for="strategicLayer">Layer:</label>
       <select id="strategicLayer">
         <option value="temperature_ride">Temperature (Ride)</option>
         <option value="rain_ride">Rain (Ride)</option>
         <option value="rain_tent">Rain (Tent)</option>
         <option value="wind_speed">Wind Speed</option>
+        <option value="wind_dir">Wind Direction (Median + Variance)</option>
         <option value="comfort_ride">Comfort (Ride)</option>
         <option value="comfort_tent">Comfort (Tent)</option>
       </select>
-      <span style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#555">(Strategic map rendering in v2.1)</span>
+      <label style="display:flex;align-items:center;gap:6px; font-size:12px; color:#334155;">
+        <input type="checkbox" id="strategicWindOn" />
+        <span>Wind field</span>
+      </label>
+      <label for="strategicWindMode" style="font-size:12px;color:#334155">Wind mode:</label>
+      <select id="strategicWindMode">
+        <option value="flow">Flow lines</option>
+        <option value="arrows">Sparse arrows</option>
+      </select>
     </div>
+  </div>
+
+  <div id="strategicTimeline" aria-label="Strategic time slider">
+    <div class="row">
+      <button id="strategicPlay" type="button">Play</button>
+      <span class="label" id="strategicTimelineLabel">—</span>
+      <input id="strategicDaySlider" type="range" min="0" max="364" step="1" value="0" />
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#334155">
+        <span>Speed</span>
+        <input id="strategicSpeed" type="range" min="0.25" max="4" step="0.25" value="1" />
+      </label>
+    </div>
+    <div id="strategicMonthTicks" aria-hidden="true"></div>
   </div>
 
   <div id="settingsView" aria-label="Settings">
