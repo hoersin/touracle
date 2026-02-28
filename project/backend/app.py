@@ -6,6 +6,29 @@ import time
 import threading
 import pandas as pd
 
+
+def _json_default(obj: Any):
+    """Best-effort conversion for JSON cache writes (numpy scalars, etc.)."""
+    try:
+        # numpy scalar / array
+        import numpy as _np  # type: ignore
+
+        if isinstance(obj, _np.integer):
+            return int(obj)
+        if isinstance(obj, _np.floating):
+            return float(obj)
+        if isinstance(obj, _np.ndarray):
+            return obj.tolist()
+    except Exception:
+        pass
+    try:
+        # generic scalar protocol
+        if hasattr(obj, 'item'):
+            return obj.item()
+    except Exception:
+        pass
+    return str(obj)
+
 # Import sibling modules when running as a script
 import logging
 from route_sampling import sample_route, haversine_km
@@ -435,59 +458,76 @@ def api_map():
 
         for i, (lat, lon) in enumerate(sampled_points):
             try:
-                # Offline-first: tile store can serve stats without any network.
-                offline_stats = _get_offline_stats(lat, lon, month, day)
-                if offline_stats is not None:
-                    stats = dict(offline_stats)
-                    matching = int(stats.get('_match_days', 0) or 0)
-                    log.info('[OFFLINE] Point %d hit tile=%s match_days=%d', i, stats.get('_tile_id'), matching)
-                else:
-                    if _offline_strict_enabled() and _get_offline_store() is not None:
-                        log.warning('[OFFLINE] strict mode: no offline data for point %d; skipping', i)
-                        continue
+                # Priority: (1) disk stats cache, (2) offline SQLite tile DB, (3) online API.
+                qlat = _quantize(lat, grid_deg)
+                qlon = _quantize(lon, grid_deg)
+                stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{month:02d}_d{day:02d}_{fetch_mode}.json"
+                stats_path = STATS_CACHE_DIR / stats_name
 
-                    log.info('[STEP] Fetching Open-Meteo daily: point #%d (%.5f, %.5f) mode=%s grid=%.2f', i, lat, lon, fetch_mode, grid_deg)
-                    qlat = _quantize(lat, grid_deg)
-                    qlon = _quantize(lon, grid_deg)
-                    key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}"
-                    if key in df_cache:
-                        df = df_cache[key]
-                    else:
-                        if fetch_mode == 'single_day':
-                            df = fetch_daily_weather_same_day(qlat, qlon, month, day)
-                        else:
-                            df = fetch_daily_weather(qlat, qlon, month, day)
-                        df_cache[key] = df
-                    min_rows = 1 if fetch_mode == 'single_day' else 30
-                    if df is None or len(df) < min_rows:
-                        log.warning('Point %d: insufficient rows (%s); skipping', i, len(df) if df is not None else 0)
-                        continue
-                    # Stats disk cache by rounded lat/lon + month/day
-                    stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{month:02d}_d{day:02d}_{fetch_mode}.json"
-                    stats_path = STATS_CACHE_DIR / stats_name
-                    if stats_path.exists():
-                        try:
-                            stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
-                            matching = int(stats.get('_match_days', 0))
-                            log.info('[CACHE] hit %s', stats_name)
-                        except Exception:
-                            stats, matching = compute_weather_statistics(df, month, day)
-                    else:
-                        stats, matching = compute_weather_statistics(df, month, day)
+                cache_hit = False
+                stats: Dict[str, Any]
+                matching: int
+                if stats_path.exists():
+                    try:
+                        stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
+                        matching = int(stats.get('_match_days', 0) or 0)
+                        cache_hit = True
+                        log.info('[CACHE] hit %s', stats_name)
+                    except Exception:
+                        cache_hit = False
+
+                if not cache_hit:
+                    offline_stats = _get_offline_stats(lat, lon, month, day)
+                    if offline_stats is not None:
+                        stats = dict(offline_stats)
+                        matching = int(stats.get('_match_days', 0) or 0)
+                        log.info('[OFFLINE] Point %d hit tile=%s match_days=%d', i, stats.get('_tile_id'), matching)
+                        # Persist offline stats into disk cache to avoid re-checking the DB next time.
                         try:
                             s = {**stats, '_match_days': matching}
-                            __import__('json').dump(s, open(stats_path, 'w', encoding='utf-8'))
+                            import json as _json
+                            _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                            log.info('[CACHE] offline -> saved %s', stats_name)
+                        except Exception:
+                            pass
+                    else:
+                        if _offline_strict_enabled() and _get_offline_store() is not None:
+                            log.warning('[OFFLINE] strict mode: no offline data for point %d; skipping', i)
+                            continue
+
+                        log.info('[STEP] Fetching Open-Meteo daily: point #%d (%.5f, %.5f) mode=%s grid=%.2f', i, lat, lon, fetch_mode, grid_deg)
+                        key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}"
+                        if key in df_cache:
+                            df = df_cache[key]
+                        else:
+                            if fetch_mode == 'single_day':
+                                df = fetch_daily_weather_same_day(qlat, qlon, month, day)
+                            else:
+                                df = fetch_daily_weather(qlat, qlon, month, day)
+                            df_cache[key] = df
+                        min_rows = 1 if fetch_mode == 'single_day' else 30
+                        if df is None or len(df) < min_rows:
+                            log.warning('Point %d: insufficient rows (%s); skipping', i, len(df) if df is not None else 0)
+                            continue
+
+                        stats, matching = compute_weather_statistics(df, month, day)
+                        # Compute daytime temperature from hourly data and override temp (online only).
+                        try:
+                            dfh = fetch_hourly_weather_same_day(qlat, qlon, month, day)
+                            dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
+                            stats.update(dt_stats)
+                            stats['_temp_source'] = 'hourly_daytime'
+                        except Exception as e:
+                            log.warning('Point %d: daytime temp unavailable: %s', i, e)
+
+                        # Save stats to disk cache AFTER daytime adjustments.
+                        try:
+                            s = {**stats, '_match_days': matching}
+                            import json as _json
+                            _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
                             log.info('[CACHE] miss -> saved %s', stats_name)
                         except Exception:
                             pass
-                    # Compute daytime temperature from hourly data and override temp
-                    try:
-                        dfh = fetch_hourly_weather_same_day(qlat, qlon, month, day)
-                        dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
-                        stats.update(dt_stats)
-                        stats['_temp_source'] = 'hourly_daytime'
-                    except Exception as e:
-                        log.warning('Point %d: daytime temp unavailable: %s', i, e)
 
                 log.info('[STEP] Stats computed: match_days=%d temp=%.2f wind=%.2f', matching, stats.get('temperature_c', 0.0), stats.get('wind_speed_ms', 0.0))
                 svg = generate_glyph_v2(stats, debug=False)
@@ -1137,9 +1177,28 @@ def api_map_stream():
         if tour_planning and sampled_points:
             idx = len(sampled_points) // 2
             rep_lat, rep_lon = sampled_points[idx]
-            offline_stats = _get_offline_stats(rep_lat, rep_lon, month, day)
+            # Priority: (1) disk stats cache, (2) offline SQLite tile DB, (3) online API.
+            rep_qlat = _quantize(rep_lat, grid_deg)
+            rep_qlon = _quantize(rep_lon, grid_deg)
+            rep_stats_name = f"stats_lat{rep_qlat:.2f}_lon{rep_qlon:.2f}_m{month:02d}_d{day:02d}_{fetch_mode}.json"
+            rep_stats_path = STATS_CACHE_DIR / rep_stats_name
+            rep_cache_hit = False
+            offline_stats = None
+            stats = None
+            matches = 0
+            try:
+                if rep_stats_path.exists():
+                    stats = __import__('json').load(open(rep_stats_path, 'r', encoding='utf-8'))
+                    matches = int(stats.get('_match_days', 0) or 0)
+                    rep_cache_hit = True
+                    log.info('[CACHE][SSE] hit %s', rep_stats_name)
+            except Exception:
+                rep_cache_hit = False
+
+            if not rep_cache_hit:
+                offline_stats = _get_offline_stats(rep_lat, rep_lon, month, day)
             df = None
-            if offline_stats is None:
+            if (not rep_cache_hit) and offline_stats is None:
                 if _offline_strict_enabled() and _get_offline_store() is not None:
                     yield "event: error\ndata: {\"error\": \"Offline strict mode: no offline data for representative point/day.\"}\n\n"
                     return
@@ -1159,7 +1218,7 @@ def api_map_stream():
                     'wind_speed_ms': 4.0,
                     '_temp_source': 'dummy_offline',
                 }
-            if offline_stats is None and (df is None or len(df) < (1 if fetch_mode == 'single_day' else 30)):
+            if (not rep_cache_hit) and offline_stats is None and (df is None or len(df) < (1 if fetch_mode == 'single_day' else 30)):
                 # Emit dummy glyphs for all sampled points to keep UI responsive
                 stats = _dummy_stats(month, day)
                 for i, (lat, lon) in enumerate(sampled_points):
@@ -1191,13 +1250,23 @@ def api_map_stream():
                 yield f"event: done\ndata: {{\"stations_count\": {completed}}}\n\n"
                 log.info('[SSE] done, stations=%d (dummy)', completed)
                 return
-            if offline_stats is not None:
+            if rep_cache_hit and isinstance(stats, dict):
+                # Cache hit: do not perform any online requests.
+                pass
+            elif offline_stats is not None:
                 stats = dict(offline_stats)
                 matches = int(stats.get('_match_days', 0) or 0)
                 log.info('[OFFLINE][SSE] Representative hit tile=%s match_days=%d', stats.get('_tile_id'), matches)
+                try:
+                    s = {**stats, '_match_days': matches}
+                    import json as _json
+                    _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
+                    log.info('[CACHE][SSE] offline -> saved %s', rep_stats_name)
+                except Exception:
+                    pass
             else:
                 stats, matches = compute_weather_statistics(df, month, day)
-                # Compute daytime temperature from hourly data and override temp fields
+                # Compute daytime temperature from hourly data and override temp fields (online only).
                 try:
                     dfh = fetch_hourly_weather_same_day(rep_lat, rep_lon, month, day, years_window=years_window)
                     dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
@@ -1205,6 +1274,13 @@ def api_map_stream():
                     stats['_temp_source'] = 'hourly_daytime'
                 except Exception as e:
                     log.warning('[SSE] Daytime temp unavailable (rep): %s', e)
+                try:
+                    s = {**stats, '_match_days': matches}
+                    import json as _json
+                    _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
+                    log.info('[CACHE][SSE] miss -> saved %s', rep_stats_name)
+                except Exception:
+                    pass
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
                 if (not is_dry_run) and (local_token != STREAM_TOKEN):
@@ -1346,11 +1422,57 @@ def api_map_stream():
                         mm = assigned_date.month
                         dd = assigned_date.day
 
+                    # Disk cache by quantized lat/lon + month/day + fetch_mode
+                    stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}.json"
+                    stats_path = STATS_CACHE_DIR / stats_name
+                    if stats_path.exists():
+                        try:
+                            stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
+                            matching = int(stats.get('_match_days', 0) or 0)
+                            svg = generate_glyph_v2(stats, debug=False)
+                            feature = {
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                                "properties": {
+                                    **stats,
+                                    "svg": svg,
+                                    "station_id": f"point_{i}",
+                                    "station_name": f"Route Point {i}",
+                                    "station_lat": lat,
+                                    "station_lon": lon,
+                                    "min_distance_to_route_km": 0.0,
+                                    "usage_count": 1,
+                                    "_match_days": matching,
+                                    "_source_mode": "disk_cache",
+                                    "_grid_deg": grid_deg,
+                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                }
+                            }
+                            if segment_length and start_date is not None and assigned_date is not None:
+                                feature['properties']['tour_day_index'] = day_idx
+                                feature['properties']['tour_total_days'] = tour_days
+                                feature['properties']['date'] = assigned_date.isoformat()
+                            completed += 1
+                            msg = json.dumps({"feature": feature, "completed": completed, "total": total})
+                            yield f"event: station\ndata: {msg}\n\n"
+                            if completed % 5 == 0 or completed == total:
+                                log.info('[SSE] station emitted %d/%d (cache)', completed, total)
+                            continue
+                        except Exception:
+                            pass
+
                     # Offline-first per point/day: if tile stats exist, skip any network requests.
                     offline_stats = _get_offline_stats(lat, lon, mm, dd)
                     if offline_stats is not None:
                         stats = dict(offline_stats)
                         matching = int(stats.get('_match_days', 0) or 0)
+                        try:
+                            s = {**stats, '_match_days': matching}
+                            import json as _json
+                            _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                            log.info('[CACHE][SSE] offline -> saved %s', stats_name)
+                        except Exception:
+                            pass
                         svg = generate_glyph_v2(stats, debug=False)
                         feature = {
                             "type": "Feature",
@@ -1483,6 +1605,14 @@ def api_map_stream():
                             stats['_temp_source'] = 'daily+hourly'
                     except Exception as e:
                         log.warning('[SSE] Daytime temp unavailable (per-point %s,%s m%d d%d): %s', qlat, qlon, mm, dd, e)
+                    # Save computed stats to disk cache AFTER daytime adjustments.
+                    try:
+                        s = {**stats, '_match_days': matching}
+                        import json as _json
+                        _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                        log.info('[CACHE][SSE] miss -> saved %s', stats_name)
+                    except Exception:
+                        pass
                     # Optional: Skip per-point hourly to reduce request load
                     # (Representative hourly is computed in tour_planning mode)
                     svg = generate_glyph_v2(stats, debug=False)
