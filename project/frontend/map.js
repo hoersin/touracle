@@ -1,6 +1,8 @@
 /* global L */
 (function() {
-  const map = L.map('map');
+  // Prefer canvas renderer so snapshotting (html2canvas) captures route layers without SVG transform drift.
+  const map = L.map('map', { preferCanvas: true });
+  try { window.__WM_LEAFLET_MAP__ = map; } catch (_) {}
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
@@ -51,15 +53,10 @@
   const fetchWeatherBtn = document.getElementById('fetchWeather');
   const stopWeatherBtn = document.getElementById('stopWeather');
   const shareBtn = document.getElementById('share');
-  const navClimate = document.getElementById('navClimate');
-  const navTour = document.getElementById('navTour');
-  const navSettings = document.getElementById('navSettings');
-  const modeNav = document.getElementById('modeNav');
-  const modeNavPill = document.getElementById('modeNavPill');
 
   const settingsView = document.getElementById('settingsView');
   const setStepKm = document.getElementById('setStepKm');
-  const setHistStart = document.getElementById('setHistStart');
+  const setHistLast = document.getElementById('setHistLast');
   const setHistYears = document.getElementById('setHistYears');
   const setTempCold = document.getElementById('setTempCold');
   const setTempHot = document.getElementById('setTempHot');
@@ -110,6 +107,31 @@
   let PRIME_IN_PROGRESS = false;
   let MAIN_IN_PROGRESS = false;
   let LAST_GPX_PATH = null;
+  let LAST_LOAD_OPTS = null;
+  let OFFLINE_FALLBACK_ACTIVE = false;
+
+  function getBaseName(p) {
+    try {
+      const s = String(p || '');
+      if (!s) return '';
+      const parts = s.split(/[/\\]/);
+      return parts[parts.length - 1] || s;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function updateDropZoneLabel() {
+    try {
+      if (!dropZone) return;
+      if (LAST_GPX_PATH) {
+        const name = getBaseName(LAST_GPX_PATH);
+        dropZone.textContent = `Loaded GPX: ${name} (click or drop to change)`;
+      } else {
+        dropZone.textContent = 'Drop GPX here to load route (or click to choose)';
+      }
+    } catch (_) {}
+  }
   let flagsLayer = null;
   let REVERSED = false;
   // Route coords for map cursor sync
@@ -167,8 +189,7 @@
     strategicDateInput.value = today.toISOString().slice(0,10);
   }
 
-  // Initialize top navigation (mode switch)
-  initModeNav();
+  // Mode navigation is wired externally (inlined in index.html).
 
   let routeLayer = null;
   let glyphLayer = null;
@@ -510,9 +531,11 @@
   // Settings persistence
   function loadSettings() {
     const s = localStorage.getItem('wm_settings');
+    const nowYear = (new Date()).getFullYear();
+    const defaultLastYear = Math.max(1970, nowYear - 1);
     const defaults = {
       stepKm: 60,
-      histStartYear: 2016,
+      histLastYear: defaultLastYear,
       histYears: 10,
       tempCold: 5,
       tempHot: 30,
@@ -535,11 +558,21 @@
     if (!s) return defaults;
     try {
       const j = JSON.parse(s);
+      const yearsN = Number(j.histYears);
+      const safeYears = (Number.isFinite(yearsN) && yearsN >= 1) ? Math.round(yearsN) : defaults.histYears;
+      let lastY = Number(j.histLastYear);
+      if (!Number.isFinite(lastY)) lastY = Number(j.histEndYear);
+      if (!Number.isFinite(lastY)) {
+        // Backward compatibility: histStartYear + histYears - 1
+        const startY = Number(j.histStartYear);
+        if (Number.isFinite(startY)) lastY = Math.round(startY + safeYears - 1);
+      }
+      if (!Number.isFinite(lastY)) lastY = defaults.histLastYear;
       return {
         ...defaults,
         stepKm: Number(j.stepKm) || defaults.stepKm,
-        histStartYear: Number(j.histStartYear) || defaults.histStartYear,
-        histYears: Number(j.histYears) || defaults.histYears,
+        histLastYear: Math.round(Number(lastY) || defaults.histLastYear),
+        histYears: safeYears,
         tempCold: Number.isFinite(Number(j.tempCold)) ? Number(j.tempCold) : defaults.tempCold,
         tempHot: Number.isFinite(Number(j.tempHot)) ? Number(j.tempHot) : defaults.tempHot,
         rainHigh: Number.isFinite(Number(j.rainHigh)) ? Number(j.rainHigh) : defaults.rainHigh,
@@ -588,85 +621,36 @@
   let CURSOR_X_OFFSET = 0;    // no offset fudge
   let CURSOR_OFFSET_LOCKED = true; // lock to prevent heuristic changes
 
-  // -------------------- Mode navigation (Phase 1) --------------------
-  function loadMode() {
-    const m = String(localStorage.getItem('wm_mode') || '').trim();
-    return (m === 'climate' || m === 'settings' || m === 'tour') ? m : 'tour';
-  }
-
-  function saveMode(mode) {
-    try { localStorage.setItem('wm_mode', String(mode)); } catch (_) {}
-  }
-
+  // -------------------- Mode side effects --------------------
+  // Tab selection + pill positioning is handled by the inlined script in index.html.
+  // This function remains as the single place for non-visual side effects.
   let LAST_NON_SETTINGS_MODE = 'tour';
-
-  function scheduleModeNavUpdate(mode) {
-    try {
-      window.requestAnimationFrame(() => updateModeNav(mode));
-      window.requestAnimationFrame(() => updateModeNav(mode));
-      setTimeout(() => updateModeNav(mode), 60);
-    } catch (_) {
-      try { updateModeNav(mode); } catch (_) {}
-    }
-  }
-
-  function updateModeNav(mode) {
-    const btns = [navClimate, navTour, navSettings].filter(Boolean);
-    btns.forEach(btn => {
-      const isActive = btn && btn.dataset && btn.dataset.mode === mode;
-      if (btn) btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    });
-    if (!modeNav || !modeNavPill) return;
-    const activeBtn = btns.find(b => b && b.dataset && b.dataset.mode === mode);
-    if (!activeBtn) return;
-    const pr = modeNav.getBoundingClientRect();
-    const br = activeBtn.getBoundingClientRect();
-    const dx = Math.max(0, br.left - pr.left);
-    modeNavPill.style.width = `${Math.max(0, br.width)}px`;
-    modeNavPill.style.transform = `translateX(${dx}px)`;
-  }
-
   function setMode(mode) {
-    if (mode !== 'settings') LAST_NON_SETTINGS_MODE = mode;
-    document.body.dataset.mode = mode;
-    saveMode(mode);
-    scheduleModeNavUpdate(mode);
+    const m = (mode === 'climate' || mode === 'tour' || mode === 'settings') ? mode : 'tour';
+    if (m !== 'settings') LAST_NON_SETTINGS_MODE = m;
+    try { document.body.dataset.mode = m; } catch (_) {}
+
     // Map needs a resize nudge when toggling profile/map visibility.
-    if (mode !== 'settings') {
+    if (m !== 'settings') {
       setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 60);
     }
+
     // When entering settings, sync form from current settings.
-    if (mode === 'settings') {
+    if (m === 'settings') {
       try { applySettingsToForm(SETTINGS); } catch (_) {}
     }
   }
-
-  function initModeNav() {
-    if (modeNav) {
-      modeNav.addEventListener('click', (e) => {
-        const t = e.target;
-        const btn = (t && t.closest) ? t.closest('.wm-seg-btn') : null;
-        const m = btn && btn.dataset ? btn.dataset.mode : null;
-        if (m) setMode(m);
-      });
-    } else {
-      const btns = [navClimate, navTour, navSettings].filter(Boolean);
-      btns.forEach(btn => {
-        btn.addEventListener('click', () => {
-          const m = btn.dataset && btn.dataset.mode;
-          if (m) setMode(m);
-        });
-      });
-    }
-    window.addEventListener('resize', () => scheduleModeNavUpdate(document.body.dataset.mode || 'tour'));
-    setMode(loadMode());
-  }
+  try { window.setMode = setMode; } catch (_) {}
 
   // Settings view wiring
   function applySettingsToForm(s) {
     if (!s) return;
     if (setStepKm) setStepKm.value = s.stepKm;
-    if (setHistStart) setHistStart.value = s.histStartYear;
+    try {
+      const nowYear = (new Date()).getFullYear();
+      if (setHistLast) setHistLast.max = String(Math.max(1970, nowYear - 1));
+    } catch (_) {}
+    if (setHistLast) setHistLast.value = s.histLastYear;
     if (setHistYears) setHistYears.value = s.histYears;
     if (setTempCold) setTempCold.value = s.tempCold;
     if (setTempHot) setTempHot.value = s.tempHot;
@@ -688,9 +672,13 @@
 
   function readSettingsFromForm(prev) {
     const base = prev ? { ...prev } : {};
+    const nowYear = (new Date()).getFullYear();
+    const defaultLastYear = Math.max(1970, nowYear - 1);
     base.stepKm = Number(setStepKm && setStepKm.value) || 60;
-    base.histStartYear = Number(setHistStart && setHistStart.value) || 2016;
+    base.histLastYear = Number(setHistLast && setHistLast.value) || defaultLastYear;
     base.histYears = Number(setHistYears && setHistYears.value) || 10;
+    if (!Number.isFinite(base.histLastYear) || base.histLastYear < 1970) base.histLastYear = defaultLastYear;
+    if (!Number.isFinite(base.histYears) || base.histYears < 1) base.histYears = 10;
     base.tempCold = Number(setTempCold && setTempCold.value);
     if (!Number.isFinite(base.tempCold)) base.tempCold = 5;
     base.tempHot = Number(setTempHot && setTempHot.value);
@@ -1539,8 +1527,19 @@
     const tempMed = best ? (Number.isFinite(best.temp_day_median) ? Number(best.temp_day_median) : (Number.isFinite(best.temperature) ? Number(best.temperature) : null)) : null;
     // If temp_med still null, approximate by midpoint of p25/p75
     const tMid = (best && Number.isFinite(best.temp_day_p25) && Number.isFinite(best.temp_day_p75)) ? (Number(best.temp_day_p25)+Number(best.temp_day_p75))/2 : tempMed;
-    const t25 = best && Number.isFinite(best.temp_day_p25) ? Number(best.temp_day_p25) : null;
-    const t75 = best && Number.isFinite(best.temp_day_p75) ? Number(best.temp_day_p75) : null;
+    const t25 = (best && Number.isFinite(best.temp_day_p25))
+      ? Number(best.temp_day_p25)
+      : (best && Number.isFinite(best.temp_hist_p25))
+        ? Number(best.temp_hist_p25)
+        : null;
+    const t75 = (best && Number.isFinite(best.temp_day_p75))
+      ? Number(best.temp_day_p75)
+      : (best && Number.isFinite(best.temp_hist_p75))
+        ? Number(best.temp_hist_p75)
+        : null;
+    const yearsStart = best && Number.isFinite(best.yearsStart) ? Number(best.yearsStart) : null;
+    const yearsEnd = best && Number.isFinite(best.yearsEnd) ? Number(best.yearsEnd) : null;
+    const matchDays = best && Number.isFinite(best.matchDays) ? Number(best.matchDays) : null;
     const rainP = best && Number.isFinite(best.rainProb) ? Math.round(Number(best.rainProb)*100) : null;
     const rainTyp = best && Number.isFinite(best.rainTypical) ? Number(best.rainTypical) : ((best && Number.isFinite(best.precipMm)) ? Number(best.precipMm) : null);
     const wspd = best && Number.isFinite(best.windSpeed) ? Number(best.windSpeed) : null;
@@ -1567,7 +1566,8 @@
     const colLeft = [
       `Day ${dayIdx+1} — ${dateStr}`,
       `Distance: ${fmt(dkm,1)} km`,
-      `Elevation: ${fmt(elev,0)} m`
+      `Elevation: ${fmt(elev,0)} m`,
+      `Years: ${yearsStart===null||yearsEnd===null?'-':`${yearsStart}–${yearsEnd}`}${matchDays===null?'':` (n=${Math.round(matchDays)})`}`
     ];
     // Comfort thresholds
     const T_COLD = Number(SETTINGS.tempCold || 5);
@@ -1658,7 +1658,7 @@
   };
   window.setTestDemoSettings = function() {
     try {
-      SETTINGS = { stepKm: 100, histStartYear: 2024, histYears: 1 };
+      SETTINGS = { stepKm: 100, histLastYear: 2024, histYears: 1 };
       saveSettings(SETTINGS);
       STEP_KM = SETTINGS.stepKm;
       REVERSED = false;
@@ -1666,7 +1666,7 @@
       LAST_GPX_PATH = '/Users/ingolfhorsch/Projekte/WeatherMap/project/data/2026-02-13_2781422668_von Montpellier nach Bayonne.gpx';
       // Ensure tour days reflects UI input; leave existing value
       loadMap();
-      console.log('[Test] Applied demo settings: Montpellier GPX, stepKm=100, histStart=2024, histYears=1');
+      console.log('[Test] Applied demo settings: Montpellier GPX, stepKm=100, histLast=2024, histYears=1');
     } catch (e) {
       console.warn('setTestDemoSettings error', e);
     }
@@ -1947,7 +1947,9 @@
     }
   }
 
-  async function loadMap() {
+  async function loadMap(opts) {
+    const loadOpts = (opts && typeof opts === 'object') ? opts : {};
+    LAST_LOAD_OPTS = loadOpts;
     // Update button state
     if (fetchWeatherBtn) {
       fetchWeatherBtn.textContent = 'Downloading...';
@@ -1963,11 +1965,24 @@
     if (sseStatus) sseStatus.textContent = 'Stream: connecting…';
     const selected = startDateInput.value ? new Date(startDateInput.value) : new Date();
     const mmdd = getMMDD(selected);
+    const isTourMode = (document.body && document.body.dataset && document.body.dataset.mode)
+      ? (document.body.dataset.mode === 'tour')
+      : true;
+    const tourPlanningParam = isTourMode ? '1' : '0';
     // Subscribe to streaming map data (route + per-station glyphs)
     const tourDays = Number(tourDaysInput?.value || 7);
     const startDateStr = startDateInput && startDateInput.value ? startDateInput.value : new Date().toISOString().slice(0,10);
     const gpxParam = LAST_GPX_PATH ? `&gpx_path=${encodeURIComponent(LAST_GPX_PATH)}` : '';
       const revParam = REVERSED ? '&reverse=1' : '';
+
+      // Convert UI settings (last year + number of years) into backend params.
+      const nowYear = (new Date()).getFullYear();
+      const histLast = (loadOpts.histLastYearOverride !== undefined) ? Number(loadOpts.histLastYearOverride) : Number(SETTINGS.histLastYear);
+      const histN = Math.max(1, Math.round((loadOpts.histYearsOverride !== undefined) ? Number(loadOpts.histYearsOverride) : (Number(SETTINGS.histYears) || 10)));
+      const histEnd = (Number.isFinite(histLast) && histLast >= 1970) ? Math.round(histLast) : (nowYear - 1);
+      const histStart = histEnd - histN + 1;
+
+      const offlineOnlyParam = loadOpts.offlineOnly ? '&offline_only=1' : '';
       const z = map.getZoom();
       const profileStep = (function(zoom){
         // Finer elevation sampling: reduce step per zoom for smoother profile
@@ -1987,7 +2002,7 @@
       try { evtSource && evtSource.close(); } catch(_){}
       if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
       OVERLAY_POINTS = [];
-      const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=0&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${SETTINGS.histYears}&hist_start=${SETTINGS.histStartYear}${gpxParam}${revParam}`;
+      const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${gpxParam}${revParam}`;
       let evtSourcePrime = new EventSource(urlPrime);
       window.__WM_PRIME_EVT_SOURCE__ = evtSourcePrime;
       PRIME_IN_PROGRESS = true;
@@ -1996,7 +2011,7 @@
         console.warn('Prime timeout — proceeding to full stream');
         window.__WM_PROFILE_PRIME_DONE__ = true;
         PRIME_IN_PROGRESS = false;
-        loadMap();
+        loadMap(loadOpts);
       }, 7000);
       evtSourcePrime.addEventListener('route', (ev) => {
         try {
@@ -2017,7 +2032,7 @@
             if (primeTimer) { clearTimeout(primeTimer); primeTimer = null; }
             window.__WM_PROFILE_PRIME_DONE__ = true;
             PRIME_IN_PROGRESS = false;
-            loadMap();
+            loadMap(loadOpts);
           }
         } catch(e){ console.warn('prime profile error', e); }
       });
@@ -2027,7 +2042,7 @@
         window.__WM_PROFILE_PRIME_DONE__ = true;
         PRIME_IN_PROGRESS = false;
         // Proceed to full stream
-        loadMap();
+        loadMap(loadOpts);
       });
       evtSourcePrime.onerror = (e) => {
         try { evtSourcePrime && evtSourcePrime.close(); } catch(_){}
@@ -2035,14 +2050,14 @@
         if (primeTimer) { clearTimeout(primeTimer); primeTimer = null; }
         window.__WM_PROFILE_PRIME_DONE__ = true;
         PRIME_IN_PROGRESS = false;
-        loadMap();
+        loadMap(loadOpts);
       };
       return; // wait for prime to complete
     }
       if (MAIN_IN_PROGRESS) return;
       MAIN_IN_PROGRESS = true;
       const qsComfort = `&temp_cold=${encodeURIComponent(SETTINGS.tempCold)}&temp_hot=${encodeURIComponent(SETTINGS.tempHot)}&rain_high=${encodeURIComponent(SETTINGS.rainHigh)}&wind_head_comfort=${encodeURIComponent(SETTINGS.windHeadComfort)}&wind_tail_comfort=${encodeURIComponent(SETTINGS.windTailComfort)}`;
-      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=0&mode=single_day&reset_api=1&force_online=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${SETTINGS.histYears}&hist_start=${SETTINGS.histStartYear}${gpxParam}${revParam}${qsComfort}`);
+      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${gpxParam}${revParam}${qsComfort}`);
     let stationCount = 0;
     let stationTotal = 0;
     // Dim existing glyphs and prepare new layer
@@ -2176,12 +2191,12 @@
           const validYear = (y) => Number.isFinite(y) && y >= 1900 && y <= 2100;
           let usePayload = validYear(ysNum) && validYear(yeNum) && yeNum >= ysNum;
           if (!usePayload) {
-            let s = Number(SETTINGS.histStartYear);
+            let endY = Number(SETTINGS.histLastYear);
             let n = Number(SETTINGS.histYears);
-            if (!Number.isFinite(s) || s < 1900) s = 2016;
+            if (!Number.isFinite(endY) || endY < 1900) endY = (new Date()).getFullYear() - 1;
             if (!Number.isFinite(n) || n <= 0) n = 10;
-            ysNum = Math.round(s);
-            yeNum = Math.round(s + n - 1);
+            yeNum = Math.round(endY);
+            ysNum = Math.round(endY - n + 1);
             usePayload = true;
           }
           YEARS_SPAN_TEXT = usePayload ? `${ysNum}..${yeNum}` : null;
@@ -2323,12 +2338,12 @@
         let usePayload = validYear(ysNum) && validYear(yeNum) && yeNum >= ysNum;
         if (!usePayload) {
           // Fallback to current settings; ensure sane defaults
-          let s = Number(SETTINGS.histStartYear);
+          let endY = Number(SETTINGS.histLastYear);
           let n = Number(SETTINGS.histYears);
-          if (!Number.isFinite(s) || s < 1900) s = 2016;
+          if (!Number.isFinite(endY) || endY < 1900) endY = (new Date()).getFullYear() - 1;
           if (!Number.isFinite(n) || n <= 0) n = 10;
-          ysNum = Math.round(s);
-          yeNum = Math.round(s + n - 1);
+          yeNum = Math.round(endY);
+          ysNum = Math.round(endY - n + 1);
           usePayload = true;
         }
         YEARS_SPAN_TEXT = usePayload ? `${ysNum}..${yeNum}` : null;
@@ -2437,6 +2452,7 @@
         const j = await res.json();
         if (j && j.path) {
           LAST_GPX_PATH = j.path;
+          updateDropZoneLabel();
           // Reset priming flag so new GPX triggers profile-first
           try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){}
           loadMap();
@@ -2515,6 +2531,7 @@
             `<div class=\"wm-tip-line\"><strong>Station:</strong> ${props.station_name || '-'}</div>` +
             `<div class=\"wm-tip-line\"><strong>Day:</strong> ${props.tour_day_index!==undefined?(props.tour_day_index+1):'-'} of ${props.tour_total_days||'-'}</div>` +
             `<div class=\"wm-tip-line\"><strong>Date:</strong> ${props.date || mmdd2}</div>` +
+            `<div class=\"wm-tip-line\"><strong>Years:</strong> ${(props._years_start!==undefined&&props._years_end!==undefined)?(`${props._years_start}–${props._years_end}`):'-'}${props._match_days===undefined?'':` (n=${Array.isArray(props._match_days)?props._match_days.length:props._match_days})`}</div>` +
             `<div class=\"wm-tip-line\"><strong>Distance:</strong> ${fmt(props.distance_from_start_km,1)} km</div>` +
             `<div class=\"wm-tip-line\"><strong>Tour temperature:</strong> ${fmt(props.temperature_c, 1)} °C</div>` +
             `<div class=\"wm-tip-line\"><strong>Typical range:</strong> ${fmt(props.temp_p25, 1)}–${fmt(props.temp_p75, 1)} °C</div>` +
@@ -2581,7 +2598,12 @@
           // Daytime variability within 10–16h (across all years)
           temp_day_p25: (props.temp_day_p25 !== undefined) ? Number(props.temp_day_p25) : null,
           temp_day_p75: (props.temp_day_p75 !== undefined) ? Number(props.temp_day_p75) : null,
-          temp_day_median: (props.temp_day_median !== undefined) ? Number(props.temp_day_median) : null
+          temp_day_median: (props.temp_day_median !== undefined) ? Number(props.temp_day_median) : null,
+          yearsStart: (props._years_start !== undefined) ? Number(props._years_start) : null,
+          yearsEnd: (props._years_end !== undefined) ? Number(props._years_end) : null,
+          matchDays: (props._match_days !== undefined && props._match_days !== null) ? (Array.isArray(props._match_days) ? Number(props._match_days.length) : Number(props._match_days)) : null,
+          sourceMode: (props._source_mode !== undefined) ? String(props._source_mode) : null,
+          tileId: (props._tile_id !== undefined) ? String(props._tile_id) : null
         });
         // Prepare cached glyph image for profile preview pins
         try {
@@ -2624,6 +2646,7 @@
         const j = await res.json();
         if (j && j.path) {
           LAST_GPX_PATH = j.path;
+          updateDropZoneLabel();
           try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){}
           loadMap();
         } else {
@@ -2636,7 +2659,7 @@
     });
   }
 
-    evtSource.addEventListener('done', () => {
+    evtSource.addEventListener('done', (e) => {
       try { evtSource && evtSource.close(); } catch (_) {}
       MAIN_IN_PROGRESS = false;
       // Remove old layer and replace
@@ -2664,8 +2687,16 @@
       } catch(_) {}
       setTimeout(() => { if (progressBar) progressBar.style.width = '0%'; }, 600);
       if (sseStatus) {
+        let backendTxt = null;
+        try {
+          const payload = (e && e.data) ? JSON.parse(e.data) : null;
+          backendTxt = payload && payload.station_source_text ? String(payload.station_source_text) : null;
+        } catch (_) {
+          backendTxt = null;
+        }
         const spanTxt = YEARS_SPAN_TEXT ? ` from historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : '';
-        sseStatus.textContent = `Stream: done, stations ${stationCount}/${stationTotal}${spanTxt}`;
+        const suffix = backendTxt ? ` ${backendTxt}` : spanTxt;
+        sseStatus.textContent = `Stream: done, stations ${stationCount}/${stationTotal}${suffix}`;
       }
       // Restore button state
       if (fetchWeatherBtn) {
@@ -2690,12 +2721,14 @@
     let retryMs = 1000;
     evtSource.onerror = (e) => {
       try { evtSource && evtSource.close(); } catch (_) {}
+      // Allow retry to actually start a new stream
+      MAIN_IN_PROGRESS = false;
       if (progressBar) progressBar.style.width = '0%';
       if (sseStatus) sseStatus.textContent = `Stream: error, reconnecting in ${Math.round(retryMs/1000)}s…`;
       console.error('SSE error', e);
       setTimeout(() => {
         retryMs = Math.min(retryMs * 2, 10000);
-        loadMap();
+        loadMap(LAST_LOAD_OPTS || undefined);
       }, retryMs);
     };
 
@@ -2720,11 +2753,21 @@
       })(z);
       const selected = startDateInput.value ? new Date(startDateInput.value) : new Date();
       const mmdd = getMMDD(selected);
+      const isTourMode = (document.body && document.body.dataset && document.body.dataset.mode)
+        ? (document.body.dataset.mode === 'tour')
+        : true;
+      const tourPlanningParam = isTourMode ? '1' : '0';
       const tourDays = Number(tourDaysInput?.value || 7);
       const startDateStr = startDateInput && startDateInput.value ? startDateInput.value : new Date().toISOString().slice(0,10);
       const gpxParam = LAST_GPX_PATH ? `&gpx_path=${encodeURIComponent(LAST_GPX_PATH)}` : '';
       const revParam = REVERSED ? '&reverse=1' : '';
-      const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=0&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${SETTINGS.histYears}&hist_start=${SETTINGS.histStartYear}${gpxParam}${revParam}`;
+
+      const histLast = Number(SETTINGS.histLastYear);
+      const histN = Math.max(1, Math.round(Number(SETTINGS.histYears) || 10));
+      const histEnd = (Number.isFinite(histLast) && histLast >= 1970) ? Math.round(histLast) : ((new Date()).getFullYear() - 1);
+      const histStart = histEnd - histN + 1;
+
+      const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${gpxParam}${revParam}`;
       evtSourceProfile = new EventSource(url);
       evtSourceProfile.addEventListener('profile', (ev) => {
         try {
@@ -2745,10 +2788,13 @@
 
   fetchWeatherBtn.addEventListener('click', () => {
     if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return; // Stop button handles abort now
+    OFFLINE_FALLBACK_ACTIVE = false;
     loadMap();
   });
   
   stopWeatherBtn.addEventListener('click', () => {
+    const wasInProgress = PRIME_IN_PROGRESS || MAIN_IN_PROGRESS;
+    const wasFallback = OFFLINE_FALLBACK_ACTIVE;
     // Abort current download
     try { 
       if (evtSource) evtSource.close();
@@ -2756,6 +2802,18 @@
     } catch(_) {}
     PRIME_IN_PROGRESS = false;
     MAIN_IN_PROGRESS = false;
+
+    // If the user stopped a long download, immediately try a fast offline-only fallback
+    // using the local 1-year tile DB (last year = currentYear-1).
+    if (wasInProgress && !wasFallback) {
+      OFFLINE_FALLBACK_ACTIVE = true;
+      try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
+      if (sseStatus) sseStatus.textContent = 'Stream: switching to offline fallback…';
+      const nowYear = (new Date()).getFullYear();
+      loadMap({ offlineOnly: true, histYearsOverride: 1, histLastYearOverride: (nowYear - 1) });
+      return;
+    }
+
     fetchWeatherBtn.textContent = 'Get Weather Data';
     fetchWeatherBtn.disabled = false;
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
@@ -2789,8 +2847,9 @@
     try {
       const panel = document.getElementById('tourSummary');
       if (!panel) return;
-      const badgesWrap = document.getElementById('tourSummaryBadges');
-      if (!badgesWrap) return;
+      const badgesRow = document.getElementById('tourSummaryBadges');
+      if (!badgesRow) return;
+      const badgesWrap = document.getElementById('tourSummaryBadgesItems') || badgesRow;
       badgesWrap.innerHTML = '';
       const fmt = (v, d=1) => (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) : '-';
       const total = Number(summary.total_days || 0);
@@ -2928,7 +2987,13 @@
   if (settingsCancel) {
     settingsCancel.addEventListener('click', () => {
       try { applySettingsToForm(SETTINGS); } catch (_) {}
-      setMode(LAST_NON_SETTINGS_MODE || 'tour');
+      const m = (LAST_NON_SETTINGS_MODE || 'tour');
+      try {
+        if (window.WM && typeof window.WM.setMode === 'function') window.WM.setMode(m);
+        else setMode(m);
+      } catch (_) {
+        try { setMode(m); } catch (_) {}
+      }
     });
   }
 
@@ -2937,7 +3002,13 @@
       SETTINGS = readSettingsFromForm(SETTINGS);
       saveSettings(SETTINGS);
       STEP_KM = SETTINGS.stepKm;
-      setMode(LAST_NON_SETTINGS_MODE || 'tour');
+      const m = (LAST_NON_SETTINGS_MODE || 'tour');
+      try {
+        if (window.WM && typeof window.WM.setMode === 'function') window.WM.setMode(m);
+        else setMode(m);
+      } catch (_) {
+        try { setMode(m); } catch (_) {}
+      }
       loadMap();
     });
   }
@@ -2946,18 +3017,30 @@
     if (!shareBtn) return;
     async function captureAndShare(){
       try {
-        // Wait a tick to ensure tooltip layout widths applied
+        // Stabilize layout & Leaflet transforms before capturing.
         await new Promise(r => setTimeout(r, 30));
-        const target = document.body;
-        // html2canvas options tuned for clarity and cross-origin tiles
+        try { map.invalidateSize(); } catch (_) {}
+        await new Promise(r => requestAnimationFrame(() => r()));
+        await new Promise(r => requestAnimationFrame(() => r()));
+        const target = document.documentElement;
+        const vw = Math.max(1, Number(window.innerWidth || document.documentElement.clientWidth || 1));
+        const vh = Math.max(1, Number(window.innerHeight || document.documentElement.clientHeight || 1));
+        const dpr = Math.max(1, Number(window.devicePixelRatio || 1));
+        // html2canvas options tuned for full-viewport, full-resolution output.
         const canvas = await window.html2canvas(target, {
-          backgroundColor: null,
-          scale: Math.max(1, Math.floor(window.devicePixelRatio || 1)),
+          backgroundColor: '#ffffff',
+          scale: Math.min(2, dpr),
           useCORS: true,
           allowTaint: true,
           logging: false,
-          windowWidth: document.documentElement.clientWidth,
-          windowHeight: document.documentElement.clientHeight
+          scrollX: 0,
+          scrollY: 0,
+          x: 0,
+          y: 0,
+          width: vw,
+          height: vh,
+          windowWidth: vw,
+          windowHeight: vh
         });
         const blob = await new Promise(res => canvas.toBlob(b => res(b), 'image/png', 0.92));
         if (!blob) throw new Error('Snapshot failed');
@@ -3011,11 +3094,15 @@
           SETTINGS.stepKm = Number(st.glyph_spacing_km);
           STEP_KM = SETTINGS.stepKm;
         }
-        if (typeof st.first_year === 'number') SETTINGS.histStartYear = Number(st.first_year);
         if (typeof st.num_years === 'number') SETTINGS.histYears = Number(st.num_years);
+        if (typeof st.first_year === 'number') {
+          const fy = Number(st.first_year);
+          const ny = Number(SETTINGS.histYears);
+          SETTINGS.histLastYear = Math.round(fy + (Number.isFinite(ny) ? ny : 10) - 1);
+        }
         // Sync settings modal inputs silently
         setStepKm.value = SETTINGS.stepKm;
-        setHistStart.value = SETTINGS.histStartYear;
+        if (setHistLast) setHistLast.value = SETTINGS.histLastYear;
         setHistYears.value = SETTINGS.histYears;
         // GPX path and reverse flag
         if (st.last_gpx_path) LAST_GPX_PATH = st.last_gpx_path;
@@ -3023,6 +3110,7 @@
           // Clear stale path to avoid sending invalid override
           LAST_GPX_PATH = null;
         }
+        updateDropZoneLabel();
         if (typeof st.reverse === 'boolean') REVERSED = st.reverse;
         // Sync reverse checkbox state
         try {
@@ -3037,6 +3125,7 @@
     } catch (e) {
       console.warn('Session restore failed; using defaults', e);
     }
+    updateDropZoneLabel();
     loadMap();
   })();
 

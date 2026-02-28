@@ -30,8 +30,13 @@ build/
 *.tsbuildinfo
 
 # --- Project runtime/cache output ---
-cache/
-debug_output/
+/cache/
+/debug_output/
+project/debug_output/
+
+# SQLite transient files (avoid committing WAL/SHM)
+*.sqlite-wal
+*.sqlite-shm
 
 # --- Local runtime data (ignore all GPX files) ---
 project/data/*.gpx

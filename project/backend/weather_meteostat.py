@@ -171,14 +171,31 @@ def _fetch_daily_range_meteostat(lat: float, lon: float, start: date, end: date)
     return out
 
 
-def fetch_daily_weather_same_day_meteostat(lat: float, lon: float, month: int, day: int, years_window: int = 10) -> pd.DataFrame:
-    """Fetch only the specific calendar day per year across the last `years_window` years via Meteostat."""
+def fetch_daily_weather_same_day_meteostat(
+    lat: float,
+    lon: float,
+    month: int,
+    day: int,
+    years_window: int = 10,
+    start_year: int | None = None,
+    end_year: int | None = None,
+) -> pd.DataFrame:
+    """Fetch only the specific calendar day per year across the requested years via Meteostat."""
     today = date.today()
-    start_year = today.year - int(years_window)
-    end_year = today.year - 1
+    default_end = today.year - 1
+    if end_year is None:
+        end_year = default_end
+    else:
+        end_year = min(int(end_year), default_end)
+    if start_year is None:
+        start_year = int(end_year) - int(years_window) + 1
+    else:
+        start_year = int(start_year)
+    if int(end_year) < int(start_year):
+        return pd.DataFrame([])
 
     rows = []
-    for y in range(start_year, end_year + 1):
+    for y in range(int(start_year), int(end_year) + 1):
         try:
             d0 = date(y, int(month), int(day))
         except ValueError:
@@ -208,8 +225,17 @@ def fetch_daily_weather_same_day_meteostat(lat: float, lon: float, month: int, d
     return df
 
 
-def fetch_daily_weather_window_meteostat(lat: float, lon: float, start_month: int, start_day: int, span_days: int, years_window: int = 10) -> pd.DataFrame:
-    """Fetch daily weather for a contiguous date window per year across the last `years_window` years via Meteostat."""
+def fetch_daily_weather_window_meteostat(
+    lat: float,
+    lon: float,
+    start_month: int,
+    start_day: int,
+    span_days: int,
+    years_window: int = 10,
+    start_year: int | None = None,
+    end_year: int | None = None,
+) -> pd.DataFrame:
+    """Fetch daily weather for a contiguous date window per year across the requested years via Meteostat."""
     span_days = int(span_days)
     if span_days < 1:
         raise ValueError('span_days must be >= 1')
@@ -218,11 +244,20 @@ def fetch_daily_weather_window_meteostat(lat: float, lon: float, start_month: in
         span_days = 180
 
     today = date.today()
-    start_year = today.year - int(years_window)
-    end_year = today.year - 1
+    default_end = today.year - 1
+    if end_year is None:
+        end_year = default_end
+    else:
+        end_year = min(int(end_year), default_end)
+    if start_year is None:
+        start_year = int(end_year) - int(years_window) + 1
+    else:
+        start_year = int(start_year)
+    if int(end_year) < int(start_year):
+        return pd.DataFrame([])
 
     rows = []
-    for y in range(start_year, end_year + 1):
+    for y in range(int(start_year), int(end_year) + 1):
         try:
             d0 = date(y, int(start_month), int(start_day))
         except ValueError:

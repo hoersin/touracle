@@ -1,0 +1,37 @@
+{
+  "samples_local": {
+    "10": {
+      "temp": 23.8,
+      "precip": 0.0,
+      "wind": 7.0,
+      "wind_dir_deg": 348.0
+    },
+    "12": {
+      "temp": 26.1,
+      "precip": 0.0,
+      "wind": 2.3,
+      "wind_dir_deg": 18.0
+    },
+    "14": {
+      "temp": 21.5,
+      "precip": 2.8,
+      "wind": 4.7,
+      "wind_dir_deg": 293.0
+    },
+    "16": {
+      "temp": 23.3,
+      "precip": 0.0,
+      "wind": 6.4,
+      "wind_dir_deg": 313.0
+    }
+  },
+  "ride_temp_mean": 23.675,
+  "ride_wind_mean": 5.1,
+  "ride_wind_dir_deg": 327.3785205369355,
+  "ride_rain_flag": 1.0,
+  "tent_rain_flag": 1.0,
+  "daily_precip_sum": 3.1999999999999997,
+  "daily_temp_mean": 21.666666666666668,
+  "daily_wind_mean": 4.983333333333333,
+  "daily_wind_dir_deg": 313.00371090479445
+}

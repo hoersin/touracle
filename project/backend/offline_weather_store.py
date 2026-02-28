@@ -28,6 +28,7 @@ class OfflineTileConfig:
     db_path: Path
     tile_km: float
     bbox: Tuple[float, float, float, float]  # (lat_min, lat_max, lon_min, lon_max)
+    years: Optional[Tuple[int, int]] = None  # (start_year, end_year)
 
 
 def _parse_bbox(raw: str) -> Tuple[float, float, float, float]:
@@ -56,15 +57,72 @@ class OfflineWeatherStore:
 
     @staticmethod
     def default_from_env() -> Optional["OfflineWeatherStore"]:
-        # Default path
-        p = os.environ.get("OFFLINE_WEATHER_DB", "project/cache/offline_weather.sqlite")
-        path = Path(p)
-        if not path.exists():
+        p_env = os.environ.get("OFFLINE_WEATHER_DB")
+
+        # Explicit override: respect exactly.
+        if p_env:
+            try:
+                path = Path(p_env)
+                if path.exists():
+                    cfg = OfflineWeatherStore._load_config(path)
+                    if cfg is not None:
+                        return OfflineWeatherStore(cfg)
+            except Exception:
+                return None
+
+        # Auto-detect: prefer the DB with the most complete tile coverage.
+        # Some DBs can be multi-year but very sparse (few tiles) and thus unusable
+        # for most routes. Tie-break using the widest historical year span.
+        cache_dir = Path("project/cache")
+        candidates: List[Path] = []
+        try:
+            year_dbs: List[Tuple[int, Path]] = []
+            for p in cache_dir.glob("offline_weather_*.sqlite"):
+                try:
+                    suffix = p.stem.split("offline_weather_", 1)[1]
+                    year = int(suffix)
+                    year_dbs.append((year, p))
+                except Exception:
+                    continue
+            for _, p in sorted(year_dbs, key=lambda t: t[0], reverse=True):
+                candidates.append(p)
+        except Exception:
+            pass
+        candidates.append(Path("project/cache/offline_weather.sqlite"))
+
+        best: Tuple[int, int, int, float, OfflineTileConfig] | None = None
+        for path in candidates:
+            try:
+                if not path.exists():
+                    continue
+                cfg = OfflineWeatherStore._load_config(path)
+                if cfg is None:
+                    continue
+                tile_count = 0
+                try:
+                    conn = sqlite3.connect(str(path))
+                    try:
+                        tile_count = int(conn.execute("SELECT COUNT(*) FROM tiles").fetchone()[0])
+                    finally:
+                        conn.close()
+                except Exception:
+                    tile_count = 0
+                span_years = 0
+                end_year = 0
+                if cfg.years is not None:
+                    ys, ye = cfg.years
+                    span_years = max(0, int(ye) - int(ys) + 1)
+                    end_year = int(ye)
+                mtime = float(path.stat().st_mtime)
+                score = (tile_count, span_years, end_year, mtime)
+                if best is None or score > best[:4]:
+                    best = (tile_count, span_years, end_year, mtime, cfg)
+            except Exception:
+                continue
+
+        if best is None:
             return None
-        cfg = OfflineWeatherStore._load_config(path)
-        if cfg is None:
-            return None
-        return OfflineWeatherStore(cfg)
+        return OfflineWeatherStore(best[4])
 
     @staticmethod
     def _load_config(db_path: Path) -> Optional[OfflineTileConfig]:
@@ -87,7 +145,18 @@ class OfflineWeatherStore:
         except Exception:
             return None
 
-        return OfflineTileConfig(db_path=db_path, tile_km=tile_km, bbox=bbox)
+        years: Optional[Tuple[int, int]] = None
+        try:
+            raw = meta.get("years")
+            if raw:
+                yj = json.loads(str(raw))
+                ys = int(yj.get("start"))
+                ye = int(yj.get("end"))
+                years = (ys, ye)
+        except Exception:
+            years = None
+
+        return OfflineTileConfig(db_path=db_path, tile_km=tile_km, bbox=bbox, years=years)
 
     def _tile_id_for_point(self, lat: float, lon: float) -> Optional[str]:
         lat_min, lat_max, lon_min, lon_max = self.cfg.bbox

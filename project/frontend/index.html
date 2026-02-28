@@ -10,9 +10,11 @@
     /* Top navigation (segmented control) */
     #topNav { position: fixed; z-index: 2100; left: 50%; top: 10px; transform: translateX(-50%); }
     .wm-seg { position: relative; display: inline-flex; gap: 0; padding: 4px; border-radius: 999px; background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-family: system-ui, -apple-system, sans-serif; }
-    .wm-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: 0px; border-radius: 999px; background: #28a745; box-shadow: 0 2px 6px rgba(40,167,69,0.25); transition: transform 260ms ease, width 260ms ease; pointer-events: none; }
+    .wm-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: 0px; border-radius: 999px; background: #28a745; box-shadow: 0 2px 6px rgba(40,167,69,0.25); transition: left 260ms ease, width 260ms ease; pointer-events: none; }
     .wm-seg-btn { position: relative; z-index: 1; border: none; background: transparent; padding: 8px 12px; border-radius: 999px; cursor: pointer; font-size: 13px; color: #1f2937; transition: color 200ms ease; }
     .wm-seg-btn[aria-selected="true"] { color: #fff; font-weight: 700; }
+    /* Fallback: if pill width is zero on first paint, keep selection visible */
+    .wm-seg-btn.wm-active-fallback { background: #28a745; color: #fff; font-weight: 700; }
     .wm-seg-btn:focus { outline: none; }
     .wm-seg-btn:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
 
@@ -27,9 +29,28 @@
       left: 60px;
       top: 58px;
     }
+    /* Tour Planning controls: keep panel compact (target ~2:1 w:h) */
+    #controls {
+      width: 360px;
+      max-width: calc(100vw - 120px);
+      box-sizing: border-box;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    #controls button,
+    #controls input,
+    #controls select,
+    #controls label {
+      font-family: inherit;
+    }
     #strategicControls { display: none; }
     #map { height: calc(100% - 160px); }
-    #profilePanel { height: 160px; border-top: 1px solid #ddd; background: #fafafa; }
+    #profilePanel { height: 160px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
+    #tourSummary { font-family: system-ui, -apple-system, sans-serif; }
+    #tourSummary button,
+    #tourSummary input,
+    #tourSummary select {
+      font-family: inherit;
+    }
     #profileCanvas { width: 100%; height: 100%; display: block; }
     /* Resize handle at top edge of profile canvas */
     #profileResizeHandle { 
@@ -159,23 +180,21 @@
   </div>
 
   <div id="controls">
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div style="display:grid; grid-template-columns: 88px 1fr; gap:6px 8px; align-items:center;">
       <label for="startDate">Start Date:</label>
-      <input type="date" id="startDate" />
+      <input type="date" id="startDate" style="width:100%" />
       <label for="tourDays">Days:</label>
-      <input type="number" id="tourDays" min="1" max="60" value="7" style="width:64px" />
+      <input type="number" id="tourDays" min="1" max="60" value="7" style="width:80px" />
+    </div>
+    <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#2a7a2a; cursor:pointer; white-space:normal;">Drop GPX here to load route (or click to choose)</div>
+    <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
+    <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button id="fetchWeather">Get Weather Data</button>
+      <button id="stopWeather">Stop</button>
       <label style="display:flex; align-items:center; gap:6px;">
         <input type="checkbox" id="reverse" />
         <span>Reverse Tour</span>
       </label>
-      <button id="share">Share 📸</button>
-      
-    </div>
-    <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#2a7a2a; cursor:pointer;">Drop GPX here to load route (or click to choose)</div>
-    <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
-    <div style="margin-top:8px; display:flex; gap:10px;">
-      <button id="fetchWeather">Get Weather Data</button>
-      <button id="stopWeather">Stop</button>
     </div>
     <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">
       <div class="bar"></div>
@@ -237,9 +256,9 @@
         </select>
         <label for="setStepKm">Glyph spacing (km)</label>
         <input type="number" id="setStepKm" min="5" max="200" step="5" />
-        <label for="setHistStart">First historical year</label>
-        <input type="number" id="setHistStart" min="1970" max="2025" step="1" />
-        <label for="setHistYears">Number of historical years</label>
+        <label for="setHistLast">Last historical year</label>
+        <input type="number" id="setHistLast" min="1970" max="2100" step="1" />
+        <label for="setHistYears"># historic years</label>
         <input type="number" id="setHistYears" min="1" max="50" step="1" />
         <label for="setTempCold">Comfort min temp (°C)</label>
         <input type="number" id="setTempCold" min="-40" max="30" step="1" />
@@ -273,7 +292,16 @@
   <div id="profilePanel" style="position:relative; width:100vw">
     <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
-      <div id="tourSummaryBadges" style="display:flex; gap:18px; align-items:center; justify-content:center; flex-wrap:wrap; padding:6px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box;"></div>
+      <div id="tourSummaryBadges" style="display:flex; align-items:center; gap:10px; padding:6px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box;">
+        <div id="tourSummaryBadgesItems" style="display:flex; gap:18px; align-items:center; justify-content:center; flex-wrap:wrap; flex:1;"></div>
+        <button id="share" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border:1px solid rgba(0,0,0,0.18); border-radius:8px; background:rgba(255,255,255,0.9); cursor:pointer;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 16V3" />
+            <path d="M8 7l4-4 4 4" />
+            <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
+          </svg>
+        </button>
+      </div>
       <!-- Hover tooltip for badges (styled like other tooltips) -->
       <div id="tourSummaryTooltip" class="tooltip wm-tip" style="position:absolute; left:50%; transform:translateX(-50%); bottom:80px; display:none; z-index:1600; pointer-events:none;"></div>
     </div>
@@ -287,12 +315,264 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="/profile.js?v=1"></script>
-  <script src="/map.js?v=24"></script>
+  <script>
+    (function(){
+      'use strict';
+
+      // External, robust mode navigation wiring.
+      // - Always starts in Tour Planning.
+      // - Buttons always clickable (capture handlers on buttons themselves).
+      // - Pill positioning resilient to early-load layout timing.
+      // - Exposes tests under window.WM.*
+
+      window.__WM_MODE_NAV_EXTERNAL__ = true;
+
+      const MODES = ['climate', 'tour', 'settings'];
+
+      function q(id){ return document.getElementById(id); }
+
+      function getMode(){
+        const m = document.body && document.body.dataset ? String(document.body.dataset.mode || '') : '';
+        return MODES.includes(m) ? m : 'tour';
+      }
+
+      function updateSelected(mode){
+        try {
+          const btns = [q('navClimate'), q('navTour'), q('navSettings')].filter(Boolean);
+          btns.forEach(btn => {
+            const m = btn && btn.dataset ? btn.dataset.mode : null;
+            const isActive = (m === mode);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            try { btn.classList.toggle('wm-active-fallback', !!isActive); } catch (_) {}
+          });
+        } catch (_) {}
+      }
+
+      function updatePill(mode){
+        const nav = q('modeNav');
+        const pill = q('modeNavPill');
+        if (!nav || !pill) return false;
+
+        const btns = [q('navClimate'), q('navTour'), q('navSettings')].filter(Boolean);
+        const active = btns.find(b => b && b.dataset && b.dataset.mode === mode);
+        if (!active) return false;
+
+        const ow = Number(active.offsetWidth || 0);
+        const ol = Number(active.offsetLeft || 0);
+        if (ow > 0) {
+          pill.style.left = `${Math.max(0, ol)}px`;
+          pill.style.width = `${Math.max(0, ow)}px`;
+          pill.style.transform = 'none';
+          return true;
+        }
+
+        try {
+          const pr = nav.getBoundingClientRect();
+          const br = active.getBoundingClientRect();
+          const w = Math.max(0, br.width);
+          const l = Math.max(0, br.left - pr.left);
+          if (w > 0) {
+            pill.style.left = `${l}px`;
+            pill.style.width = `${w}px`;
+            pill.style.transform = 'none';
+            return true;
+          }
+        } catch (_) {}
+
+        // Final fallback: derive from container width + active index.
+        // This makes the pill visible even if button metrics are 0 during early layout.
+        try {
+          const idx = Math.max(0, btns.indexOf(active));
+          const pad = 4; // matches .wm-seg padding
+          const navW = Number(nav.clientWidth || 0);
+          const innerW = Math.max(0, navW - pad * 2);
+          const segW = (btns.length > 0) ? (innerW / btns.length) : 0;
+          if (segW > 8) {
+            pill.style.left = `${pad + idx * segW}px`;
+            pill.style.width = `${segW}px`;
+            pill.style.transform = 'none';
+            return true;
+          }
+        } catch (_) {}
+
+        return false;
+      }
+
+      function scheduleUpdate(mode){
+        try {
+          updateSelected(mode);
+          updatePill(mode);
+          requestAnimationFrame(() => updatePill(mode));
+          requestAnimationFrame(() => updatePill(mode));
+          setTimeout(() => updatePill(mode), 60);
+          setTimeout(() => updatePill(mode), 220);
+        } catch (_) {}
+      }
+
+      function invalidateLeafletSoon(mode){
+        if (mode === 'settings') return;
+        setTimeout(() => {
+          try {
+            const m = window.__WM_LEAFLET_MAP__;
+            if (m && m.invalidateSize) m.invalidateSize();
+          } catch (_) {}
+        }, 80);
+      }
+
+      function setMode(mode, opts){
+        const m = MODES.includes(mode) ? mode : 'tour';
+        const options = Object.assign({ persist: true }, opts || {});
+        try {
+          if (document.body && document.body.dataset) document.body.dataset.mode = m;
+        } catch (_) {}
+
+        if (options.persist) {
+          try { localStorage.setItem('wm_mode', String(m)); } catch (_) {}
+        }
+
+        scheduleUpdate(m);
+        invalidateLeafletSoon(m);
+
+        // Delegate to the legacy mode setter (defined in map.js) once available.
+        // This preserves side effects like syncing the Settings form.
+        try {
+          if (typeof window.setMode === 'function') {
+            window.setMode(m);
+          }
+        } catch (_) {}
+
+        try {
+          window.dispatchEvent(new CustomEvent('wm:modechange', { detail: { mode: m } }));
+        } catch (_) {}
+      }
+
+      function wireButtons(){
+        const btns = [q('navClimate'), q('navTour'), q('navSettings')].filter(Boolean);
+        btns.forEach(btn => {
+          const m = btn?.dataset?.mode;
+          if (!m) return;
+
+          const handler = (e) => {
+            try { e.preventDefault && e.preventDefault(); } catch (_) {}
+            try { e.stopPropagation && e.stopPropagation(); } catch (_) {}
+            setMode(m);
+          };
+
+          btn.addEventListener('pointerdown', handler, true);
+          btn.addEventListener('click', handler, true);
+          btn.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') handler(e);
+          }, true);
+        });
+
+        try {
+          const nav = q('modeNav');
+          if (nav && 'ResizeObserver' in window) {
+            const ro = new ResizeObserver(() => scheduleUpdate(getMode()));
+            ro.observe(nav);
+          }
+        } catch (_) {}
+      }
+
+      function boot(){
+        if (window.__WM_MODE_NAV_BOOTED__) return;
+        window.__WM_MODE_NAV_BOOTED__ = true;
+
+        wireButtons();
+
+        // Always start in Tour Planning.
+        setMode('tour');
+
+        window.addEventListener('load', () => {
+          scheduleUpdate(getMode());
+          // Ensure legacy setter sees the initial mode once map.js is loaded.
+          try { if (typeof window.setMode === 'function') window.setMode(getMode()); } catch (_) {}
+        });
+        try {
+          if (document.fonts && document.fonts.ready && typeof document.fonts.ready.then === 'function') {
+            document.fonts.ready.then(() => scheduleUpdate(getMode()));
+          }
+        } catch (_) {}
+      }
+
+      // Test helpers
+      window.WM = window.WM || {};
+      window.WM.setMode = setMode;
+      window.WM.getMode = getMode;
+      window.WM.testModeNav = async function testModeNav(){
+        const out = { ok: true, steps: [] };
+        const pill = q('modeNavPill');
+        const snap = (label) => {
+          const active = Array.from(document.querySelectorAll('#modeNav .wm-seg-btn'))
+            .find(b => b.getAttribute('aria-selected') === 'true');
+          out.steps.push({
+            label,
+            mode: getMode(),
+            active: active ? (active.id || active.textContent) : null,
+            pillLeft: pill ? (pill.style.left || '') : null,
+            pillWidth: pill ? (pill.style.width || '') : null,
+          });
+        };
+
+        try {
+          snap('start');
+          q('navTour')?.click();
+          await new Promise(r => setTimeout(r, 50));
+          snap('after click(tour)');
+          q('navClimate')?.click();
+          await new Promise(r => setTimeout(r, 50));
+          snap('after click(climate)');
+          q('navSettings')?.click();
+          await new Promise(r => setTimeout(r, 50));
+          snap('after click(settings)');
+          q('navTour')?.click();
+          await new Promise(r => setTimeout(r, 50));
+          snap('after click(tour again)');
+
+          const ok = out.steps.some(s => s.mode === 'climate') && out.steps.some(s => s.mode === 'settings') && out.steps.some(s => s.mode === 'tour');
+          out.ok = !!ok;
+        } catch (e) {
+          out.ok = false;
+          out.error = String(e && e.message ? e.message : e);
+        }
+
+        try { console.table(out.steps); } catch (_) {}
+        return out;
+      };
+
+      window.WM.enableModeNavClickTrace = function enableModeNavClickTrace(){
+        if (window.__WM_MODE_NAV_TRACE__) return;
+        window.__WM_MODE_NAV_TRACE__ = true;
+        const log = (evName, e) => {
+          try {
+            const x = e.clientX, y = e.clientY;
+            const el = document.elementFromPoint(x, y);
+            console.log(`[ModeNavTrace] ${evName}`, {
+              target: e.target && (e.target.id || e.target.className || e.target.tagName),
+              elementFromPoint: el && (el.id || el.className || el.tagName),
+              bodyMode: getMode(),
+              x, y
+            });
+          } catch (_) {}
+        };
+        document.addEventListener('pointerdown', (e) => log('pointerdown', e), true);
+        document.addEventListener('click', (e) => log('click', e), true);
+        console.log('[ModeNavTrace] enabled');
+      };
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+      } else {
+        boot();
+      }
+    })();
+  </script>
+  <script src="/map.js?v=29"></script>
   <script>
     // Assisted test helpers: always available in Console
     window.setTestDemoSettings = function() {
       try {
-        const cfg = { stepKm: 100, histStartYear: 2024, histYears: 1 };
+        const cfg = { stepKm: 100, histLastYear: 2024, histYears: 1 };
         localStorage.setItem('wm_settings', JSON.stringify(cfg));
         const btn = document.getElementById('reload');
         if (btn) btn.click(); else location.reload();

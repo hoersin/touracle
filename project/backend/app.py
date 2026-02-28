@@ -77,7 +77,7 @@ SESSION_STATE: Dict[str, Any] = {
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger('pipeline')
 
-_OFFLINE_STORE: Optional["OfflineWeatherStore"] = None
+_OFFLINE_STORE: Optional[Any] = None
 _OFFLINE_STORE_TRIED = False
 
 
@@ -85,7 +85,7 @@ def _offline_strict_enabled() -> bool:
     return str(os.environ.get('OFFLINE_STRICT', '')).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
-def _get_offline_store() -> Optional["OfflineWeatherStore"]:
+def _get_offline_store() -> Optional[Any]:
     global _OFFLINE_STORE, _OFFLINE_STORE_TRIED
     if _OFFLINE_STORE_TRIED:
         return _OFFLINE_STORE
@@ -117,7 +117,18 @@ def _get_offline_stats(lat: float, lon: float, month: int, day: int) -> Optional
     if store is None:
         return None
     try:
-        return store.get_stats(float(lat), float(lon), int(month), int(day))
+        st = store.get_stats(float(lat), float(lon), int(month), int(day))
+        if st is None:
+            return None
+        try:
+            if getattr(store, 'cfg', None) is not None and getattr(store.cfg, 'years', None):
+                ys, ye = store.cfg.years  # type: ignore[misc]
+                st = dict(st)
+                st['_years_start'] = int(ys)
+                st['_years_end'] = int(ye)
+        except Exception:
+            pass
+        return st
     except Exception:
         return None
 
@@ -649,6 +660,7 @@ def api_map_stream():
     date = request.args.get('date', None)
     gpx_override = request.args.get('gpx_path')
     tour_planning_param = request.args.get('tour_planning', '1')
+    offline_only_param = request.args.get('offline_only')
     step_km_param = request.args.get('step_km')
     max_points_param = request.args.get('max_points')
     grid_deg_param = request.args.get('grid_deg')
@@ -696,6 +708,7 @@ def api_map_stream():
         # Prevent parallel heavy streams: assign token; dry-run streams do not cancel main
         local_token = None
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
+        offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
         with STREAM_LOCK:
             global STREAM_TOKEN
             if not is_dry_run:
@@ -726,10 +739,15 @@ def api_map_stream():
                     })
                 except Exception:
                     pass
-            # Optional: force online/offline for debugging
+            # Optional: force online/offline for debugging.
+            # IMPORTANT: `set_force_online` is global state in `weather_openmeteo`, so
+            # we must reset it when not explicitly requested to avoid sticky behavior
+            # across requests.
             try:
                 if force_online_param is not None:
                     set_force_online(str(force_online_param).lower() in ('1', 'true', 'yes'))
+                else:
+                    set_force_online(False)
             except Exception:
                 pass
             step_km = float(step_km_param) if step_km_param else 25.0
@@ -1059,35 +1077,30 @@ def api_map_stream():
         # Elevation per profile point via nearest GPX track point (use active gpx_path)
         elev_m = []
         try:
-            if is_dry_run:
-                # Skip heavy elevation parsing during priming to emit profile fast
-                elev_m = [None for _ in profile_points]
-            else:
-                import gpxpy
-                # Read the same GPX used for this stream
-                with open(str(gpx_path), 'r', encoding='utf-8') as _f:
-                    _g = gpxpy.parse(_f)
-                raw = []
-                for tr in _g.tracks:
-                    for seg in tr.segments:
-                        for p in seg.points:
-                            raw.append((float(p.latitude), float(p.longitude), float(p.elevation) if (p.elevation is not None) else None))
-                for rt in _g.routes:
-                    for p in rt.points:
+            import gpxpy
+            # Read the same GPX used for this stream
+            with open(str(gpx_path), 'r', encoding='utf-8') as _f:
+                _g = gpxpy.parse(_f)
+            raw = []
+            for tr in _g.tracks:
+                for seg in tr.segments:
+                    for p in seg.points:
                         raw.append((float(p.latitude), float(p.longitude), float(p.elevation) if (p.elevation is not None) else None))
-                def _nearest_ele(lat: float, lon: float) -> float:
-                    import math as _m
-                    best = None; best_d = 1e9
-                    for (la, lo, el) in raw:
-                        d = haversine_km(lat, lon, la, lo)
-                        if d < best_d:
-                            best_d = d; best = el
-                    try:
-                        return float(best) if best is not None else None
-                    except Exception:
-                        return None
-                for (lat, lon) in profile_points:
-                    elev_m.append(_nearest_ele(lat, lon))
+            for rt in _g.routes:
+                for p in rt.points:
+                    raw.append((float(p.latitude), float(p.longitude), float(p.elevation) if (p.elevation is not None) else None))
+            def _nearest_ele(lat: float, lon: float) -> float:
+                best = None; best_d = 1e9
+                for (la, lo, el) in raw:
+                    d = haversine_km(lat, lon, la, lo)
+                    if d < best_d:
+                        best_d = d; best = el
+                try:
+                    return float(best) if best is not None else None
+                except Exception:
+                    return None
+            for (lat, lon) in profile_points:
+                elev_m.append(_nearest_ele(lat, lon))
         except Exception:
             elev_m = [None for _ in profile_points]
 
@@ -1174,40 +1187,175 @@ def api_map_stream():
         except Exception:
             years_window = 10
 
-        if tour_planning and sampled_points:
-            idx = len(sampled_points) // 2
-            rep_lat, rep_lon = sampled_points[idx]
-            # Priority: (1) disk stats cache, (2) offline SQLite tile DB, (3) online API.
-            rep_qlat = _quantize(rep_lat, grid_deg)
-            rep_qlon = _quantize(rep_lon, grid_deg)
-            rep_stats_name = f"stats_lat{rep_qlat:.2f}_lon{rep_qlon:.2f}_m{month:02d}_d{day:02d}_{fetch_mode}.json"
-            rep_stats_path = STATS_CACHE_DIR / rep_stats_name
-            rep_cache_hit = False
-            offline_stats = None
-            stats = None
-            matches = 0
-            try:
-                if rep_stats_path.exists():
-                    stats = __import__('json').load(open(rep_stats_path, 'r', encoding='utf-8'))
-                    matches = int(stats.get('_match_days', 0) or 0)
-                    rep_cache_hit = True
-                    log.info('[CACHE][SSE] hit %s', rep_stats_name)
-            except Exception:
-                rep_cache_hit = False
+        # Requested historical year span (aligns with frontend settings).
+        # Used both for cache keying and for providers that support explicit year ranges.
+        try:
+            import datetime as _dt
+            years_end_req = _dt.date.today().year - 1
+            if hist_start_param:
+                years_start_req = int(hist_start_param)
+                years_end_req = min(years_end_req, years_start_req + int(years_window) - 1)
+            else:
+                years_start_req = years_end_req - int(years_window) + 1
+            years_start_req = int(years_start_req)
+            years_end_req = int(years_end_req)
+        except Exception:
+            years_start_req = None
+            years_end_req = None
 
-            if not rep_cache_hit:
-                offline_stats = _get_offline_stats(rep_lat, rep_lon, month, day)
-            df = None
-            if (not rep_cache_hit) and offline_stats is None:
-                if _offline_strict_enabled() and _get_offline_store() is not None:
-                    yield "event: error\ndata: {\"error\": \"Offline strict mode: no offline data for representative point/day.\"}\n\n"
+        def _span_tag() -> str:
+            if years_start_req is None or years_end_req is None:
+                return f"yspan{int(years_window)}"
+            return f"y{int(years_start_req)}-{int(years_end_req)}"
+
+        def _years_span_from_stats(st: Any) -> int:
+            try:
+                if not isinstance(st, dict):
+                    return 0
+                ys = st.get('_years_start')
+                ye = st.get('_years_end')
+                if ys is not None and ye is not None:
+                    ys_i = int(ys)
+                    ye_i = int(ye)
+                    if ye_i >= ys_i:
+                        return int(ye_i - ys_i + 1)
+                md = st.get('_match_days')
+                if isinstance(md, (int, float)):
+                    return int(md)
+                return 0
+            except Exception:
+                return 0
+
+        # Track what data was actually used (for accurate UI messaging).
+        provenance_counts: Dict[str, int] = {
+            'disk_cache': 0,
+            'offline_tile': 0,
+            'api': 0,
+            'dummy': 0,
+        }
+        provenance_providers: set[str] = set()
+        years_used_min: int | None = None
+        years_used_max: int | None = None
+
+        def _record_years(ys: Any, ye: Any) -> None:
+            nonlocal years_used_min, years_used_max
+            try:
+                ys_i = int(ys)
+                ye_i = int(ye)
+            except Exception:
+                return
+            if years_used_min is None or ys_i < years_used_min:
+                years_used_min = ys_i
+            if years_used_max is None or ye_i > years_used_max:
+                years_used_max = ye_i
+
+        def _record_provider(p: Any) -> None:
+            try:
+                if p is None:
                     return
-                if fetch_mode == 'single_day':
-                    df = fetch_daily_weather_same_day(rep_lat, rep_lon, month, day, years_window=years_window)
+                s = str(p).strip()
+                if not s:
+                    return
+                provenance_providers.add(s)
+            except Exception:
+                return
+
+        def _df_year_span(df: Any) -> tuple[int, int] | None:
+            try:
+                if df is None or getattr(df, 'empty', False):
+                    return None
+                ser = None
+                if isinstance(df, pd.DataFrame):
+                    if 'date' in df.columns:
+                        ser = pd.to_datetime(df['date'], errors='coerce')
+                    elif 'time' in df.columns:
+                        ser = pd.to_datetime(df['time'], errors='coerce')
+                if ser is None:
+                    try:
+                        ser = pd.to_datetime(getattr(df, 'index', None), errors='coerce')
+                    except Exception:
+                        ser = None
+                if ser is None:
+                    return None
+                years = pd.Series(ser).dropna().dt.year
+                years = years[pd.notna(years)]
+                if len(years) == 0:
+                    return None
+                return (int(years.min()), int(years.max()))
+            except Exception:
+                return None
+
+        def _df_provider(df: Any) -> str | None:
+            try:
+                if df is None or getattr(df, 'empty', False):
+                    return None
+                if isinstance(df, pd.DataFrame) and '_provider' in df.columns:
+                    vals = df['_provider'].dropna().astype(str)
+                    if len(vals) == 0:
+                        return None
+                    return str(vals.iloc[0])
+            except Exception:
+                return None
+            return None
+
+        def _format_years_span(ys: int | None, ye: int | None) -> str | None:
+            if ys is None or ye is None:
+                return None
+            try:
+                if int(ys) == int(ye):
+                    return f"{int(ys)}"
+                return f"{int(ys)}..{int(ye)}"
+            except Exception:
+                return None
+
+        def _station_source_text() -> str | None:
+            used = [k for k, v in provenance_counts.items() if int(v) > 0]
+            if not used:
+                return None
+
+            years_txt = _format_years_span(years_used_min, years_used_max)
+            providers = sorted(list(provenance_providers))
+            provider_txt = None
+            if len(providers) == 1:
+                p = providers[0].lower()
+                if p in ('openmeteo', 'open-meteo', 'open_meteo'):
+                    provider_txt = 'Open-Meteo'
+                elif p == 'meteostat':
+                    provider_txt = 'Meteostat'
                 else:
-                    df = fetch_daily_weather(rep_lat, rep_lon, month, day, years_window=years_window)
+                    provider_txt = providers[0]
+
+            if used == ['offline_tile']:
+                base = 'offline Open-Meteo tile DB'
+            elif used == ['disk_cache']:
+                base = f"cached {provider_txt} station stats" if provider_txt else 'cached station stats'
+            elif used == ['api']:
+                base = f"historical {provider_txt} weather data" if provider_txt else 'historical weather data'
+            elif used == ['dummy']:
+                base = 'fallback dummy data'
+            else:
+                parts = []
+                if provenance_counts.get('offline_tile', 0) > 0:
+                    parts.append('offline tiles')
+                if provenance_counts.get('disk_cache', 0) > 0:
+                    parts.append('cached stats')
+                if provenance_counts.get('api', 0) > 0:
+                    parts.append('historical data')
+                if provenance_counts.get('dummy', 0) > 0:
+                    parts.append('dummy fallback')
+                base = 'mixed sources' + (f" ({' / '.join(parts)})" if parts else '')
+
+            if years_txt and 'dummy' not in used:
+                base = f"{base} {years_txt}"
+            return f"from {base}"
+
+        if tour_planning and sampled_points:
+            # Tour Planning: reuse stats PER DAY (not for the whole tour).
+            # If we don't have tour segmentation info, fall back to legacy single-stats reuse.
+            use_per_day = bool(segment_length and start_date is not None and tour_days is not None and tour_days > 0)
+
             def _dummy_stats(m: int, d: int) -> Dict[str, Any]:
-                base_t = 15.0 if m in (4,5,6,9,10) else (25.0 if m in (7,8) else (5.0 if m in (1,2,12) else 12.0))
+                base_t = 15.0 if m in (4, 5, 6, 9, 10) else (25.0 if m in (7, 8) else (5.0 if m in (1, 2, 12) else 12.0))
                 return {
                     'temperature_c': base_t,
                     'temp_p25': base_t - 2.0,
@@ -1218,75 +1366,259 @@ def api_map_stream():
                     'wind_speed_ms': 4.0,
                     '_temp_source': 'dummy_offline',
                 }
-            if (not rep_cache_hit) and offline_stats is None and (df is None or len(df) < (1 if fetch_mode == 'single_day' else 30)):
-                # Emit dummy glyphs for all sampled points to keep UI responsive
-                stats = _dummy_stats(month, day)
-                for i, (lat, lon) in enumerate(sampled_points):
-                    try:
-                        svg = generate_glyph_v2(stats, debug=False)
-                        feature = {
-                            "type": "Feature",
-                            "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                            "properties": {
-                                **stats,
-                                "svg": svg,
-                                "station_id": f"point_{i}",
-                                "station_name": f"Route Point {i}",
-                                "station_lat": lat,
-                                "station_lon": lon,
-                                "min_distance_to_route_km": 0.0,
-                                "usage_count": 1,
-                                "_match_days": [],
-                                "_source_mode": "tour_planning_dummy",
-                                "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
-                            }
-                        }
-                        completed += 1
-                        msg = json.dumps({"feature": feature, "completed": completed, "total": total})
-                        yield f"event: station\ndata: {msg}\n\n"
-                    except Exception:
-                        completed += 1
-                        yield f"event: station\ndata: {{\"error\": \"compose error\", \"completed\": {completed}, \"total\": {total}}}\n\n"
-                yield f"event: done\ndata: {{\"stations_count\": {completed}}}\n\n"
-                log.info('[SSE] done, stations=%d (dummy)', completed)
-                return
-            if rep_cache_hit and isinstance(stats, dict):
-                # Cache hit: do not perform any online requests.
-                pass
-            elif offline_stats is not None:
-                stats = dict(offline_stats)
-                matches = int(stats.get('_match_days', 0) or 0)
-                log.info('[OFFLINE][SSE] Representative hit tile=%s match_days=%d', stats.get('_tile_id'), matches)
-                try:
-                    s = {**stats, '_match_days': matches}
-                    import json as _json
-                    _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
-                    log.info('[CACHE][SSE] offline -> saved %s', rep_stats_name)
-                except Exception:
-                    pass
+
+            stats_by_day: Dict[int, Tuple[Dict[str, Any], int]] = {}
+            rep_by_day: Dict[int, Tuple[float, float]] = {}
+            source_by_day: Dict[int, Dict[str, Any]] = {}
+
+            if use_per_day:
+                # Choose a representative glyph point per day by distance-to-midpoint of day segment.
+                for d_idx in range(int(tour_days)):
+                    target_km = (float(d_idx) + 0.5) * float(segment_length)
+                    best_i = 0
+                    best_abs = float('inf')
+                    for i in range(len(sampled_points)):
+                        dk = float(glyph_route_dist_km.get(i, 0.0))
+                        a = abs(dk - target_km)
+                        if a < best_abs:
+                            best_abs = a
+                            best_i = i
+                    rep_by_day[d_idx] = (float(sampled_points[best_i][0]), float(sampled_points[best_i][1]))
             else:
-                stats, matches = compute_weather_statistics(df, month, day)
-                # Compute daytime temperature from hourly data and override temp fields (online only).
+                # Legacy: single representative point.
+                idx = len(sampled_points) // 2
+                rep_by_day[0] = (float(sampled_points[idx][0]), float(sampled_points[idx][1]))
+
+            for d_idx, (rep_lat, rep_lon) in rep_by_day.items():
+                if use_per_day and start_date is not None:
+                    assigned_date = start_date + _dt.timedelta(days=int(d_idx))
+                    mm = int(assigned_date.month)
+                    dd = int(assigned_date.day)
+                else:
+                    assigned_date = None
+                    mm = int(month)
+                    dd = int(day)
+
+                rep_qlat = _quantize(rep_lat, grid_deg)
+                rep_qlon = _quantize(rep_lon, grid_deg)
+                rep_stats_name = f"stats_lat{rep_qlat:.2f}_lon{rep_qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}_{_span_tag()}.json"
+                rep_stats_path = STATS_CACHE_DIR / rep_stats_name
+
+                rep_cache_hit = False
+                offline_stats = None
+                stats: Dict[str, Any] | None = None
+                matches = 0
                 try:
-                    dfh = fetch_hourly_weather_same_day(rep_lat, rep_lon, month, day, years_window=years_window)
-                    dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
-                    stats.update(dt_stats)
-                    stats['_temp_source'] = 'hourly_daytime'
-                except Exception as e:
-                    log.warning('[SSE] Daytime temp unavailable (rep): %s', e)
+                    if rep_stats_path.exists():
+                        stats = __import__('json').load(open(rep_stats_path, 'r', encoding='utf-8'))
+                        matches = int(stats.get('_match_days', 0) or 0)
+                        rep_cache_hit = True
+                        log.info('[CACHE][SSE] hit %s', rep_stats_name)
+                except Exception:
+                    rep_cache_hit = False
+
+                # Prefer multi-year if requested: cached may be single-year from an offline DB.
+                cached_span = _years_span_from_stats(stats) if rep_cache_hit else 0
+
+                # Always probe offline availability (cheap) to support fallback when API is unavailable.
+                offline_stats = _get_offline_stats(rep_lat, rep_lon, mm, dd)
+                offline_span = _years_span_from_stats(offline_stats) if offline_stats is not None else 0
+
+                need_multi = int(years_window) >= 2
+                has_multi_cached = cached_span >= 2
+                has_multi_offline = offline_span >= 2
+
+                # If we don't have multi-year cached, and offline is only single-year, we will try online
+                # to warm the stats cache (unless offline-strict prevents outbound requests).
+                if (not rep_cache_hit) and (offline_stats is not None) and (not need_multi):
+                    # Simple path: no multi-year requested; offline is good enough.
+                    stats = dict(offline_stats)
+                    matches = int(stats.get('_match_days', 0) or 0)
+                    log.info('[OFFLINE][SSE] Representative hit tile=%s match_days=%d', stats.get('_tile_id'), matches)
+                    try:
+                        s = {**stats, '_match_days': matches}
+                        import json as _json
+                        _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
+                        log.info('[CACHE][SSE] offline -> saved %s', rep_stats_name)
+                    except Exception:
+                        pass
+                    # Continue to provenance tracking below.
+                elif rep_cache_hit and (has_multi_cached or (not need_multi)):
+                    # Cached stats already satisfy requested multi-year-ness.
+                    pass
+                elif (offline_stats is not None) and has_multi_offline:
+                    # Multi-year offline DB (rare): use it.
+                    stats = dict(offline_stats)
+                    matches = int(stats.get('_match_days', 0) or 0)
+                    log.info('[OFFLINE][SSE] Representative hit tile=%s match_days=%d (multi-year)', stats.get('_tile_id'), matches)
+                    try:
+                        s = {**stats, '_match_days': matches}
+                        import json as _json
+                        _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
+                        log.info('[CACHE][SSE] offline -> saved %s', rep_stats_name)
+                    except Exception:
+                        pass
+
+                df = None
+
+                # If cache does not satisfy the requested multi-year window, try online (warm cache).
+                # If offline strict is enabled, we can only use offline/cached data.
+                must_skip_online = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
+
+                if ((not rep_cache_hit) or (need_multi and (not has_multi_cached))) and (stats is None) and (not must_skip_online):
+                    if _offline_strict_enabled() and _get_offline_store() is not None:
+                        yield "event: error\ndata: {\"error\": \"Offline strict mode: no offline data for representative point/day.\"}\n\n"
+                        return
+                    if fetch_mode == 'single_day':
+                        df = fetch_daily_weather_same_day(
+                            rep_lat,
+                            rep_lon,
+                            mm,
+                            dd,
+                            years_window=years_window,
+                            start_year=years_start_req,
+                            end_year=years_end_req,
+                        )
+                    else:
+                        df = fetch_daily_weather(
+                            rep_lat,
+                            rep_lon,
+                            mm,
+                            dd,
+                            years_window=years_window,
+                            start_year=years_start_req,
+                            end_year=years_end_req,
+                        )
+
+                df_span = _df_year_span(df)
+                df_prov = _df_provider(df)
+                if df_span is not None:
+                    _record_years(df_span[0], df_span[1])
+                _record_provider(df_prov)
+
+                if (stats is None) and (df is None or len(df) < (1 if fetch_mode == 'single_day' else 30)):
+                    # If API is unavailable, fall back to offline single-year if present.
+                    if offline_stats is not None:
+                        stats = dict(offline_stats)
+                        matches = int(stats.get('_match_days', 0) or 0)
+                        log.info('[OFFLINE][SSE] Representative fallback tile=%s match_days=%d', stats.get('_tile_id'), matches)
+                    else:
+                        stats = _dummy_stats(mm, dd)
+                        matches = 0
+                elif rep_cache_hit and isinstance(stats, dict) and (has_multi_cached or (not need_multi)):
+                    pass
+                elif stats is not None and isinstance(stats, dict) and (offline_stats is not None) and (not need_multi):
+                    # already handled above
+                    pass
+                else:
+                    stats, matches = compute_weather_statistics(df, mm, dd)
+                    # Attach provenance for later accurate UI messaging.
+                    try:
+                        if df_span is not None:
+                            stats['_years_start'] = int(df_span[0])
+                            stats['_years_end'] = int(df_span[1])
+                        if df_prov:
+                            stats['_provider'] = str(df_prov)
+                    except Exception:
+                        pass
+                    # Representative daytime temperature from hourly data (online only).
+                    try:
+                        dfh = fetch_hourly_weather_same_day(
+                            rep_lat,
+                            rep_lon,
+                            mm,
+                            dd,
+                            years_window=years_window,
+                            start_year=years_start_req,
+                            end_year=years_end_req,
+                        )
+                        dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
+                        stats.update(dt_stats)
+                        stats['_temp_source'] = 'hourly_daytime'
+                    except Exception as e:
+                        log.warning('[SSE] Daytime temp unavailable (rep): %s', e)
+                    try:
+                        s = {**stats, '_match_days': matches}
+                        import json as _json
+                        _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
+                        log.info('[CACHE][SSE] miss -> saved %s', rep_stats_name)
+                    except Exception:
+                        pass
+
+                if stats is None:
+                    stats = _dummy_stats(mm, dd)
+                    matches = 0
+
+                # Attach date metadata to reused stats (safe to override per day).
                 try:
-                    s = {**stats, '_match_days': matches}
-                    import json as _json
-                    _json.dump(s, open(rep_stats_path, 'w', encoding='utf-8'), default=_json_default)
-                    log.info('[CACHE][SSE] miss -> saved %s', rep_stats_name)
+                    stats = dict(stats)
+                    if assigned_date is not None:
+                        stats['_assigned_date'] = assigned_date.isoformat()
                 except Exception:
                     pass
+                stats_by_day[int(d_idx)] = (dict(stats), int(matches))
+
+                # Track per-day provenance so per-glyph counts are accurate.
+                try:
+                    src = 'dummy' if str(stats.get('_temp_source', '')).startswith('dummy') else ('offline_tile' if bool(stats.get('_offline')) else ('disk_cache' if rep_cache_hit else 'api'))
+                    ys = stats.get('_years_start')
+                    ye = stats.get('_years_end')
+                    if ys is not None and ye is not None:
+                        _record_years(ys, ye)
+                    _record_provider(stats.get('_provider'))
+                    source_by_day[int(d_idx)] = {
+                        'source': src,
+                        'years_start': ys,
+                        'years_end': ye,
+                        'provider': stats.get('_provider'),
+                    }
+                except Exception:
+                    source_by_day[int(d_idx)] = {'source': 'unknown'}
+
+            if not stats_by_day:
+                # Should not happen, but keep UI responsive.
+                stats_by_day[0] = (_dummy_stats(month, day), 0)
+
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
                 if (not is_dry_run) and (local_token != STREAM_TOKEN):
                     log.info('[SSE] stream cancelled during station loop')
                     return
                 try:
+                    day_idx = 0
+                    assigned_date = None
+                    if use_per_day and start_date is not None:
+                        try:
+                            day_idx = _nearest_segment_day(lat, lon)
+                        except Exception:
+                            day_idx = None
+                        if day_idx is None:
+                            try:
+                                import bisect as _bisect
+                                d_km = float(glyph_route_dist_km.get(i, 0.0))
+                                marks = [float(segment_length) * k for k in range(1, int(tour_days))]
+                                day_idx = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks, d_km))))
+                            except Exception:
+                                day_idx = 0
+                        day_idx = int(max(0, min(int(tour_days) - 1, int(day_idx))))
+                        assigned_date = start_date + _dt.timedelta(days=day_idx)
+
+                    stats, matches = stats_by_day.get(int(day_idx), next(iter(stats_by_day.values())))
+
+                    # Count provenance per glyph based on its assigned day.
+                    try:
+                        sm = source_by_day.get(int(day_idx), {})
+                        src = str(sm.get('source', '') or '')
+                        if src in provenance_counts:
+                            provenance_counts[src] += 1
+                        ys = sm.get('years_start')
+                        ye = sm.get('years_end')
+                        if ys is not None and ye is not None:
+                            _record_years(ys, ye)
+                        _record_provider(sm.get('provider'))
+                    except Exception:
+                        pass
+
                     svg = generate_glyph_v2(stats, debug=False)
                     feature = {
                         "type": "Feature",
@@ -1305,6 +1637,10 @@ def api_map_stream():
                             "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
                         }
                     }
+                    if use_per_day and assigned_date is not None:
+                        feature['properties']['tour_day_index'] = int(day_idx)
+                        feature['properties']['tour_total_days'] = int(tour_days)
+                        feature['properties']['date'] = assigned_date.isoformat()
                     try:
                         wspd = float(stats.get('wind_speed_ms', 0.0))
                         gmax = float(stats.get('wind_gust_ms', 0.0)) if 'wind_gust_ms' in stats else 0.0
@@ -1337,14 +1673,15 @@ def api_map_stream():
                 rain_days = 0; headwind_days = 0; tailwind_days = 0; comfort_days = 0; extreme_hot = 0; extreme_cold = 0
                 temps = []; winds = []; precs = []
                 for d_idx in range(total_days_val):
-                    t = float(stats.get('temperature_c', 0.0))
-                    w = float(stats.get('wind_speed_ms', 0.0))
-                    pmm = float(stats.get('precipitation_mm', 0.0))
+                    st, _mch = stats_by_day.get(int(d_idx), next(iter(stats_by_day.values())))
+                    t = float(st.get('temperature_c', 0.0))
+                    w = float(st.get('wind_speed_ms', 0.0))
+                    pmm = float(st.get('precipitation_mm', 0.0))
                     temps.append(t); winds.append(w); precs.append(pmm)
                     if pmm >= 1.0: rain_days += 1
                     # relative wind sign vs segment heading
-                    seg_head = float(day_headings.get(d_idx, stats.get('wind_dir_deg', 0.0)))
-                    eff = _cos_rel(float(stats.get('wind_dir_deg', 0.0)), seg_head)
+                    seg_head = float(day_headings.get(d_idx, st.get('wind_dir_deg', 0.0)))
+                    eff = _cos_rel(float(st.get('wind_dir_deg', 0.0)), seg_head)
                     if eff > 0.33: tailwind_days += 1
                     elif eff < -0.33: headwind_days += 1
                     # comfort criteria
@@ -1423,12 +1760,21 @@ def api_map_stream():
                         dd = assigned_date.day
 
                     # Disk cache by quantized lat/lon + month/day + fetch_mode
-                    stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}.json"
+                    stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}_{_span_tag()}.json"
                     stats_path = STATS_CACHE_DIR / stats_name
                     if stats_path.exists():
                         try:
                             stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
                             matching = int(stats.get('_match_days', 0) or 0)
+                            try:
+                                provenance_counts['disk_cache'] += 1
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
+                                _record_provider(stats.get('_provider'))
+                            except Exception:
+                                pass
                             svg = generate_glyph_v2(stats, debug=False)
                             feature = {
                                 "type": "Feature",
@@ -1463,16 +1809,133 @@ def api_map_stream():
 
                     # Offline-first per point/day: if tile stats exist, skip any network requests.
                     offline_stats = _get_offline_stats(lat, lon, mm, dd)
+                    offline_fallback_stats = None
+                    try:
+                        want_multi_year = (years_start_req is not None and years_end_req is not None and int(years_end_req) - int(years_start_req) + 1 >= 2)
+                    except Exception:
+                        want_multi_year = False
+
                     if offline_stats is not None:
                         stats = dict(offline_stats)
                         matching = int(stats.get('_match_days', 0) or 0)
-                        try:
-                            s = {**stats, '_match_days': matching}
-                            import json as _json
-                            _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
-                            log.info('[CACHE][SSE] offline -> saved %s', stats_name)
-                        except Exception:
-                            pass
+                        offline_span = _years_span_from_stats(stats)
+                        if (not want_multi_year) or offline_span >= 2:
+                            try:
+                                provenance_counts['offline_tile'] += 1
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
+                                _record_provider(stats.get('_provider'))
+                            except Exception:
+                                pass
+                            try:
+                                s = {**stats, '_match_days': matching}
+                                import json as _json
+                                _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                                log.info('[CACHE][SSE] offline -> saved %s', stats_name)
+                            except Exception:
+                                pass
+                            svg = generate_glyph_v2(stats, debug=False)
+                            feature = {
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                                "properties": {
+                                    **stats,
+                                    "svg": svg,
+                                    "station_id": f"point_{i}",
+                                    "station_name": f"Route Point {i}",
+                                    "station_lat": lat,
+                                    "station_lon": lon,
+                                    "min_distance_to_route_km": 0.0,
+                                    "usage_count": 1,
+                                    "_match_days": matching,
+                                    "_source_mode": "offline_tile",
+                                    "_grid_deg": grid_deg,
+                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                }
+                            }
+                            if segment_length and start_date is not None and assigned_date is not None:
+                                feature['properties']['tour_day_index'] = day_idx
+                                feature['properties']['tour_total_days'] = tour_days
+                                feature['properties']['date'] = assigned_date.isoformat()
+                            completed += 1
+                            msg = json.dumps({"feature": feature, "completed": completed, "total": total})
+                            yield f"event: station\ndata: {msg}\n\n"
+                            if completed % 5 == 0 or completed == total:
+                                log.info('[SSE] station emitted %d/%d (offline)', completed, total)
+                            continue
+                        # Multi-year requested but offline is single-year: keep offline as fallback and continue to online/cached fetch.
+                        offline_fallback_stats = stats
+
+                    if _offline_strict_enabled() and _get_offline_store() is not None:
+                        # Strict mode: do not use online fallback or dummy glyphs.
+                        if offline_fallback_stats is not None:
+                            stats = dict(offline_fallback_stats)
+                            matching = int(stats.get('_match_days', 0) or 0)
+                            try:
+                                provenance_counts['offline_tile'] += 1
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
+                                _record_provider(stats.get('_provider'))
+                            except Exception:
+                                pass
+                            svg = generate_glyph_v2(stats, debug=False)
+                            feature = {
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                                "properties": {
+                                    **stats,
+                                    "svg": svg,
+                                    "station_id": f"point_{i}",
+                                    "station_name": f"Route Point {i}",
+                                    "station_lat": lat,
+                                    "station_lon": lon,
+                                    "min_distance_to_route_km": 0.0,
+                                    "usage_count": 1,
+                                    "_match_days": matching,
+                                    "_source_mode": "offline_tile",
+                                    "_grid_deg": grid_deg,
+                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                }
+                            }
+                            if segment_length and start_date is not None and assigned_date is not None:
+                                feature['properties']['tour_day_index'] = day_idx
+                                feature['properties']['tour_total_days'] = tour_days
+                                feature['properties']['date'] = assigned_date.isoformat()
+                            completed += 1
+                            msg = json.dumps({"feature": feature, "completed": completed, "total": total})
+                            yield f"event: station\ndata: {msg}\n\n"
+                            continue
+                        completed += 1
+                        yield f"event: station\ndata: {{\"error\": \"Offline strict mode: no offline data for this point/day\", \"completed\": {completed}, \"total\": {total}}}\n\n"
+                        continue
+
+                    if offline_only:
+                        # Request-level offline mode: never perform online fetches.
+                        if offline_fallback_stats is not None:
+                            stats = dict(offline_fallback_stats)
+                            matching = int(stats.get('_match_days', 0) or 0)
+                            try:
+                                provenance_counts['offline_tile'] += 1
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
+                                _record_provider(stats.get('_provider'))
+                            except Exception:
+                                pass
+                            src_mode = 'offline_tile'
+                        else:
+                            stats = _dummy_stats(mm, dd)
+                            matching = 0
+                            try:
+                                provenance_counts['dummy'] += 1
+                            except Exception:
+                                pass
+                            src_mode = 'dummy'
                         svg = generate_glyph_v2(stats, debug=False)
                         feature = {
                             "type": "Feature",
@@ -1487,7 +1950,7 @@ def api_map_stream():
                                 "min_distance_to_route_km": 0.0,
                                 "usage_count": 1,
                                 "_match_days": matching,
-                                "_source_mode": "offline_tile",
+                                "_source_mode": src_mode,
                                 "_grid_deg": grid_deg,
                                 "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
                             }
@@ -1499,14 +1962,6 @@ def api_map_stream():
                         completed += 1
                         msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                         yield f"event: station\ndata: {msg}\n\n"
-                        if completed % 5 == 0 or completed == total:
-                            log.info('[SSE] station emitted %d/%d (offline)', completed, total)
-                        continue
-
-                    if _offline_strict_enabled() and _get_offline_store() is not None:
-                        # Strict mode: do not use online fallback or dummy glyphs.
-                        completed += 1
-                        yield f"event: station\ndata: {{\"error\": \"Offline strict mode: no offline data for this point/day\", \"completed\": {completed}, \"total\": {total}}}\n\n"
                         continue
 
                     # Tour optimization: when start_date+tour_days is known, fetch ONE contiguous
@@ -1514,7 +1969,7 @@ def api_map_stream():
                     use_tour_window = bool(segment_length and start_date is not None and tour_days is not None)
                     if use_tour_window:
                         span_days = int(tour_days)
-                        window_key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:window:{start_date.isoformat()}:{span_days}:{int(years_window)}"
+                        window_key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:window:{start_date.isoformat()}:{span_days}:{_span_tag()}"
                         if window_key in df_cache:
                             df = df_cache[window_key]
                         else:
@@ -1525,24 +1980,94 @@ def api_map_stream():
                                 start_date.day,
                                 span_days,
                                 years_window=years_window,
+                                start_year=years_start_req,
+                                end_year=years_end_req,
                             )
                             df_cache[window_key] = df
                         min_rows = max(1, int(span_days))
                     else:
                         # Fetch daily data using assigned mm/dd and cache per date
-                        key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}"
+                        key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}:{_span_tag()}"
                         if key in df_cache:
                             df = df_cache[key]
                         else:
                             if fetch_mode == 'single_day':
-                                df = fetch_daily_weather_same_day(qlat, qlon, mm, dd, years_window=years_window)
+                                df = fetch_daily_weather_same_day(
+                                    qlat,
+                                    qlon,
+                                    mm,
+                                    dd,
+                                    years_window=years_window,
+                                    start_year=years_start_req,
+                                    end_year=years_end_req,
+                                )
                             else:
-                                df = fetch_daily_weather(qlat, qlon, mm, dd, years_window=years_window)
+                                df = fetch_daily_weather(
+                                    qlat,
+                                    qlon,
+                                    mm,
+                                    dd,
+                                    years_window=years_window,
+                                    start_year=years_start_req,
+                                    end_year=years_end_req,
+                                )
                             df_cache[key] = df
                         min_rows = (1 if fetch_mode == 'single_day' else 30)
 
                     if df is None or len(df) < int(min_rows):
+                        if offline_fallback_stats is not None:
+                            stats = dict(offline_fallback_stats)
+                            matching = int(stats.get('_match_days', 0) or 0)
+                            try:
+                                provenance_counts['offline_tile'] += 1
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
+                                _record_provider(stats.get('_provider'))
+                            except Exception:
+                                pass
+                            try:
+                                s = {**stats, '_match_days': matching}
+                                import json as _json
+                                _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                                log.info('[CACHE][SSE] offline-fallback -> saved %s', stats_name)
+                            except Exception:
+                                pass
+                            svg = generate_glyph_v2(stats, debug=False)
+                            feature = {
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                                "properties": {
+                                    **stats,
+                                    "svg": svg,
+                                    "station_id": f"point_{i}",
+                                    "station_name": f"Route Point {i}",
+                                    "station_lat": lat,
+                                    "station_lon": lon,
+                                    "min_distance_to_route_km": 0.0,
+                                    "usage_count": 1,
+                                    "_match_days": matching,
+                                    "_source_mode": "offline_tile",
+                                    "_grid_deg": grid_deg,
+                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                }
+                            }
+                            if segment_length and start_date is not None and assigned_date is not None:
+                                feature['properties']['tour_day_index'] = day_idx
+                                feature['properties']['tour_total_days'] = tour_days
+                                feature['properties']['date'] = assigned_date.isoformat()
+                            completed += 1
+                            msg = json.dumps({"feature": feature, "completed": completed, "total": total})
+                            yield f"event: station\ndata: {msg}\n\n"
+                            if completed % 5 == 0 or completed == total:
+                                log.info('[SSE] station emitted %d/%d (offline fallback)', completed, total)
+                            continue
                         # Emit a dummy glyph for this point
+                        try:
+                            provenance_counts['dummy'] += 1
+                        except Exception:
+                            pass
                         base_t = 15.0 if mm in (4,5,6,9,10) else (25.0 if mm in (7,8) else (5.0 if mm in (1,2,12) else 12.0))
                         stats = {
                             'temperature_c': base_t,
@@ -1585,12 +2110,34 @@ def api_map_stream():
                         continue
                     # Compute stats for this mm/dd
                     stats, matching = compute_weather_statistics(df, mm, dd)
+                    # Attach provenance and count usage.
+                    try:
+                        provenance_counts['api'] += 1
+                        span = _df_year_span(df)
+                        prov = _df_provider(df)
+                        if span is not None:
+                            stats['_years_start'] = int(span[0])
+                            stats['_years_end'] = int(span[1])
+                            _record_years(span[0], span[1])
+                        if prov:
+                            stats['_provider'] = str(prov)
+                            _record_provider(prov)
+                    except Exception:
+                        pass
                     # Daytime variability (hourly across years) — cache by quantized lat/lon and date
                     try:
-                        dt_key = f"{qlat:.4f},{qlon:.4f}:{mm:02d}-{dd:02d}:hourly"
+                        dt_key = f"{qlat:.4f},{qlon:.4f}:{mm:02d}-{dd:02d}:hourly:{_span_tag()}"
                         dfh = df_cache.get(dt_key)
                         if dfh is None:
-                            dfh = fetch_hourly_weather_same_day(qlat, qlon, mm, dd, years_window=years_window)
+                            dfh = fetch_hourly_weather_same_day(
+                                qlat,
+                                qlon,
+                                mm,
+                                dd,
+                                years_window=years_window,
+                                start_year=years_start_req,
+                                end_year=years_end_req,
+                            )
                             df_cache[dt_key] = dfh
                         if dfh is not None and len(dfh) >= 4:
                             dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
@@ -1747,6 +2294,16 @@ def api_map_stream():
             done_payload = {"stations_count": completed}
             try:
                 done_payload["tour_summary"] = SESSION_STATE.get('tour_summary')
+            except Exception:
+                pass
+            try:
+                done_payload['provenance'] = {
+                    'counts': dict(provenance_counts),
+                    'providers': sorted(list(provenance_providers)),
+                    'years_used_start': years_used_min,
+                    'years_used_end': years_used_max,
+                }
+                done_payload['station_source_text'] = _station_source_text()
             except Exception:
                 pass
             yield f"event: done\ndata: {_json.dumps(done_payload)}\n\n"
