@@ -600,6 +600,16 @@
 
   let LAST_NON_SETTINGS_MODE = 'tour';
 
+  function scheduleModeNavUpdate(mode) {
+    try {
+      window.requestAnimationFrame(() => updateModeNav(mode));
+      window.requestAnimationFrame(() => updateModeNav(mode));
+      setTimeout(() => updateModeNav(mode), 60);
+    } catch (_) {
+      try { updateModeNav(mode); } catch (_) {}
+    }
+  }
+
   function updateModeNav(mode) {
     const btns = [navClimate, navTour, navSettings].filter(Boolean);
     btns.forEach(btn => {
@@ -620,7 +630,7 @@
     if (mode !== 'settings') LAST_NON_SETTINGS_MODE = mode;
     document.body.dataset.mode = mode;
     saveMode(mode);
-    updateModeNav(mode);
+    scheduleModeNavUpdate(mode);
     // Map needs a resize nudge when toggling profile/map visibility.
     if (mode !== 'settings') {
       setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 60);
@@ -632,14 +642,23 @@
   }
 
   function initModeNav() {
-    const btns = [navClimate, navTour, navSettings].filter(Boolean);
-    btns.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const m = btn.dataset && btn.dataset.mode;
+    if (modeNav) {
+      modeNav.addEventListener('click', (e) => {
+        const t = e.target;
+        const btn = (t && t.closest) ? t.closest('.wm-seg-btn') : null;
+        const m = btn && btn.dataset ? btn.dataset.mode : null;
         if (m) setMode(m);
       });
-    });
-    window.addEventListener('resize', () => updateModeNav(document.body.dataset.mode || 'tour'));
+    } else {
+      const btns = [navClimate, navTour, navSettings].filter(Boolean);
+      btns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const m = btn.dataset && btn.dataset.mode;
+          if (m) setMode(m);
+        });
+      });
+    }
+    window.addEventListener('resize', () => scheduleModeNavUpdate(document.body.dataset.mode || 'tour'));
     setMode(loadMode());
   }
 

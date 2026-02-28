@@ -10,7 +10,7 @@
     /* Top navigation (segmented control) */
     #topNav { position: fixed; z-index: 2100; left: 50%; top: 10px; transform: translateX(-50%); }
     .wm-seg { position: relative; display: inline-flex; gap: 0; padding: 4px; border-radius: 999px; background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-family: system-ui, -apple-system, sans-serif; }
-    .wm-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: 0px; border-radius: 999px; background: #28a745; box-shadow: 0 2px 6px rgba(40,167,69,0.25); transition: transform 260ms ease, width 260ms ease; }
+    .wm-seg-pill { position: absolute; top: 4px; bottom: 4px; left: 4px; width: 0px; border-radius: 999px; background: #28a745; box-shadow: 0 2px 6px rgba(40,167,69,0.25); transition: transform 260ms ease, width 260ms ease; pointer-events: none; }
     .wm-seg-btn { position: relative; z-index: 1; border: none; background: transparent; padding: 8px 12px; border-radius: 999px; cursor: pointer; font-size: 13px; color: #1f2937; transition: color 200ms ease; }
     .wm-seg-btn[aria-selected="true"] { color: #fff; font-weight: 700; }
     .wm-seg-btn:focus { outline: none; }
