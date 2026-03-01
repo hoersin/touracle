@@ -67,6 +67,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 SESSION_FILE = DATA_DIR / 'session_state.json'
 SESSION_STATE: Dict[str, Any] = {
     "last_gpx_path": "",
+    "last_gpx_name": "",
     "start_date": "",
     "tour_days": 7,
     "glyph_spacing_km": 60,
@@ -429,6 +430,10 @@ def upload_gpx():
         if not f:
             return jsonify({"error": "No file uploaded"}), 400
         name = f.filename or 'route.gpx'
+        try:
+            original_name = Path(name).name
+        except Exception:
+            original_name = str(name)
         if not name.lower().endswith('.gpx'):
             return jsonify({"error": "Only .gpx files allowed"}), 400
         ts = int(time.time())
@@ -438,10 +443,10 @@ def upload_gpx():
         log.info('[UPLOAD] Saved %s', out_path)
         # Persist session update
         try:
-            save_session_state({"last_gpx_path": str(out_path)})
+            save_session_state({"last_gpx_path": str(out_path), "last_gpx_name": str(original_name)})
         except Exception:
             pass
-        return jsonify({"path": str(out_path), "name": safe_name})
+        return jsonify({"path": str(out_path), "name": safe_name, "original_name": str(original_name)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

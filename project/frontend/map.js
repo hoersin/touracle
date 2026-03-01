@@ -114,6 +114,7 @@
   let PRIME_IN_PROGRESS = false;
   let MAIN_IN_PROGRESS = false;
   let LAST_GPX_PATH = null;
+  let LAST_GPX_NAME = null;
   let LAST_LOAD_OPTS = null;
   let OFFLINE_FALLBACK_ACTIVE = false;
 
@@ -132,8 +133,8 @@
     try {
       if (!dropZone) return;
       if (LAST_GPX_PATH) {
-        const name = getBaseName(LAST_GPX_PATH);
-        dropZone.textContent = `Loaded GPX: ${name} (click or drop to change)`;
+        const displayName = (LAST_GPX_NAME && String(LAST_GPX_NAME).trim()) ? String(LAST_GPX_NAME).trim() : getBaseName(LAST_GPX_PATH);
+        dropZone.textContent = `Loaded GPX: ${displayName} (click or drop to change)`;
       } else {
         dropZone.textContent = 'Drop GPX here to load route (or click to choose)';
       }
@@ -2797,6 +2798,17 @@
   async function loadMap(opts) {
     const loadOpts = (opts && typeof opts === 'object') ? opts : {};
     LAST_LOAD_OPTS = loadOpts;
+    const forceRestart = !!loadOpts.forceRestart;
+
+    if (forceRestart) {
+      // GPX reload (and similar actions) must interrupt any ongoing stream.
+      try { evtSource && evtSource.close(); } catch (_) {}
+      try {
+        if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close();
+      } catch (_) {}
+      PRIME_IN_PROGRESS = false;
+      MAIN_IN_PROGRESS = false;
+    }
     // Update button state
     if (fetchWeatherBtn) {
       fetchWeatherBtn.textContent = 'Downloading...';
@@ -2805,6 +2817,11 @@
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'block';
     // Prepare determinate progress
     if (evtSource) { try { evtSource.close(); } catch (_) {} }
+    // If we close the stream here, we must allow a fresh start.
+    if (forceRestart) {
+      MAIN_IN_PROGRESS = false;
+      PRIME_IN_PROGRESS = false;
+    }
     if (progressEl && progressBar) {
       progressEl.classList.remove('loading');
       progressBar.style.width = '0%';
@@ -2845,8 +2862,15 @@
 
     // Profile-first priming: fetch route + profile (dry-run) before stations
     if (!window.__WM_PROFILE_PRIME_DONE__) {
-      if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return; // avoid parallel primes
-      try { evtSource && evtSource.close(); } catch(_){}
+      if (!forceRestart && (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS)) return; // avoid parallel primes
+      try { evtSource && evtSource.close(); } catch(_){ }
+      try {
+        if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close();
+      } catch(_){ }
+      if (forceRestart) {
+        PRIME_IN_PROGRESS = false;
+        MAIN_IN_PROGRESS = false;
+      }
       if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
       OVERLAY_POINTS = [];
       const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${gpxParam}${revParam}`;
@@ -3299,10 +3323,11 @@
         const j = await res.json();
         if (j && j.path) {
           LAST_GPX_PATH = j.path;
+          LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
           updateDropZoneLabel();
           // Reset priming flag so new GPX triggers profile-first
           try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){}
-          loadMap();
+          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
         } else {
           alert('Upload failed: ' + (j.error || 'unknown error'));
         }
@@ -3493,15 +3518,19 @@
         const j = await res.json();
         if (j && j.path) {
           LAST_GPX_PATH = j.path;
+          LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
           updateDropZoneLabel();
           try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){}
-          loadMap();
+          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
         } else {
           alert('Upload failed: ' + (j.error || 'unknown error'));
         }
       } catch (err) {
         console.error('Upload error', err);
         alert('Upload error: ' + err);
+      } finally {
+        // Allow selecting the same file again to retrigger change
+        try { gpxInput.value = ''; } catch (_) {}
       }
     });
   }
@@ -3953,9 +3982,11 @@
         setHistYears.value = SETTINGS.histYears;
         // GPX path and reverse flag
         if (st.last_gpx_path) LAST_GPX_PATH = st.last_gpx_path;
+        if (st.last_gpx_name) LAST_GPX_NAME = st.last_gpx_name;
         if (st.gpx_exists === false) {
           // Clear stale path to avoid sending invalid override
           LAST_GPX_PATH = null;
+          LAST_GPX_NAME = null;
         }
         updateDropZoneLabel();
         if (typeof st.reverse === 'boolean') REVERSED = st.reverse;
