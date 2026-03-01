@@ -865,6 +865,11 @@ def api_map_stream():
             gpx_path = GPX_FILE
             if gpx_override and gpx_override.endswith('.gpx') and Path(gpx_override).exists():
                 gpx_path = Path(gpx_override)
+            gpx_path_str = str(gpx_path)
+            try:
+                gpx_is_uploaded = Path(gpx_path_str).name.startswith('uploaded_')
+            except Exception:
+                gpx_is_uploaded = False
             # Optional: reset circuit breaker to re-enable online requests
             try:
                 if str(reset_api_param).lower() in ('1','true','yes'):
@@ -877,6 +882,11 @@ def api_map_stream():
                         td = int(SESSION_STATE.get('tour_days', 7))
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
+                        "last_gpx_name": (
+                            (SESSION_STATE.get('last_gpx_name') or '')
+                            if gpx_is_uploaded
+                            else Path(gpx_path_str).name
+                        ),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
                         "start_date": (start_date_param or SESSION_STATE.get('start_date') or ''),
@@ -932,6 +942,11 @@ def api_map_stream():
                             first_year = SESSION_STATE.get('first_year', 2016)
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
+                        "last_gpx_name": (
+                            (SESSION_STATE.get('last_gpx_name') or '')
+                            if gpx_is_uploaded
+                            else Path(gpx_path_str).name
+                        ),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
                         "start_date": (start_date_param or SESSION_STATE.get('start_date') or ''),
@@ -1119,6 +1134,18 @@ def api_map_stream():
                 "route_segments": route_segments,
                 "start_marker": start_marker,
                 "end_marker": end_marker,
+                # Echo the GPX actually used so the frontend can keep the
+                # "Loaded GPX" label consistent even when an override is missing.
+                "gpx_path": str(gpx_path),
+                "gpx_name": (
+                    (SESSION_STATE.get('last_gpx_name') or '')
+                    if (
+                        (str(SESSION_STATE.get('last_gpx_path') or '') == str(gpx_path))
+                        and (Path(str(gpx_path)).name.startswith('uploaded_'))
+                        and (SESSION_STATE.get('last_gpx_name') or '')
+                    )
+                    else Path(str(gpx_path)).name
+                ),
                 "years_start": years_start,
                 "years_end": years_end,
                 "total": total

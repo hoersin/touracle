@@ -7,6 +7,94 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body { height: 100%; margin: 0; overflow-x: hidden; }
+
+    /* App shell layout: fixed left sidebar + main content */
+    body {
+      --wm-sidebar-w: 340px;
+      --wm-sidebar-w-collapsed: calc(52px * 0.7);
+      --wm-sidebar-w-active: var(--wm-sidebar-w);
+    }
+    body.wm-sidebar-collapsed { --wm-sidebar-w-active: var(--wm-sidebar-w-collapsed); }
+    #appShell { height: 100vh; width: 100vw; }
+    #wmSidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: var(--wm-sidebar-w-active);
+      z-index: 2200;
+      background: #fff;
+      border-right: 1px solid rgba(0,0,0,0.10);
+      box-sizing: border-box;
+      transition: width 220ms ease;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    #wmSidebarHeader {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      height: 52px;
+      padding: 0 10px;
+      box-sizing: border-box;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+    }
+    body.wm-sidebar-collapsed #wmSidebarHeader {
+      justify-content: center;
+      padding: 0;
+    }
+    #wmSidebarToggle {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      border: 1px solid rgba(0,0,0,0.14);
+      background: rgba(255,255,255,0.95);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #wmSidebarToggle svg { width: 18px; height: 18px; }
+    #wmSidebarScroll {
+      height: calc(100vh - 52px);
+      overflow: auto;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+    body.wm-sidebar-collapsed #wmSidebarScroll { display: none; }
+
+    .wm-section {
+      border: 1px solid rgba(0,0,0,0.08);
+      background: #fff;
+      border-radius: 12px;
+      margin-bottom: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+      overflow: hidden;
+    }
+    .wm-section > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      user-select: none;
+    }
+    .wm-section > summary::-webkit-details-marker { display: none; }
+    .wm-section-body { padding: 10px 12px 12px 12px; }
+
+    /* Preferences grouping */
+    .wm-pref-group { padding-top: 10px; margin-top: 10px; border-top: 1px solid rgba(0,0,0,0.08); }
+    .wm-pref-group:first-child { padding-top: 0; margin-top: 0; border-top: none; }
+    .wm-pref-title { font-size: 12px; font-weight: 800; color: #0f172a; margin: 0 0 8px 0; }
+
+    /* Main pane shifts right of sidebar */
+    #mainPane {
+      position: relative;
+      height: 100vh;
+      margin-left: var(--wm-sidebar-w-active);
+      transition: margin-left 220ms ease;
+    }
     /* Top navigation (segmented control) */
     #topNav { position: fixed; z-index: 2100; left: 50%; top: 10px; transform: translateX(-50%); }
     .wm-seg { position: relative; display: inline-flex; gap: 0; padding: 4px; border-radius: 999px; background: rgba(255,255,255,0.9); border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.12); font-family: system-ui, -apple-system, sans-serif; }
@@ -18,30 +106,27 @@
     .wm-seg-btn:focus { outline: none; }
     .wm-seg-btn:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
 
-    /* Controls panels */
+    /* Controls panels (now hosted inside sidebar) */
     #controls, #strategicControls {
-      position: absolute;
-      z-index: 1000;
-      background: rgba(255,255,255,0.9);
-      padding: 8px 10px;
-      border-radius: 6px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      left: 60px;
-      top: 58px;
+      position: static;
+      z-index: auto;
+      background: transparent;
+      padding: 0;
+      border-radius: 0;
+      box-shadow: none;
+      left: auto;
+      top: auto;
     }
-    /* Tour Planning controls: keep panel compact (target ~2:1 w:h) */
     #controls {
-      width: 360px;
-      max-width: calc(100vw - 120px);
+      width: auto;
+      max-width: none;
       box-sizing: border-box;
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: inherit;
     }
     #controls button,
     #controls input,
     #controls select,
-    #controls label {
-      font-family: inherit;
-    }
+    #controls label { font-family: inherit; }
     #strategicControls { display: none; }
 
     /* Climate mode base map: desaturated, low contrast, but readable roads */
@@ -227,16 +312,49 @@
 
     body[data-mode="settings"] #controls { display: none; }
     body[data-mode="settings"] #strategicControls { display: none; }
-    body[data-mode="settings"] #map { display: none; }
     body[data-mode="settings"] #profilePanel { display: none; }
-    body[data-mode="settings"] #settingsView { display: block; }
+    body[data-mode="settings"] #map { height: 100%; }
 
-    /* Settings view */
-    #settingsView { display: none; position: absolute; inset: 0; padding: 68px 16px 16px 16px; box-sizing: border-box; overflow: auto; background: #f8fafc; }
+    /* Settings view (embedded in sidebar) */
+    #settingsView { display: block; position: static; inset: auto; padding: 0; box-sizing: border-box; overflow: visible; background: transparent; }
     .wm-card { background: #fff; border: 1px solid rgba(0,0,0,0.08); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); max-width: 860px; margin: 0 auto; padding: 14px 16px; }
     .wm-card h3 { margin: 0 0 10px 0; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
     .wm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; }
     .wm-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* Toggle switch styling (checkboxes) */
+    .wm-toggle {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 38px;
+      height: 22px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.18);
+      background: rgba(0,0,0,0.08);
+      position: relative;
+      cursor: pointer;
+      vertical-align: middle;
+      transition: background 160ms ease, border-color 160ms ease;
+      flex: 0 0 auto;
+    }
+    .wm-toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+      transition: transform 160ms ease;
+    }
+    .wm-toggle:checked {
+      background: rgba(40,167,69,0.85);
+      border-color: rgba(40,167,69,0.55);
+    }
+    .wm-toggle:checked::after { transform: translateX(16px); }
+    .wm-toggle:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
   </style>
 </head>
 <body>
@@ -245,62 +363,192 @@
       <div class="wm-seg-pill" id="modeNavPill" aria-hidden="true"></div>
       <button class="wm-seg-btn" id="navClimate" type="button" data-mode="climate" role="tab" aria-selected="false">Climatic Map</button>
       <button class="wm-seg-btn" id="navTour" type="button" data-mode="tour" role="tab" aria-selected="true">Tour Planning</button>
-      <button class="wm-seg-btn" id="navSettings" type="button" data-mode="settings" role="tab" aria-selected="false">Settings</button>
     </div>
   </div>
 
-  <div id="controls">
-    <div style="display:grid; grid-template-columns: 88px 1fr; gap:6px 8px; align-items:center;">
-      <label for="startDate">Start Date:</label>
-      <input type="date" id="startDate" style="width:100%" />
-      <label for="tourDays">Days:</label>
-      <input type="number" id="tourDays" min="1" max="60" value="7" style="width:80px" />
-    </div>
-    <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#2a7a2a; cursor:pointer; white-space:normal;">Drop GPX here to load route (or click to choose)</div>
-    <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
-    <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <button id="fetchWeather">Get Weather Data</button>
-      <select id="weatherQuality" aria-label="Weather data quality" title="Choose fast preview vs multi-year" style="border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:7px 10px; background:#fff; font-size:12px;">
-        <option value="fast">Fast (preview)</option>
-        <option value="best" selected>Best (multi-year)</option>
-      </select>
-      <button id="stopWeather">Stop</button>
-      <label style="display:flex; align-items:center; gap:6px;">
-        <input type="checkbox" id="reverse" />
-        <span>Reverse Tour</span>
-      </label>
-    </div>
-    <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">
-      <div class="bar"></div>
-    </div>
-    <div id="sseStatus" style="margin-top:6px; font-family:system-ui, -apple-system, sans-serif; font-size:12px; color:#555;">Stream: idle</div>
-  </div>
+  <div id="appShell">
+    <aside id="wmSidebar" aria-label="Sidebar">
+      <div id="wmSidebarHeader">
+        <button id="wmSidebarToggle" type="button" aria-label="Toggle sidebar" title="Toggle sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6h16" />
+            <path d="M4 12h16" />
+            <path d="M4 18h16" />
+          </svg>
+        </button>
+      </div>
+      <div id="wmSidebarScroll">
+        <details class="wm-section" id="wmSectionTour" open>
+          <summary>Tour Setup</summary>
+          <div class="wm-section-body">
+            <div id="controls">
+              <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-size:12px; color:#2a7a2a; cursor:pointer; white-space:normal;">Drop GPX here to load route (or click to choose)</div>
+              <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
+              <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button id="fetchWeather">Get Weather Data</button>
+                <button id="stopWeather">Stop</button>
+              </div>
+              <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">
+                <div class="bar"></div>
+              </div>
+              <div id="sseStatus" style="margin-top:6px; font-size:12px; color:#555;">Stream: idle</div>
+            </div>
 
-  <div id="strategicControls">
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <span style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#334155">Day:</span>
-      <span id="strategicDayLabel" style="font-family:system-ui,-apple-system,sans-serif;font-size:12px;color:#0f172a;font-weight:700">—</span>
-      <label for="strategicLayer">Layer:</label>
-      <select id="strategicLayer">
-        <option value="temperature_ride">Temperature (Ride)</option>
-        <option value="rain_ride">Rain (Ride)</option>
-        <option value="rain_tent">Rain (Tent)</option>
-        <option value="wind_speed">Wind Speed</option>
-        <option value="wind_dir">Wind Direction (Median + Variance)</option>
-        <option value="comfort_ride">Comfort (Ride)</option>
-        <option value="comfort_tent">Comfort (Tent)</option>
-      </select>
-      <label style="display:flex;align-items:center;gap:6px; font-size:12px; color:#334155;">
-        <input type="checkbox" id="strategicWindOn" />
-        <span>Wind field</span>
-      </label>
-      <label for="strategicWindMode" style="font-size:12px;color:#334155">Wind mode:</label>
-      <select id="strategicWindMode">
-        <option value="flow">Flow lines</option>
-        <option value="arrows">Sparse arrows</option>
-      </select>
-    </div>
-  </div>
+            <div id="strategicControls">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <span style="font-size:12px;color:#334155">Day:</span>
+                <span id="strategicDayLabel" style="font-size:12px;color:#0f172a;font-weight:700">—</span>
+                <label for="strategicLayer">Layer:</label>
+                <select id="strategicLayer">
+                  <option value="temperature_ride">Temperature (Ride)</option>
+                  <option value="rain_ride">Rain (Ride)</option>
+                  <option value="rain_tent">Rain (Tent)</option>
+                  <option value="wind_speed">Wind Speed</option>
+                  <option value="wind_dir">Wind Direction (Median + Variance)</option>
+                  <option value="comfort_ride">Comfort (Ride)</option>
+                  <option value="comfort_tent">Comfort (Tent)</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:8px; font-size:12px; color:#334155;">
+                  <input type="checkbox" id="strategicWindOn" class="wm-toggle" />
+                  <span>Wind field</span>
+                </label>
+                <label for="strategicWindMode" style="font-size:12px;color:#334155">Wind mode:</label>
+                <select id="strategicWindMode">
+                  <option value="flow">Flow lines</option>
+                  <option value="arrows">Sparse arrows</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="wm-section" id="wmSectionPrefs" open>
+          <summary>Preferences</summary>
+          <div class="wm-section-body">
+            <div id="settingsView" aria-label="Settings">
+              <div class="wm-card" style="max-width:none; margin:0; box-shadow:none;">
+                <div class="wm-actions" style="margin-top:0; margin-bottom:12px;">
+                  <button id="settingsSave" type="button">Update</button>
+                </div>
+
+                <div class="wm-pref-group">
+                  <div class="wm-pref-title">Tour Setup</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="startDate">Start Date</label>
+                    <input type="date" id="startDate" style="width:100%" />
+
+                    <label for="tourDays">Days</label>
+                    <input type="number" id="tourDays" min="1" max="60" value="7" style="width:100%" />
+
+                    <label for="weatherQuality">Weather quality</label>
+                    <select id="weatherQuality" aria-label="Weather data quality" title="Choose fast preview vs multi-year" style="border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:7px 10px; background:#fff; font-size:12px;">
+                      <option value="fast">Fast (preview)</option>
+                      <option value="best" selected>Best (multi-year)</option>
+                    </select>
+
+                    <label for="reverse">Reverse Tour</label>
+                    <input type="checkbox" id="reverse" class="wm-toggle" />
+                  </div>
+                </div>
+
+                <div class="wm-pref-group">
+                  <div class="wm-pref-title">Profile Display</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setOverlayMode">Profile overlay</label>
+                    <select id="setOverlayMode">
+                      <option value="temperature">Temperature</option>
+                      <option value="precipitation">Precipitation</option>
+                      <option value="wind">Wind</option>
+                    </select>
+
+                    <label for="setGlyphType">Glyph type</label>
+                    <select id="setGlyphType">
+                      <option value="classic">Classic (icons + rosette)</option>
+                      <option value="svg">Inline SVG preview</option>
+                      <option value="cyclist">Cyclist (wind-first)</option>
+                    </select>
+                    <label for="setStepKm">Glyph spacing (km)</label>
+                    <input type="number" id="setStepKm" min="5" max="200" step="5" />
+                  </div>
+                </div>
+
+                <div class="wm-pref-group">
+                  <div class="wm-pref-title">Strategic (Climate Mode)</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setStrategicYear">Strategic year (default)</label>
+                    <select id="setStrategicYear">
+                      <option value="2025">2025</option>
+                      <option value="2024">2024</option>
+                    </select>
+
+                    <label for="setIncludeSea">Include sea areas</label>
+                    <input type="checkbox" id="setIncludeSea" class="wm-toggle" />
+
+                    <label for="setInterpolation">Interpolation (strategic)</label>
+                    <input type="checkbox" id="setInterpolation" class="wm-toggle" />
+
+                    <label for="setWindDensity">Wind density</label>
+                    <input type="number" id="setWindDensity" min="1" max="200" step="1" />
+
+                    <label for="setAnimSpeed">Animation speed</label>
+                    <input type="number" id="setAnimSpeed" min="0.1" max="10" step="0.1" />
+
+                    <label for="setGridKm">Grid resolution (km)</label>
+                    <select id="setGridKm">
+                      <option value="50">50</option>
+                      <option value="25">25</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="wm-pref-group">
+                  <div class="wm-pref-title">Historic Climate</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setHistLast">Last historical year</label>
+                    <input type="number" id="setHistLast" min="1970" max="2100" step="1" />
+                    <label for="setHistYears"># historic years</label>
+                    <input type="number" id="setHistYears" min="1" max="50" step="1" />
+                  </div>
+                </div>
+
+                <div class="wm-pref-group">
+                  <div class="wm-pref-title">Comfort Thresholds</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setTempCold">Comfort min temp (°C)</label>
+                    <input type="number" id="setTempCold" min="-40" max="30" step="1" />
+                    <label for="setTempHot">Comfort max temp (°C)</label>
+                    <input type="number" id="setTempHot" min="5" max="60" step="1" />
+                    <label for="setRainHigh">Comfort max rain (mm/day)</label>
+                    <input type="number" id="setRainHigh" min="0" max="100" step="1" />
+                    <label for="setWindHeadComfort">Comfort max headwind (m/s)</label>
+                    <input type="number" id="setWindHeadComfort" min="0" max="20" step="0.5" />
+                    <label for="setWindTailComfort">Comfort max tailwind (m/s)</label>
+                    <input type="number" id="setWindTailComfort" min="0" max="30" step="0.5" />
+                  </div>
+                </div>
+
+                <div class="wm-pref-group">
+                  <div class="wm-pref-title">Tour Planning</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setRideHours">Ride hours (start-end)</label>
+                    <input type="text" id="setRideHours" placeholder="10-16" />
+                    <label for="setTentHours">Tent hours (start-end)</label>
+                    <input type="text" id="setTentHours" placeholder="18-08" />
+
+                    <label for="setWindWeighting">Wind weighting (tactical)</label>
+                    <select id="setWindWeighting">
+                      <option value="relative">Relative to route (head/tail)</option>
+                      <option value="neutral">Direction-independent</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </aside>
 
   <div id="strategicTimeline" aria-label="Strategic time slider">
     <div class="row">
@@ -315,77 +563,9 @@
     <div id="strategicMonthTicks" aria-hidden="true"></div>
   </div>
 
-  <div id="settingsView" aria-label="Settings">
-    <div class="wm-card">
-      <h3>Settings</h3>
-      <div class="wm-grid">
-        <label for="setStrategicYear">Strategic year (default)</label>
-        <select id="setStrategicYear">
-          <option value="2025">2025</option>
-          <option value="2024">2024</option>
-        </select>
-
-        <label for="setIncludeSea">Include sea areas</label>
-        <input type="checkbox" id="setIncludeSea" />
-
-        <label for="setInterpolation">Interpolation (strategic)</label>
-        <input type="checkbox" id="setInterpolation" />
-
-        <label for="setWindDensity">Wind density</label>
-        <input type="number" id="setWindDensity" min="1" max="200" step="1" />
-
-        <label for="setAnimSpeed">Animation speed</label>
-        <input type="number" id="setAnimSpeed" min="0.1" max="10" step="0.1" />
-
-        <label for="setGridKm">Grid resolution (km)</label>
-        <select id="setGridKm">
-          <option value="50">50</option>
-          <option value="25">25</option>
-          <option value="100">100</option>
-        </select>
-
-        <label for="setGlyphType">Glyph type</label>
-        <select id="setGlyphType">
-          <option value="classic">Classic (icons + rosette)</option>
-          <option value="svg">Inline SVG preview</option>
-          <option value="cyclist">Cyclist (wind-first)</option>
-        </select>
-        <label for="setStepKm">Glyph spacing (km)</label>
-        <input type="number" id="setStepKm" min="5" max="200" step="5" />
-        <label for="setHistLast">Last historical year</label>
-        <input type="number" id="setHistLast" min="1970" max="2100" step="1" />
-        <label for="setHistYears"># historic years</label>
-        <input type="number" id="setHistYears" min="1" max="50" step="1" />
-        <label for="setTempCold">Comfort min temp (°C)</label>
-        <input type="number" id="setTempCold" min="-40" max="30" step="1" />
-        <label for="setTempHot">Comfort max temp (°C)</label>
-        <input type="number" id="setTempHot" min="5" max="60" step="1" />
-        <label for="setRainHigh">Comfort max rain (mm/day)</label>
-        <input type="number" id="setRainHigh" min="0" max="100" step="1" />
-        <label for="setWindHeadComfort">Comfort max headwind (m/s)</label>
-        <input type="number" id="setWindHeadComfort" min="0" max="20" step="0.5" />
-        <label for="setWindTailComfort">Comfort max tailwind (m/s)</label>
-        <input type="number" id="setWindTailComfort" min="0" max="30" step="0.5" />
-
-        <label for="setRideHours">Ride hours (start-end)</label>
-        <input type="text" id="setRideHours" placeholder="10-16" />
-        <label for="setTentHours">Tent hours (start-end)</label>
-        <input type="text" id="setTentHours" placeholder="18-08" />
-
-        <label for="setWindWeighting">Wind weighting (tactical)</label>
-        <select id="setWindWeighting">
-          <option value="relative">Relative to route (head/tail)</option>
-          <option value="neutral">Direction-independent</option>
-        </select>
-      </div>
-      <div class="wm-actions">
-        <button id="settingsCancel" type="button">Cancel</button>
-        <button id="settingsSave" type="button">Save</button>
-      </div>
-    </div>
-  </div>
-  <div id="map"></div>
-  <div id="profilePanel" style="position:relative; width:100vw">
+    <main id="mainPane" aria-label="Main content">
+      <div id="map"></div>
+      <div id="profilePanel" style="position:relative; width:100%;">
     <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
       <div id="tourSummaryBadges" style="display:flex; align-items:center; gap:10px; padding:6px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box;">
@@ -407,10 +587,13 @@
     <canvas id="profileCursorCanvas" style="position:absolute; inset:0; pointer-events:none"></canvas>
     <!-- Profile tooltip positioned in upper left corner, 33% of canvas width -->
     <div id="profileTooltip" style="position:absolute; left:12px; top:12px; width:33%; min-width:260px; max-width:380px; height:auto; min-height:fit-content; z-index:1500; font-family:system-ui, -apple-system, sans-serif; font-size:9px; line-height:1.3; color:#222; background:rgba(255,255,255,0.85); border:1px solid rgba(0,0,0,0.15); border-radius:6px; padding:8px 7px; display:none; white-space:normal; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12)"></div>
+      </div>
+    </main>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="/profile.js?v=1"></script>
+  <script src="/frontend/sidebar.js?v=1"></script>
   <script>
     (function(){
       'use strict';
@@ -423,7 +606,7 @@
 
       window.__WM_MODE_NAV_EXTERNAL__ = true;
 
-      const MODES = ['climate', 'tour', 'settings'];
+      const MODES = ['climate', 'tour'];
 
       function q(id){ return document.getElementById(id); }
 
@@ -434,7 +617,7 @@
 
       function updateSelected(mode){
         try {
-          const btns = [q('navClimate'), q('navTour'), q('navSettings')].filter(Boolean);
+          const btns = [q('navClimate'), q('navTour')].filter(Boolean);
           btns.forEach(btn => {
             const m = btn && btn.dataset ? btn.dataset.mode : null;
             const isActive = (m === mode);
@@ -449,7 +632,7 @@
         const pill = q('modeNavPill');
         if (!nav || !pill) return false;
 
-        const btns = [q('navClimate'), q('navTour'), q('navSettings')].filter(Boolean);
+        const btns = [q('navClimate'), q('navTour')].filter(Boolean);
         const active = btns.find(b => b && b.dataset && b.dataset.mode === mode);
         if (!active) return false;
 
@@ -506,7 +689,6 @@
       }
 
       function invalidateLeafletSoon(mode){
-        if (mode === 'settings') return;
         setTimeout(() => {
           try {
             const m = window.__WM_LEAFLET_MAP__;
@@ -543,7 +725,7 @@
       }
 
       function wireButtons(){
-        const btns = [q('navClimate'), q('navTour'), q('navSettings')].filter(Boolean);
+        const btns = [q('navClimate'), q('navTour')].filter(Boolean);
         btns.forEach(btn => {
           const m = btn?.dataset?.mode;
           if (!m) return;
@@ -618,14 +800,11 @@
           q('navClimate')?.click();
           await new Promise(r => setTimeout(r, 50));
           snap('after click(climate)');
-          q('navSettings')?.click();
-          await new Promise(r => setTimeout(r, 50));
-          snap('after click(settings)');
           q('navTour')?.click();
           await new Promise(r => setTimeout(r, 50));
           snap('after click(tour again)');
 
-          const ok = out.steps.some(s => s.mode === 'climate') && out.steps.some(s => s.mode === 'settings') && out.steps.some(s => s.mode === 'tour');
+          const ok = out.steps.some(s => s.mode === 'climate') && out.steps.some(s => s.mode === 'tour');
           out.ok = !!ok;
         } catch (e) {
           out.ok = false;
@@ -664,6 +843,7 @@
     })();
   </script>
   <script src="/map.js?v=29"></script>
+  <script src="/frontend/profile_zoom.js?v=1"></script>
   <script>
     // Assisted test helpers: always available in Console
     window.setTestDemoSettings = function() {

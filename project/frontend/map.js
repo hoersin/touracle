@@ -74,6 +74,7 @@
   const setRideHours = document.getElementById('setRideHours');
   const setTentHours = document.getElementById('setTentHours');
   const setWindWeighting = document.getElementById('setWindWeighting');
+  const setOverlayMode = document.getElementById('setOverlayMode');
 
   const strategicDayLabel = document.getElementById('strategicDayLabel');
   const strategicTimelineLabel = document.getElementById('strategicTimelineLabel');
@@ -100,15 +101,35 @@
   const overlayContainer = document.getElementById('overlayContainer');
   const resizeHandle = document.getElementById('profileResizeHandle');
   let LAST_PROFILE = null;
+
+  // Profile panel overlay selector (Temperature / Precipitation / Wind)
+  let profileOverlaySelect = null;
+  try {
+    if (profilePanel) {
+      const sel = document.createElement('select');
+      sel.id = 'overlayMode';
+      sel.style.cssText = 'position:absolute; top:8px; right:22px; background:rgba(255,255,255,0.95); border:1px solid #ccc; border-radius:4px; padding:4px 8px; font-family:system-ui,-apple-system,sans-serif; font-size:11px; z-index:1000; box-shadow:0 2px 4px rgba(0,0,0,0.1); cursor:pointer; pointer-events:auto;';
+      sel.innerHTML = '<option value="temperature">Temperature</option><option value="precipitation">Precipitation</option><option value="wind">Wind</option>';
+      profilePanel.appendChild(sel);
+      profileOverlaySelect = sel;
+    }
+  } catch (_) {}
   
-  // Create overlay mode selector dynamically on profile panel
-  let overlaySelect = document.createElement('select');
-  overlaySelect.id = 'overlayMode';
-  overlaySelect.style.cssText = 'position:absolute; top:8px; right:22px; background:rgba(255,255,255,0.95); border:1px solid #ccc; border-radius:4px; padding:4px 8px; font-family:system-ui,-apple-system,sans-serif; font-size:11px; z-index:1000; box-shadow:0 2px 4px rgba(0,0,0,0.1); cursor:pointer; pointer-events:auto;';
-  overlaySelect.innerHTML = '<option value="temperature">Temperature</option><option value="precipitation">Precipitation</option><option value="wind">Wind</option>';
-  if (profilePanel) profilePanel.appendChild(overlaySelect);
-  
-  let OVERLAY_MODE = overlaySelect ? overlaySelect.value : 'temperature';
+  // Profile overlay mode (controlled via Preferences, mirrored in profile panel)
+  let OVERLAY_MODE = (setOverlayMode && setOverlayMode.value) ? setOverlayMode.value : 'temperature';
+
+  function _setOverlayMode(mode, opts) {
+    const options = opts && typeof opts === 'object' ? opts : {};
+    const m = (mode === 'temperature' || mode === 'precipitation' || mode === 'wind') ? mode : 'temperature';
+    OVERLAY_MODE = m;
+    try { SETTINGS.overlayMode = m; } catch (_) {}
+    if (!options.skipPersist) {
+      try { saveSettings(SETTINGS); } catch (_) {}
+    }
+    try { if (setOverlayMode) setOverlayMode.value = m; } catch (_) {}
+    try { if (profileOverlaySelect) profileOverlaySelect.value = m; } catch (_) {}
+    try { if (LAST_PROFILE) drawProfile(LAST_PROFILE); } catch (_) {}
+  }
   let OVERLAY_POINTS = [];
   let TOUR_DAYS_AGGR = {};
   let evtSource = null;
@@ -405,6 +426,35 @@
       }
     } catch (_) {}
   }
+
+  function syncActiveGpxFromStreamPayload(payload) {
+    try {
+      if (!payload) return;
+      const p = (payload.gpx_path !== undefined) ? payload.gpx_path
+        : (payload.gpxPath !== undefined) ? payload.gpxPath
+        : null;
+      const n = (payload.gpx_name !== undefined) ? payload.gpx_name
+        : (payload.gpxName !== undefined) ? payload.gpxName
+        : null;
+
+      let changed = false;
+      if (p) {
+        const sp = String(p);
+        if (sp && sp !== String(LAST_GPX_PATH || '')) {
+          LAST_GPX_PATH = sp;
+          changed = true;
+        }
+      }
+      if (n) {
+        const sn = String(n);
+        if (sn && sn !== String(LAST_GPX_NAME || '')) {
+          LAST_GPX_NAME = sn;
+          changed = true;
+        }
+      }
+      if (changed) updateDropZoneLabel();
+    } catch (_) {}
+  }
   let flagsLayer = null;
   let REVERSED = false;
   // Route coords for map cursor sync
@@ -466,8 +516,6 @@
   let glyphLayerNew = null;
   // Persist years span from route event for stable progress text
   let YEARS_SPAN_TEXT = null;
-  // Defer changes to tour days while streams are active
-  let PENDING_TOUR_DAYS = null;
   
   // Brighten glyph SVG colors after recalculation finishes
   function brightenMarkerSVG(marker) {
@@ -803,7 +851,14 @@
     const s = localStorage.getItem('wm_settings');
     const nowYear = (new Date()).getFullYear();
     const defaultLastYear = Math.max(1970, nowYear - 1);
+    const todayIso = (new Date()).toISOString().slice(0, 10);
     const defaults = {
+      // Tour setup
+      startDate: todayIso,
+      tourDays: 7,
+      reverse: false,
+      weatherQuality: 'best',
+
       stepKm: 60,
       histLastYear: defaultLastYear,
       histYears: 10,
@@ -814,6 +869,7 @@
       windTailComfort: 10,
       useClassicWeatherIcons: true,
       glyphType: 'classic',
+      overlayMode: 'temperature',
       // Strategic/tactical settings (Phase 1: persisted but not yet fully used)
       strategicYear: 2025,
       includeSea: false,
@@ -840,6 +896,11 @@
       if (!Number.isFinite(lastY)) lastY = defaults.histLastYear;
       return {
         ...defaults,
+        startDate: (typeof j.startDate === 'string' && j.startDate) ? j.startDate : defaults.startDate,
+        tourDays: Number.isFinite(Number(j.tourDays)) ? Number(j.tourDays) : defaults.tourDays,
+        reverse: (typeof j.reverse === 'boolean') ? j.reverse : defaults.reverse,
+        weatherQuality: (typeof j.weatherQuality === 'string') ? j.weatherQuality : defaults.weatherQuality,
+
         stepKm: Number(j.stepKm) || defaults.stepKm,
         histLastYear: Math.round(Number(lastY) || defaults.histLastYear),
         histYears: safeYears,
@@ -857,6 +918,7 @@
         useClassicWeatherIcons: (typeof j.useClassicWeatherIcons === 'boolean')
           ? j.useClassicWeatherIcons
           : ((typeof j.glyphType === 'string') ? (j.glyphType === 'classic') : defaults.useClassicWeatherIcons),
+        overlayMode: (typeof j.overlayMode === 'string') ? j.overlayMode : defaults.overlayMode,
         strategicYear: Number(j.strategicYear) || defaults.strategicYear,
         includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
         interpolation: (typeof j.interpolation === 'boolean') ? j.interpolation : defaults.interpolation,
@@ -879,6 +941,10 @@
   let SETTINGS = loadSettings();
   // Default toggle to show classic weather + thermometer bitmaps in profile pins
   if (SETTINGS.useClassicWeatherIcons === undefined) SETTINGS.useClassicWeatherIcons = true;
+  // Preferences UI lives in the sidebar now, so sync it on startup
+  // (previously this happened only when entering a dedicated "settings" mode).
+  try { applySettingsToForm(SETTINGS); } catch (_) {}
+  try { _setOverlayMode((SETTINGS && SETTINGS.overlayMode) ? String(SETTINGS.overlayMode) : OVERLAY_MODE, { skipPersist: true }); } catch (_) {}
   let STEP_KM = SETTINGS.stepKm;       // reduce sampling density to avoid rate limits
     const MAX_POINTS = 20;    // cap number of points for faster loads (to be removed)
   let DEBUG_CURSOR = false;   // toggle cursor alignment debug overlay
@@ -1758,6 +1824,15 @@
   // Settings view wiring
   function applySettingsToForm(s) {
     if (!s) return;
+    if (startDateInput && s.startDate) startDateInput.value = String(s.startDate);
+    if (tourDaysInput && s.tourDays !== undefined) tourDaysInput.value = String(Number(s.tourDays) || 7);
+    if (weatherQualitySelect && s.weatherQuality) weatherQualitySelect.value = String(s.weatherQuality);
+    try {
+      const rc = document.getElementById('reverse');
+      if (rc) rc.checked = Boolean(s.reverse);
+    } catch (_) {}
+    try { REVERSED = Boolean(s.reverse); } catch (_) {}
+
     if (setStepKm) setStepKm.value = s.stepKm;
     try {
       const nowYear = (new Date()).getFullYear();
@@ -1781,10 +1856,23 @@
     if (setRideHours) setRideHours.value = String(s.rideHours || '10-16');
     if (setTentHours) setTentHours.value = String(s.tentHours || '18-08');
     if (setWindWeighting) setWindWeighting.value = String(s.windWeighting || 'relative');
+
+    if (setOverlayMode) setOverlayMode.value = String(s.overlayMode || 'temperature');
+    if (profileOverlaySelect) profileOverlaySelect.value = String(s.overlayMode || 'temperature');
   }
 
   function readSettingsFromForm(prev) {
     const base = prev ? { ...prev } : {};
+    base.startDate = (startDateInput && startDateInput.value) ? String(startDateInput.value) : (new Date()).toISOString().slice(0, 10);
+    base.tourDays = Number(tourDaysInput && tourDaysInput.value) || 7;
+    base.weatherQuality = (weatherQualitySelect && weatherQualitySelect.value) ? String(weatherQualitySelect.value) : 'best';
+    try {
+      const rc = document.getElementById('reverse');
+      base.reverse = Boolean(rc && rc.checked);
+    } catch (_) {
+      base.reverse = Boolean(base.reverse);
+    }
+
     const nowYear = (new Date()).getFullYear();
     const defaultLastYear = Math.max(1970, nowYear - 1);
     base.stepKm = Number(setStepKm && setStepKm.value) || 60;
@@ -1814,7 +1902,17 @@
     base.rideHours = String(setRideHours && setRideHours.value ? setRideHours.value : '10-16');
     base.tentHours = String(setTentHours && setTentHours.value ? setTentHours.value : '18-08');
     base.windWeighting = String(setWindWeighting && setWindWeighting.value ? setWindWeighting.value : 'relative');
+    base.overlayMode = String(setOverlayMode && setOverlayMode.value ? setOverlayMode.value : 'temperature');
     return base;
+  }
+
+  function applyPrefsFromFormAndPersist() {
+    SETTINGS = readSettingsFromForm(SETTINGS);
+    saveSettings(SETTINGS);
+    STEP_KM = SETTINGS.stepKm;
+    try { REVERSED = Boolean(SETTINGS.reverse); } catch (_) {}
+    try { _setOverlayMode(String(SETTINGS.overlayMode || OVERLAY_MODE), { skipPersist: true }); } catch (_) {}
+    try { applySettingsToForm(SETTINGS); } catch (_) {}
   }
   
   // Debug helper: wait for manual step() call
@@ -2549,6 +2647,63 @@
     } catch (e) { console.error('updateMapCursorAtDistance error', e); }
   };
 
+  // ---- Exports for ProfileZoomController (frontend-only UX wiring) ----
+  function routeLatLngAtDistanceKm(dkm) {
+    try {
+      if (!Array.isArray(ROUTE_COORDS) || !Array.isArray(ROUTE_CUM_DISTS) || ROUTE_COORDS.length < 2) return null;
+      const total = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0);
+      let d = Math.max(0, Math.min(total, Number(dkm || 0)));
+      let lo = 0, hi = ROUTE_CUM_DISTS.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (ROUTE_CUM_DISTS[mid] < d) lo = mid + 1; else hi = mid;
+      }
+      const i = lo;
+      let lat, lon;
+      if (i <= 0) {
+        [lon, lat] = ROUTE_COORDS[0];
+      } else if (i >= ROUTE_COORDS.length) {
+        const last = ROUTE_COORDS[ROUTE_COORDS.length - 1];
+        lon = last[0]; lat = last[1];
+      } else {
+        const d1 = ROUTE_CUM_DISTS[i - 1];
+        const d2 = ROUTE_CUM_DISTS[i];
+        const t = (d2 > d1) ? Math.max(0, Math.min(1, (d - d1) / (d2 - d1))) : 0;
+        const [lon1, lat1] = ROUTE_COORDS[i - 1];
+        const [lon2, lat2] = ROUTE_COORDS[i];
+        lon = lon1 + (lon2 - lon1) * t;
+        lat = lat1 + (lat2 - lat1) * t;
+      }
+      return L.latLng(lat, lon);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function profileClientXToRouteKm(clientX) {
+    try {
+      if (!profileCanvas) return NaN;
+      if (!Array.isArray(ROUTE_CUM_DISTS) || ROUTE_CUM_DISTS.length < 2) return NaN;
+      const rect = profileCanvas.getBoundingClientRect();
+      const { padTop, padBot, padL, padR } = getPads();
+      const W = Math.max(1, Math.floor(rect.width));
+      const innerW = Math.max(1, W - padL - padR);
+      const xClient = Number(clientX - rect.left);
+      const xClamped = Math.max(padL, Math.min(padL + innerW, xClient));
+      const u = (xClamped - padL) / Math.max(1, innerW);
+      const routeLen = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0);
+      return routeLen * Math.max(0, Math.min(1, u));
+    } catch (_) {
+      return NaN;
+    }
+  }
+
+  try {
+    window.WM = window.WM || {};
+    window.WM.routeLatLngAtDistanceKm = routeLatLngAtDistanceKm;
+    window.WM.profileClientXToRouteKm = profileClientXToRouteKm;
+  } catch (_) {}
+
   // Profile cursor line + tooltip updater
   window.updateProfileCursor = function(index, displayX) {
     if (!profileCursorCtx || !profileCanvas || !LAST_PROFILE) return;
@@ -3226,6 +3381,7 @@
     evtSource.addEventListener('route', (ev) => {
         try {
           const payload = JSON.parse(ev.data);
+          syncActiveGpxFromStreamPayload(payload);
           // In weather-only upgrade mode, keep the existing route/profile stable.
           if (weatherOnly) {
             const total = Number(payload.total || 0);
@@ -3368,6 +3524,8 @@
         } catch (e) { console.error('route event error', e); }
       try {
         const payload = JSON.parse(ev.data);
+        syncActiveGpxFromStreamPayload(payload);
+        if (weatherOnly) return;
         const route = payload.route;
         const routeSegments = payload.route_segments;
         const startMarker = payload.start_marker;
@@ -3619,6 +3777,7 @@
             LAST_GPX_PATH = j.path;
             LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
             updateDropZoneLabel();
+            try { applyPrefsFromFormAndPersist(); } catch (_) {}
             try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
             loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
           } catch (err) {
@@ -3649,6 +3808,7 @@
             LAST_GPX_PATH = j.path;
             LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
             updateDropZoneLabel();
+            try { applyPrefsFromFormAndPersist(); } catch (_) {}
             try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
             loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
           } catch (err) {
@@ -3917,15 +4077,6 @@
       if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
       // Reset priming flag for next loads
       window.__WM_PROFILE_PRIME_DONE__ = false;
-      // Apply any deferred Days change now
-      try {
-        if (PENDING_TOUR_DAYS !== null) {
-          const v = Number(PENDING_TOUR_DAYS);
-          PENDING_TOUR_DAYS = null;
-          if (tourDaysInput) tourDaysInput.value = String(v);
-          loadMap();
-        }
-      } catch (_) {}
     });
 
     // Auto-reconnect with simple backoff
@@ -4000,6 +4151,7 @@
   fetchWeatherBtn.addEventListener('click', () => {
     if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return; // Stop button handles abort now
     OFFLINE_FALLBACK_ACTIVE = false;
+    try { applyPrefsFromFormAndPersist(); } catch (_) {}
     const mode = getWeatherQualityMode();
     if (mode === 'best') {
       loadMap({ ...(LAST_LOAD_OPTS || {}), offlineOnly: true, autoUpgradeIfSingleYear: true });
@@ -4052,14 +4204,14 @@
     updateFetchWeatherLabel();
     fetchWeatherBtn.disabled = false;
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
-    if (sseStatus) sseStatus.textContent = 'Parameters changed - click "Get Weather Data"';
+    if (sseStatus) sseStatus.textContent = 'Parameters changed - click "Update" (or "Get Weather Data")';
   }
   
   startDateInput.addEventListener('change', markDataStale);
   tourDaysInput.addEventListener('change', markDataStale);
 
   if (weatherQualitySelect) {
-    weatherQualitySelect.addEventListener('change', updateFetchWeatherLabel);
+    weatherQualitySelect.addEventListener('change', markDataStale);
   }
   updateFetchWeatherLabel();
 
@@ -4197,11 +4349,19 @@
   })();
 
   // UI wiring
-  // Overlay mode control
-  if (overlaySelect) {
-    overlaySelect.addEventListener('change', () => {
-      OVERLAY_MODE = overlaySelect.value;
-      if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+  // Profile display: overlay selection
+  if (setOverlayMode) {
+    setOverlayMode.addEventListener('change', () => {
+      try {
+        _setOverlayMode(String(setOverlayMode.value || 'temperature'));
+      } catch (_) {}
+    });
+  }
+  if (profileOverlaySelect) {
+    profileOverlaySelect.addEventListener('change', () => {
+      try {
+        _setOverlayMode(String(profileOverlaySelect.value || 'temperature'));
+      } catch (_) {}
     });
   }
 
@@ -4220,17 +4380,45 @@
 
   if (settingsSave) {
     settingsSave.addEventListener('click', () => {
-      SETTINGS = readSettingsFromForm(SETTINGS);
+      const prev = SETTINGS;
+      const next = readSettingsFromForm(SETTINGS);
+      SETTINGS = next;
       saveSettings(SETTINGS);
       STEP_KM = SETTINGS.stepKm;
-      const m = (LAST_NON_SETTINGS_MODE || 'tour');
+      try { _setOverlayMode(String(SETTINGS.overlayMode || OVERLAY_MODE), { skipPersist: true }); } catch (_) {}
+      try { REVERSED = Boolean(SETTINGS.reverse); } catch (_) {}
+
+      const dataKeys = [
+        'startDate',
+        'tourDays',
+        'reverse',
+        'weatherQuality',
+        'stepKm',
+        'histLastYear',
+        'histYears',
+        'tempCold',
+        'tempHot',
+        'rainHigh',
+        'windHeadComfort',
+        'windTailComfort',
+      ];
+      let needsRefetch = false;
       try {
-        if (window.WM && typeof window.WM.setMode === 'function') window.WM.setMode(m);
-        else setMode(m);
-      } catch (_) {
-        try { setMode(m); } catch (_) {}
+        for (const k of dataKeys) {
+          if (String(prev && prev[k]) !== String(next && next[k])) { needsRefetch = true; break; }
+        }
+      } catch (_) { needsRefetch = true; }
+
+      if (needsRefetch) {
+        loadMap({ forceRestart: true });
+      } else {
+        // Pure display/strategic toggles → redraw locally.
+        if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
+          try { _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
+          try { _scheduleStrategicFetch(); } catch (_) {}
+        }
+        if (LAST_PROFILE) drawProfile(LAST_PROFILE);
       }
-      loadMap();
     });
   }
   // Share snapshot: capture full window and share/copy/download
