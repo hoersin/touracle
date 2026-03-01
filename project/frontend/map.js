@@ -53,6 +53,7 @@
   const fetchWeatherBtn = document.getElementById('fetchWeather');
   const stopWeatherBtn = document.getElementById('stopWeather');
   const shareBtn = document.getElementById('share');
+  const weatherQualitySelect = document.getElementById('weatherQuality');
 
   const settingsView = document.getElementById('settingsView');
   const setStepKm = document.getElementById('setStepKm');
@@ -117,6 +118,270 @@
   let LAST_GPX_NAME = null;
   let LAST_LOAD_OPTS = null;
   let OFFLINE_FALLBACK_ACTIVE = false;
+
+  function getWeatherQualityMode() {
+    try {
+      const v = weatherQualitySelect ? String(weatherQualitySelect.value || '') : '';
+      return (v === 'best') ? 'best' : 'fast';
+    } catch (_) {
+      return 'fast';
+    }
+  }
+
+  function updateFetchWeatherLabel() {
+    try {
+      if (!fetchWeatherBtn) return;
+      if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return;
+      const mode = getWeatherQualityMode();
+      fetchWeatherBtn.textContent = (mode === 'best') ? 'Get Multi-year Weather Data' : 'Get Weather Data';
+    } catch (_) {}
+  }
+
+  // Bind GPX UI handlers only once (loadMap() runs many times)
+  let GPX_UI_BOUND = false;
+  let GPX_UPLOAD_IN_PROGRESS = false;
+  let LAST_GPX_FILE_SIZE_BYTES = null;
+
+  // Progress phase: GPX route -> profile -> weather
+  let PROGRESS_PHASE = 'idle';
+  let PROGRESS_ANIM_RAF = null;
+  let PROGRESS_ANIM = null;
+
+  function resetProgressInstant() {
+    try {
+      if (!progressBar) return;
+      const prev = progressBar.style.transition;
+      progressBar.style.transition = 'none';
+      progressBar.style.width = '0%';
+      void progressBar.offsetWidth;
+      progressBar.style.transition = prev || '';
+    } catch (_) {
+      try { if (progressBar) progressBar.style.width = '0%'; } catch(_) {}
+    }
+  }
+
+  function stopProgressAnim() {
+    try {
+      if (PROGRESS_ANIM_RAF) cancelAnimationFrame(PROGRESS_ANIM_RAF);
+    } catch (_) {}
+    try {
+      if (progressBar && PROGRESS_ANIM && PROGRESS_ANIM.prevTransition !== undefined) {
+        progressBar.style.transition = PROGRESS_ANIM.prevTransition;
+      }
+    } catch (_) {}
+    PROGRESS_ANIM_RAF = null;
+    PROGRESS_ANIM = null;
+  }
+
+  function startProgressAnim(targetPct, durationMs) {
+    stopProgressAnim();
+    if (!progressEl || !progressBar) return;
+    const start = performance.now();
+    const prevTransition = progressBar.style.transition;
+    // During RAF-driven animations we want direct width updates (no extra CSS transition layer).
+    progressBar.style.transition = 'none';
+    const fromPct = (function(){
+      try {
+        const w = String(progressBar.style.width || '').trim();
+        if (w.endsWith('%')) return Number(w.slice(0, -1)) || 0;
+        return 0;
+      } catch (_) { return 0; }
+    })();
+    const toPct = Math.max(0, Math.min(100, Number(targetPct) || 0));
+    const dur = Math.max(250, Number(durationMs) || 1500);
+    PROGRESS_ANIM = { start, dur, fromPct, toPct, prevTransition };
+    progressEl.classList.remove('loading');
+
+    const tick = (now) => {
+      if (!PROGRESS_ANIM) return;
+      const t = Math.max(0, Math.min(1, (now - PROGRESS_ANIM.start) / PROGRESS_ANIM.dur));
+      const u = 1 - Math.pow(1 - t, 2); // ease-out
+      const pct = PROGRESS_ANIM.fromPct + u * (PROGRESS_ANIM.toPct - PROGRESS_ANIM.fromPct);
+      progressBar.style.width = `${pct}%`;
+      if (t < 1) {
+        PROGRESS_ANIM_RAF = requestAnimationFrame(tick);
+      } else {
+        PROGRESS_ANIM_RAF = null;
+        try { progressBar.style.transition = prevTransition; } catch (_) {}
+      }
+    };
+    PROGRESS_ANIM_RAF = requestAnimationFrame(tick);
+  }
+
+  function startGpxRouteProgress() {
+    PROGRESS_PHASE = 'gpx_route';
+    if (progressEl && progressBar) {
+      resetProgressInstant();
+      const mb = (LAST_GPX_FILE_SIZE_BYTES && Number.isFinite(LAST_GPX_FILE_SIZE_BYTES)) ? (LAST_GPX_FILE_SIZE_BYTES / (1024*1024)) : 0;
+      const dur = Math.max(1200, Math.min(9000, 1800 + mb * 450));
+      startProgressAnim(48, dur);
+    }
+    if (sseStatus) sseStatus.textContent = 'GPX: loading route…';
+  }
+
+  function startGpxProfileProgress() {
+    PROGRESS_PHASE = 'gpx_profile';
+    if (progressEl && progressBar) {
+      const mb = (LAST_GPX_FILE_SIZE_BYTES && Number.isFinite(LAST_GPX_FILE_SIZE_BYTES)) ? (LAST_GPX_FILE_SIZE_BYTES / (1024*1024)) : 0;
+      const dur = Math.max(1200, Math.min(12000, 2200 + mb * 650));
+      startProgressAnim(95, dur);
+    }
+    if (sseStatus) sseStatus.textContent = 'GPX: generating elevation profile…';
+  }
+
+  function finishGpxProgress() {
+    stopProgressAnim();
+    PROGRESS_PHASE = 'gpx_done';
+    try { if (progressBar) progressBar.style.width = '100%'; } catch (_) {}
+  }
+
+  function beginWeatherProgress() {
+    stopProgressAnim();
+    PROGRESS_PHASE = 'weather';
+    if (progressEl && progressBar) {
+      resetProgressInstant();
+      progressEl.classList.remove('loading');
+    }
+  }
+
+  // Weather provenance counters (updated from SSE station payload)
+  let WEATHER_PROVENANCE = {
+    disk_cache: 0,
+    offline_tile: 0,
+    api: 0,
+    reused: 0,
+    dummy: 0,
+    other: 0,
+    total_seen: 0,
+  };
+
+  function resetWeatherProvenance() {
+    WEATHER_PROVENANCE = { disk_cache: 0, offline_tile: 0, api: 0, reused: 0, dummy: 0, other: 0, total_seen: 0 };
+  }
+
+  function _classifySourceMode(modeRaw) {
+    const mode = String(modeRaw || '').toLowerCase();
+    if (!mode) return 'other';
+    if (mode.includes('disk_cache')) return 'disk_cache';
+    if (mode.includes('offline')) return 'offline_tile';
+    if (mode.includes('reused')) return 'reused';
+    if (mode.includes('dummy')) return 'dummy';
+    if (mode === 'api' || mode.startsWith('per_point_') || mode.includes('api')) return 'api';
+    return 'other';
+  }
+
+  function noteWeatherProvenanceFromProps(props) {
+    try {
+      const bucket = _classifySourceMode(props && props._source_mode);
+      WEATHER_PROVENANCE.total_seen += 1;
+      if (WEATHER_PROVENANCE[bucket] !== undefined) WEATHER_PROVENANCE[bucket] += 1;
+      else WEATHER_PROVENANCE.other += 1;
+    } catch (_) {}
+  }
+
+  function weatherProvenanceText() {
+    try {
+      const c = WEATHER_PROVENANCE;
+      const cache = (c.disk_cache || 0) + (c.reused || 0);
+      const offline = (c.offline_tile || 0);
+      const api = (c.api || 0);
+      const dummy = (c.dummy || 0);
+      const parts = [];
+      parts.push(`cached ${cache}`);
+      if (offline) parts.push(`offline ${offline}`);
+      if (api) parts.push(`api ${api}`);
+      if (dummy) parts.push(`dummy ${dummy}`);
+      return parts.join(', ');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function setProgressPercent(pct) {
+    if (!progressEl || !progressBar) return;
+    progressEl.classList.remove('loading');
+    const p = Math.max(0, Math.min(100, Number(pct) || 0));
+    progressBar.style.width = `${p}%`;
+  }
+
+  function setProgressIndeterminate(on) {
+    if (!progressEl || !progressBar) return;
+    if (on) {
+      progressBar.style.width = '0%';
+      progressEl.classList.add('loading');
+    } else {
+      progressEl.classList.remove('loading');
+    }
+  }
+
+  function uploadGpxFileWithProgress(file) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (!file) return reject(new Error('No file'));
+        if (GPX_UPLOAD_IN_PROGRESS) return reject(new Error('Upload already in progress'));
+        GPX_UPLOAD_IN_PROGRESS = true;
+        LAST_GPX_FILE_SIZE_BYTES = (file && file.size !== undefined) ? Number(file.size) : null;
+
+        setProgressPercent(0);
+        if (sseStatus) sseStatus.textContent = 'GPX: uploading…';
+
+        const fd = new FormData();
+        fd.append('file', file);
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload_gpx', true);
+        xhr.responseType = 'text';
+
+        xhr.upload.onprogress = (ev) => {
+          try {
+            if (ev && ev.lengthComputable && ev.total > 0) {
+              const pct = Math.round(100 * ev.loaded / ev.total);
+              setProgressPercent(pct);
+              if (sseStatus) sseStatus.textContent = `GPX: uploading… ${pct}%`;
+            } else {
+              setProgressIndeterminate(true);
+              if (sseStatus) sseStatus.textContent = 'GPX: uploading…';
+            }
+          } catch (_) {}
+        };
+
+        xhr.onerror = () => {
+          GPX_UPLOAD_IN_PROGRESS = false;
+          setProgressIndeterminate(false);
+          reject(new Error('Upload failed'));
+        };
+        xhr.onabort = () => {
+          GPX_UPLOAD_IN_PROGRESS = false;
+          setProgressIndeterminate(false);
+          reject(new Error('Upload aborted'));
+        };
+        xhr.onload = () => {
+          GPX_UPLOAD_IN_PROGRESS = false;
+          try {
+            const txt = xhr.responseText || '';
+            const j = txt ? JSON.parse(txt) : null;
+            if (!j || !j.path) {
+              setProgressIndeterminate(false);
+              return reject(new Error((j && j.error) ? String(j.error) : `Upload failed (HTTP ${xhr.status})`));
+            }
+            // Upload done; backend GPX parsing+profile generation progress will start on SSE connect.
+            setProgressIndeterminate(false);
+            resetProgressInstant();
+            resolve(j);
+          } catch (e) {
+            setProgressIndeterminate(false);
+            reject(e);
+          }
+        };
+
+        xhr.send(fd);
+      } catch (e) {
+        GPX_UPLOAD_IN_PROGRESS = false;
+        setProgressIndeterminate(false);
+        reject(e);
+      }
+    });
+  }
 
   function getBaseName(p) {
     try {
@@ -2799,6 +3064,12 @@
     const loadOpts = (opts && typeof opts === 'object') ? opts : {};
     LAST_LOAD_OPTS = loadOpts;
     const forceRestart = !!loadOpts.forceRestart;
+    const weatherOnly = !!loadOpts.weatherOnly;
+    const autoUpgradeIfSingleYear = !!loadOpts.autoUpgradeIfSingleYear;
+    const upgradePass = !!loadOpts._upgradePass;
+
+    // Full stream already emits route+profile before stations; avoid running a separate priming stream.
+    try { window.__WM_PROFILE_PRIME_DONE__ = true; } catch (_) {}
 
     if (forceRestart) {
       // GPX reload (and similar actions) must interrupt any ongoing stream.
@@ -2808,25 +3079,24 @@
       } catch (_) {}
       PRIME_IN_PROGRESS = false;
       MAIN_IN_PROGRESS = false;
+      stopProgressAnim();
     }
+
+    // New stream → reset provenance counters
+    resetWeatherProvenance();
     // Update button state
     if (fetchWeatherBtn) {
       fetchWeatherBtn.textContent = 'Downloading...';
       fetchWeatherBtn.disabled = true;
     }
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'block';
-    // Prepare determinate progress
+    // GPX route/profile progress phase starts immediately; switches on SSE events.
     if (evtSource) { try { evtSource.close(); } catch (_) {} }
     // If we close the stream here, we must allow a fresh start.
     if (forceRestart) {
       MAIN_IN_PROGRESS = false;
       PRIME_IN_PROGRESS = false;
     }
-    if (progressEl && progressBar) {
-      progressEl.classList.remove('loading');
-      progressBar.style.width = '0%';
-    }
-    if (sseStatus) sseStatus.textContent = 'Stream: connecting…';
     const selected = startDateInput.value ? new Date(startDateInput.value) : new Date();
     const mmdd = getMMDD(selected);
     const isTourMode = (document.body && document.body.dataset && document.body.dataset.mode)
@@ -2847,6 +3117,7 @@
       const histStart = histEnd - histN + 1;
 
       const offlineOnlyParam = loadOpts.offlineOnly ? '&offline_only=1' : '';
+      const forceOnlineParam = loadOpts.forceOnline ? '&force_online=1' : '';
       const z = map.getZoom();
       const profileStep = (function(zoom){
         // Finer elevation sampling: reduce step per zoom for smoother profile
@@ -2860,8 +3131,20 @@
         return 12;
       })(z);
 
-    // Profile-first priming: fetch route + profile (dry-run) before stations
-    if (!window.__WM_PROFILE_PRIME_DONE__) {
+    const wantMultiYear = histN >= 2;
+    let sawSingleYearSpan = false;
+
+    if (weatherOnly) {
+      beginWeatherProgress();
+      if (sseStatus) sseStatus.textContent = (loadOpts.forceOnline && wantMultiYear)
+        ? 'Fetching multi-year weather…'
+        : 'Loading weather…';
+    } else {
+      startGpxRouteProgress();
+    }
+
+    // Profile-first priming: disabled (kept code path for reference)
+    if (false && !window.__WM_PROFILE_PRIME_DONE__) {
       if (!forceRestart && (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS)) return; // avoid parallel primes
       try { evtSource && evtSource.close(); } catch(_){ }
       try {
@@ -2928,7 +3211,7 @@
       if (MAIN_IN_PROGRESS) return;
       MAIN_IN_PROGRESS = true;
       const qsComfort = `&temp_cold=${encodeURIComponent(SETTINGS.tempCold)}&temp_hot=${encodeURIComponent(SETTINGS.tempHot)}&rain_high=${encodeURIComponent(SETTINGS.rainHigh)}&wind_head_comfort=${encodeURIComponent(SETTINGS.windHeadComfort)}&wind_tail_comfort=${encodeURIComponent(SETTINGS.windTailComfort)}`;
-      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${gpxParam}${revParam}${qsComfort}`);
+      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${forceOnlineParam}${gpxParam}${revParam}${qsComfort}`);
     let stationCount = 0;
     let stationTotal = 0;
     // Dim existing glyphs and prepare new layer
@@ -2943,6 +3226,15 @@
     evtSource.addEventListener('route', (ev) => {
         try {
           const payload = JSON.parse(ev.data);
+          // In weather-only upgrade mode, keep the existing route/profile stable.
+          if (weatherOnly) {
+            const total = Number(payload.total || 0);
+            stationTotal = total;
+            return;
+          }
+
+          // GPX route geometry ready -> switch to elevation/profile phase
+          if (PROGRESS_PHASE !== 'weather') startGpxProfileProgress();
           const route = payload.route;
           const routeSegments = payload.route_segments;
           const startMarker = payload.start_marker;
@@ -3194,7 +3486,6 @@
         }
         const b = boundsFromLineString(route.geometry.coordinates);
         map.fitBounds(b, { padding: [20, 20] });
-        if (progressBar) progressBar.style.width = total > 0 ? '0%' : '0%';
         OVERLAY_POINTS = [];
         // Robust years span: parse, validate, and fallback to SETTINGS if invalid
         const ysRaw = (payload.years_start !== undefined) ? payload.years_start : payload.yearsStart;
@@ -3219,17 +3510,21 @@
         }
         YEARS_SPAN_TEXT = usePayload ? `${ysNum}..${yeNum}` : null;
         const spanTxt = YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data';
-        if (sseStatus) sseStatus.textContent = `Loading station 0/${stationTotal} from ${spanTxt}`;
+        // Do not clobber the GPX/profile phase status text here; station updates will set status once weather starts.
+        if (sseStatus && PROGRESS_PHASE === 'weather') sseStatus.textContent = `Loading station 0/${stationTotal} from ${spanTxt}`;
       } catch (e) { console.error('route event error', e); }
     });
     // Profile data stream
     evtSource.addEventListener('profile', (ev) => {
       try {
+        if (weatherOnly) return;
         const payload = JSON.parse(ev.data);
         if (payload && payload.profile) {
           drawProfile(payload.profile);
           // Precompute nearest route indexes for profile points for cursor sync
           computeProfileRouteIndexes(payload.profile);
+          // GPX+profile complete
+          if (PROGRESS_PHASE !== 'weather') finishGpxProgress();
         }
       } catch (e) { console.error('profile event error', e); }
     });
@@ -3306,37 +3601,67 @@
         markDataStale();
       });
     }
-  // Drag & Drop GPX upload
-  if (dropZone) {
-    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.background = 'rgba(0,255,128,0.12)'; });
-    dropZone.addEventListener('dragleave', () => { dropZone.style.background = 'rgba(0,255,128,0.06)'; });
-    dropZone.addEventListener('drop', async (e) => {
-      e.preventDefault();
-      dropZone.style.background = 'rgba(0,255,128,0.06)';
-      const f = e.dataTransfer.files && e.dataTransfer.files[0];
-      if (!f) return;
-      if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please drop a .gpx file'); return; }
-      const fd = new FormData();
-      fd.append('file', f);
-      try {
-        const res = await fetch('/api/upload_gpx', { method: 'POST', body: fd });
-        const j = await res.json();
-        if (j && j.path) {
-          LAST_GPX_PATH = j.path;
-          LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
-          updateDropZoneLabel();
-          // Reset priming flag so new GPX triggers profile-first
-          try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){}
-          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
-        } else {
-          alert('Upload failed: ' + (j.error || 'unknown error'));
-        }
-      } catch (err) {
-        console.error('Upload error', err);
-        alert('Upload error: ' + err);
+    // Bind GPX UI handlers ONCE (otherwise click can open multiple dialogs)
+    if (!GPX_UI_BOUND) {
+      GPX_UI_BOUND = true;
+      // Drag & Drop GPX upload
+      if (dropZone) {
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.background = 'rgba(0,255,128,0.12)'; });
+        dropZone.addEventListener('dragleave', () => { dropZone.style.background = 'rgba(0,255,128,0.06)'; });
+        dropZone.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          dropZone.style.background = 'rgba(0,255,128,0.06)';
+          const f = e.dataTransfer.files && e.dataTransfer.files[0];
+          if (!f) return;
+          if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please drop a .gpx file'); return; }
+          try {
+            const j = await uploadGpxFileWithProgress(f);
+            LAST_GPX_PATH = j.path;
+            LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
+            updateDropZoneLabel();
+            try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
+            loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
+          } catch (err) {
+            console.error('Upload error', err);
+            alert('Upload error: ' + err);
+            setProgressIndeterminate(false);
+          }
+        });
       }
-    });
-  }
+
+      // Click to open file dialog
+      const gpxInput = document.getElementById('gpxFileInput');
+      if (dropZone && gpxInput) {
+        dropZone.addEventListener('click', (e) => {
+          try {
+            e.preventDefault();
+            e.stopPropagation();
+          } catch (_) {}
+          if (GPX_UPLOAD_IN_PROGRESS) return;
+          gpxInput.click();
+        });
+        gpxInput.addEventListener('change', async () => {
+          const f = gpxInput.files && gpxInput.files[0];
+          if (!f) return;
+          if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please choose a .gpx file'); return; }
+          try {
+            const j = await uploadGpxFileWithProgress(f);
+            LAST_GPX_PATH = j.path;
+            LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
+            updateDropZoneLabel();
+            try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
+            loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
+          } catch (err) {
+            console.error('Upload error', err);
+            alert('Upload error: ' + err);
+            setProgressIndeterminate(false);
+          } finally {
+            // Allow selecting the same file again to retrigger change
+            try { gpxInput.value = ''; } catch (_) {}
+          }
+        });
+      }
+    }
 
     evtSource.addEventListener('station', (ev) => {
       try {
@@ -3344,6 +3669,25 @@
         const f = payload.feature;
         const [lon, lat] = f.geometry.coordinates;
         const props = f.properties || {};
+
+        // Detect single-year span (used to decide whether to auto-upgrade to multi-year).
+        try {
+          if (autoUpgradeIfSingleYear && wantMultiYear) {
+            const ys = props._years_start;
+            const ye = props._years_end;
+            if (ys !== undefined && ys !== null && ye !== undefined && ye !== null) {
+              const ysn = Number(ys);
+              const yen = Number(ye);
+              if (Number.isFinite(ysn) && Number.isFinite(yen) && Math.round(ysn) === Math.round(yen)) {
+                sawSingleYearSpan = true;
+              }
+            }
+          }
+        } catch (_) {}
+
+        noteWeatherProvenanceFromProps(props);
+        // Weather phase begins with first station: reset to 0% and then advance by completed/total.
+        if (PROGRESS_PHASE !== 'weather') beginWeatherProgress();
         // Build map glyph according to settings
         let icon = null;
         if ((SETTINGS.glyphType === 'svg') || (!SETTINGS.glyphType && !SETTINGS.useClassicWeatherIcons)) {
@@ -3500,40 +3844,10 @@
         stationCount = completed;
         stationTotal = total;
         const spanTxt = YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data';
-        if (sseStatus) sseStatus.textContent = `Loading station ${stationCount}/${stationTotal} from ${spanTxt}`;
+        if (sseStatus) sseStatus.textContent = `Loading station ${stationCount}/${stationTotal} (${weatherProvenanceText()}) from ${spanTxt}`;
       } catch (e) { console.error('station event error', e); }
     });
-  // Click to open file dialog
-  const gpxInput = document.getElementById('gpxFileInput');
-  if (dropZone && gpxInput) {
-    dropZone.addEventListener('click', () => { gpxInput.click(); });
-    gpxInput.addEventListener('change', async (e) => {
-      const f = gpxInput.files && gpxInput.files[0];
-      if (!f) return;
-      if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please choose a .gpx file'); return; }
-      const fd = new FormData();
-      fd.append('file', f);
-      try {
-        const res = await fetch('/api/upload_gpx', { method: 'POST', body: fd });
-        const j = await res.json();
-        if (j && j.path) {
-          LAST_GPX_PATH = j.path;
-          LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
-          updateDropZoneLabel();
-          try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){}
-          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
-        } else {
-          alert('Upload failed: ' + (j.error || 'unknown error'));
-        }
-      } catch (err) {
-        console.error('Upload error', err);
-        alert('Upload error: ' + err);
-      } finally {
-        // Allow selecting the same file again to retrigger change
-        try { gpxInput.value = ''; } catch (_) {}
-      }
-    });
-  }
+
 
     evtSource.addEventListener('done', (e) => {
       try { evtSource && evtSource.close(); } catch (_) {}
@@ -3572,11 +3886,32 @@
         }
         const spanTxt = YEARS_SPAN_TEXT ? ` from historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : '';
         const suffix = backendTxt ? ` ${backendTxt}` : spanTxt;
-        sseStatus.textContent = `Stream: done, stations ${stationCount}/${stationTotal}${suffix}`;
+        const prov = weatherProvenanceText();
+        const provTxt = prov ? ` (${prov})` : '';
+        sseStatus.textContent = `Stream: done, stations ${stationCount}/${stationTotal}${provTxt}${suffix}`;
       }
+
+      // Best (multi-year) mode: if preview showed only single-year stats, immediately upgrade.
+      if (autoUpgradeIfSingleYear && !upgradePass && wantMultiYear && sawSingleYearSpan) {
+        try {
+          if (sseStatus) sseStatus.textContent = 'Upgrading to multi-year weather…';
+        } catch (_) {}
+        // Keep button disabled; start a weather-only stream that forces online.
+        loadMap({
+          ...loadOpts,
+          offlineOnly: false,
+          forceOnline: true,
+          weatherOnly: true,
+          autoUpgradeIfSingleYear: false,
+          _upgradePass: true,
+          forceRestart: true,
+        });
+        return;
+      }
+
       // Restore button state
       if (fetchWeatherBtn) {
-        fetchWeatherBtn.textContent = 'Get Weather Data';
+        updateFetchWeatherLabel();
         fetchWeatherBtn.disabled = false;
       }
       if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
@@ -3665,7 +4000,12 @@
   fetchWeatherBtn.addEventListener('click', () => {
     if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return; // Stop button handles abort now
     OFFLINE_FALLBACK_ACTIVE = false;
-    loadMap();
+    const mode = getWeatherQualityMode();
+    if (mode === 'best') {
+      loadMap({ ...(LAST_LOAD_OPTS || {}), offlineOnly: true, autoUpgradeIfSingleYear: true });
+    } else {
+      loadMap({ ...(LAST_LOAD_OPTS || {}) });
+    }
   });
   
   stopWeatherBtn.addEventListener('click', () => {
@@ -3690,7 +4030,7 @@
       return;
     }
 
-    fetchWeatherBtn.textContent = 'Get Weather Data';
+    updateFetchWeatherLabel();
     fetchWeatherBtn.disabled = false;
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
     if (sseStatus) sseStatus.textContent = 'Stream: stopped';
@@ -3709,7 +4049,7 @@
       MAIN_IN_PROGRESS = false;
       if (progressEl) progressEl.classList.remove('loading');
     }
-    fetchWeatherBtn.textContent = 'Get Weather Data';
+    updateFetchWeatherLabel();
     fetchWeatherBtn.disabled = false;
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
     if (sseStatus) sseStatus.textContent = 'Parameters changed - click "Get Weather Data"';
@@ -3717,6 +4057,11 @@
   
   startDateInput.addEventListener('change', markDataStale);
   tourDaysInput.addEventListener('change', markDataStale);
+
+  if (weatherQualitySelect) {
+    weatherQualitySelect.addEventListener('change', updateFetchWeatherLabel);
+  }
+  updateFetchWeatherLabel();
 
   // Tour Summary: badges panel rendering
   function renderTourSummary(summary) {

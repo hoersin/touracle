@@ -159,7 +159,7 @@
 
     /* Lightweight progress bar */
     .wm-progress { display: inline-block; width: 120px; height: 6px; background: #eee; border-radius: 4px; overflow: hidden; margin-left: 8px; vertical-align: middle; position: relative; }
-    .wm-progress .bar { position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: #1e90ff; }
+    .wm-progress .bar { position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: #1e90ff; transition: width 0.18s linear; }
     .wm-progress.loading .bar { width: 30%; animation: wm-indeterminate 1.2s ease-in-out infinite; }
     @keyframes wm-indeterminate { 0% { left: -30%; } 50% { left: 50%; } 100% { left: 100%; } }
     
@@ -260,6 +260,10 @@
     <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
     <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <button id="fetchWeather">Get Weather Data</button>
+      <select id="weatherQuality" aria-label="Weather data quality" title="Choose fast preview vs multi-year" style="border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:7px 10px; background:#fff; font-size:12px;">
+        <option value="fast">Fast (preview)</option>
+        <option value="best" selected>Best (multi-year)</option>
+      </select>
       <button id="stopWeather">Stop</button>
       <label style="display:flex; align-items:center; gap:6px;">
         <input type="checkbox" id="reverse" />

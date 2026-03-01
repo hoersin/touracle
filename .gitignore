@@ -33,6 +33,7 @@ build/
 /cache/
 /debug_output/
 project/debug_output/
+project/cache/
 
 # SQLite transient files (avoid committing WAL/SHM)
 *.sqlite-wal
@@ -43,6 +44,7 @@ project/data/*.gpx
 !project/data/milano_to_rome_demo.gpx
 data/*.gpx
 data/session_state.json
+project/data/session_state.json
 
 # --- Archives ---
 *.zip

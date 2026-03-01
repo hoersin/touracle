@@ -827,6 +827,7 @@ def api_map_stream():
     rain_high_param = request.args.get('rain_high')
     wind_head_comfort_param = request.args.get('wind_head_comfort')
     wind_tail_comfort_param = request.args.get('wind_tail_comfort')
+    reuse_per_day_param = request.args.get('reuse_per_day')
 
     if not date or len(date) != 5 or '-' not in date:
         return Response("data: {\"error\": \"Provide date as MM-DD\"}\n\n", mimetype='text/event-stream')
@@ -1209,6 +1210,45 @@ def api_map_stream():
         except Exception:
             glyph_route_dist_km = {i: 0.0 for i in range(len(sampled_points))}
 
+        # Monotonic glyph distance from start (based on route cumulative distance).
+        # IMPORTANT: Do NOT use haversine distance between glyph points here — that
+        # underestimates the true along-route distance (chord vs path) and causes
+        # glyphs to end early on the profile chart.
+        glyph_cum_km: list[float]
+        try:
+            glyph_cum_km = []
+            prev = 0.0
+            for i in range(len(sampled_points)):
+                d = float(glyph_route_dist_km.get(i, 0.0))
+                if d < prev:
+                    d = prev
+                glyph_cum_km.append(d)
+                prev = d
+
+            # Optional: ensure the series reaches the full profile length.
+            # (The profile chart x-axis uses `sampled_total_km`.)
+            try:
+                route_total_km = float(sampled_total_km) if sampled_total_km else (float(cum_route_km[-1]) if cum_route_km else 0.0)
+                last_d = float(glyph_cum_km[-1]) if glyph_cum_km else 0.0
+                if route_total_km > 0.0 and last_d > 0.0:
+                    rel_err = abs(route_total_km - last_d) / route_total_km
+                    if rel_err > 0.10:
+                        scale = route_total_km / last_d
+                        glyph_cum_km = [float(x) * float(scale) for x in glyph_cum_km]
+            except Exception:
+                pass
+        except Exception:
+            glyph_cum_km = [float(glyph_route_dist_km.get(i, 0.0)) for i in range(len(sampled_points))]
+
+        def _glyph_dist_km(i: int) -> float:
+            try:
+                ii = int(i)
+                if 0 <= ii < len(glyph_cum_km):
+                    return float(glyph_cum_km[ii])
+            except Exception:
+                pass
+            return float(glyph_route_dist_km.get(int(i), 0.0))
+
         # Day boundaries marks (distance in km from start)
         day_boundaries = []
         try:
@@ -1495,9 +1535,12 @@ def api_map_stream():
                 base = f"{base} {years_txt}"
             return f"from {base}"
 
-        if tour_planning and sampled_points:
-            # Tour Planning: reuse stats PER DAY (not for the whole tour).
-            # If we don't have tour segmentation info, fall back to legacy single-stats reuse.
+        reuse_per_day = str(reuse_per_day_param).lower() in ('1', 'true', 'yes', 'on')
+
+        if tour_planning and sampled_points and reuse_per_day:
+            # Tour Planning (optional): reuse stats PER DAY (not for the whole tour).
+            # Default behavior is per-point stats (day + coordinate) so long routes
+            # do not show repeated glyphs within a day segment.
             use_per_day = bool(segment_length and start_date is not None and tour_days is not None and tour_days > 0)
 
             def _dummy_stats(m: int, d: int) -> Dict[str, Any]:
@@ -1524,7 +1567,7 @@ def api_map_stream():
                     best_i = 0
                     best_abs = float('inf')
                     for i in range(len(sampled_points)):
-                        dk = float(glyph_route_dist_km.get(i, 0.0))
+                        dk = _glyph_dist_km(i)
                         a = abs(dk - target_km)
                         if a < best_abs:
                             best_abs = a
@@ -1738,15 +1781,32 @@ def api_map_stream():
                             day_idx = _nearest_segment_day(lat, lon)
                         except Exception:
                             day_idx = None
-                        if day_idx is None:
+                        d_km = _glyph_dist_km(i)
+
+                        day_idx_by_dist = None
+                        try:
+                            import bisect as _bisect
+                            marks = [float(segment_length) * k for k in range(1, int(tour_days))]
+                            day_idx_by_dist = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks, d_km))))
+                        except Exception:
                             try:
-                                import bisect as _bisect
-                                d_km = float(glyph_route_dist_km.get(i, 0.0))
-                                marks = [float(segment_length) * k for k in range(1, int(tour_days))]
-                                day_idx = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks, d_km))))
+                                day_idx_by_dist = int(max(0, min(int(tour_days) - 1, int(d_km // float(segment_length)))))
                             except Exception:
-                                day_idx = 0
-                        day_idx = int(max(0, min(int(tour_days) - 1, int(day_idx))))
+                                day_idx_by_dist = None
+
+                        if day_idx is None:
+                            day_idx = day_idx_by_dist if day_idx_by_dist is not None else 0
+                        else:
+                            try:
+                                if (day_idx_by_dist is not None) and (abs(int(day_idx) - int(day_idx_by_dist)) > 1):
+                                    day_idx = int(day_idx_by_dist)
+                            except Exception:
+                                pass
+
+                        try:
+                            day_idx = int(max(0, min(int(tour_days) - 1, int(day_idx))))
+                        except Exception:
+                            day_idx = 0
                         assigned_date = start_date + _dt.timedelta(days=day_idx)
 
                     stats, matches = stats_by_day.get(int(day_idx), next(iter(stats_by_day.values())))
@@ -1780,7 +1840,7 @@ def api_map_stream():
                             "usage_count": 1,
                             "_match_days": matches,
                             "_source_mode": ("tour_planning_offline" if bool(stats.get('_offline')) else "tour_planning_reused"),
-                            "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                            "distance_from_start_km": _glyph_dist_km(i)
                         }
                     }
                     if use_per_day and assigned_date is not None:
@@ -1888,15 +1948,35 @@ def api_map_stream():
                     if segment_length and start_date is not None:
                         # Prefer mapping via precomputed route segments for robust boundary assignment
                         day_idx = _nearest_segment_day(lat, lon)
-                        d_km = float(distances_from_start.get(i, 0.0)) * float(scale_factor)
-                        if day_idx is None:
-                            # Fallback: scaled distance marks
+                        # Use monotonic glyph distance (NOT profile distances)
+                        d_km = _glyph_dist_km(i)
+
+                        # Distance-based day (monotonic fallback). If segment-based assignment
+                        # looks implausible, prefer the distance-based one.
+                        day_idx_by_dist = None
+                        try:
+                            import bisect as _bisect
+                            marks = [float(segment_length) * k for k in range(1, int(tour_days))]
+                            day_idx_by_dist = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks, d_km))))
+                        except Exception:
                             try:
-                                import bisect as _bisect
-                                marks = [segment_length * k for k in range(1, int(tour_days))]
-                                day_idx = int(max(0, min(tour_days - 1, _bisect.bisect_left(marks, d_km))))
+                                day_idx_by_dist = int(max(0, min(int(tour_days) - 1, int(d_km // float(segment_length)))))
                             except Exception:
-                                day_idx = int(max(0, min(tour_days - 1, int(d_km // segment_length))))
+                                day_idx_by_dist = None
+
+                        if day_idx is None:
+                            day_idx = day_idx_by_dist
+                        else:
+                            try:
+                                if (day_idx_by_dist is not None) and (abs(int(day_idx) - int(day_idx_by_dist)) > 1):
+                                    day_idx = int(day_idx_by_dist)
+                            except Exception:
+                                pass
+
+                        try:
+                            day_idx = int(max(0, min(int(tour_days) - 1, int(day_idx))))
+                        except Exception:
+                            day_idx = 0
                         assigned_date = start_date + _dt.timedelta(days=day_idx)
                         log.info('[SSE][PLAN] Glyph #%d: dist=%.1f km → day %d date %s', i, d_km, day_idx, assigned_date.isoformat())
                     mm = month
@@ -1937,7 +2017,7 @@ def api_map_stream():
                                     "_match_days": matching,
                                     "_source_mode": "disk_cache",
                                     "_grid_deg": grid_deg,
-                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                    "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
                             if segment_length and start_date is not None and assigned_date is not None:
@@ -1998,7 +2078,7 @@ def api_map_stream():
                                     "_match_days": matching,
                                     "_source_mode": "offline_tile",
                                     "_grid_deg": grid_deg,
-                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                    "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
                             if segment_length and start_date is not None and assigned_date is not None:
@@ -2044,7 +2124,7 @@ def api_map_stream():
                                     "_match_days": matching,
                                     "_source_mode": "offline_tile",
                                     "_grid_deg": grid_deg,
-                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                    "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
                             if segment_length and start_date is not None and assigned_date is not None:
@@ -2098,7 +2178,7 @@ def api_map_stream():
                                 "_match_days": matching,
                                 "_source_mode": src_mode,
                                 "_grid_deg": grid_deg,
-                                "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                "distance_from_start_km": _glyph_dist_km(i)
                             }
                         }
                         if segment_length and start_date is not None and assigned_date is not None:
@@ -2196,7 +2276,7 @@ def api_map_stream():
                                     "_match_days": matching,
                                     "_source_mode": "offline_tile",
                                     "_grid_deg": grid_deg,
-                                    "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                    "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
                             if segment_length and start_date is not None and assigned_date is not None:
@@ -2241,7 +2321,7 @@ def api_map_stream():
                                 "_match_days": [],
                                 "_source_mode": f"per_point_{fetch_mode}_window_dummy" if use_tour_window else f"per_point_{fetch_mode}_dummy",
                                 "_grid_deg": grid_deg,
-                                "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                                "distance_from_start_km": _glyph_dist_km(i)
                             }
                         }
                         if segment_length and start_date is not None and assigned_date is not None:
@@ -2324,7 +2404,7 @@ def api_map_stream():
                             "_match_days": matching,
                             "_source_mode": f"per_point_{fetch_mode}_window" if use_tour_window else f"per_point_{fetch_mode}",
                             "_grid_deg": grid_deg,
-                            "distance_from_start_km": float(glyph_route_dist_km.get(i, 0.0))
+                            "distance_from_start_km": _glyph_dist_km(i)
                         }
                     }
                     if segment_length and start_date is not None and assigned_date is not None:
