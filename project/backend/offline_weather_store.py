@@ -262,6 +262,40 @@ class OfflineWeatherStore:
                 (int(month), int(day), float(lat_min), float(lat_max), float(lon_min), float(lon_max)),
             ).fetchall()
 
+        def _avg2(a: Optional[float], b: Optional[float]) -> Optional[float]:
+            if a is None:
+                return b
+            if b is None:
+                return a
+            try:
+                return (float(a) + float(b)) / 2.0
+            except Exception:
+                return a
+
+        def _avg_dir_deg(a: Optional[float], b: Optional[float]) -> Optional[float]:
+            """Average directions on a circle.
+
+            If only one is present, return it.
+            """
+
+            if a is None:
+                return b
+            if b is None:
+                return a
+            try:
+                a_rad = math.radians(float(a))
+                b_rad = math.radians(float(b))
+                x = math.cos(a_rad) + math.cos(b_rad)
+                y = math.sin(a_rad) + math.sin(b_rad)
+                if abs(x) < 1e-12 and abs(y) < 1e-12:
+                    return float(a)
+                deg = math.degrees(math.atan2(y, x))
+                if deg < 0:
+                    deg += 360.0
+                return deg
+            except Exception:
+                return a
+
         out: List[Dict[str, Any]] = []
         for r in rows or []:
             try:
@@ -303,6 +337,52 @@ class OfflineWeatherStore:
                 )
             except Exception:
                 continue
+
+        # Gap-fill: if a tile has no climatology row at all (all stats are NULL),
+        # copy/average from immediate neighbor rows (same col). This prevents
+        # visible blank stripes when a few tiles failed during offline DB build.
+        by_rc: Dict[Tuple[int, int], Dict[str, Any]] = {(d["row"], d["col"]): d for d in out}
+        value_keys = (
+            "temperature_c",
+            "precipitation_mm",
+            "rain_probability",
+            "rain_typical_mm",
+            "wind_speed_ms",
+            "wind_dir_deg",
+            "wind_var_deg",
+            "temp_day_median",
+            "temp_day_p25",
+            "temp_day_p75",
+        )
+
+        def _has_any_values(d: Dict[str, Any]) -> bool:
+            return any(d.get(k) is not None for k in value_keys)
+
+        for (row, col), d in list(by_rc.items()):
+            if _has_any_values(d):
+                continue
+            north = by_rc.get((row - 1, col))
+            south = by_rc.get((row + 1, col))
+            if north is None and south is None:
+                continue
+            if north is not None and not _has_any_values(north):
+                north = None
+            if south is not None and not _has_any_values(south):
+                south = None
+            if north is None and south is None:
+                continue
+
+            d["temperature_c"] = _avg2((north or {}).get("temperature_c"), (south or {}).get("temperature_c"))
+            d["precipitation_mm"] = _avg2((north or {}).get("precipitation_mm"), (south or {}).get("precipitation_mm"))
+            d["rain_probability"] = _avg2((north or {}).get("rain_probability"), (south or {}).get("rain_probability"))
+            d["rain_typical_mm"] = _avg2((north or {}).get("rain_typical_mm"), (south or {}).get("rain_typical_mm"))
+            d["wind_speed_ms"] = _avg2((north or {}).get("wind_speed_ms"), (south or {}).get("wind_speed_ms"))
+            d["wind_var_deg"] = _avg2((north or {}).get("wind_var_deg"), (south or {}).get("wind_var_deg"))
+            d["wind_dir_deg"] = _avg_dir_deg((north or {}).get("wind_dir_deg"), (south or {}).get("wind_dir_deg"))
+            d["temp_day_median"] = _avg2((north or {}).get("temp_day_median"), (south or {}).get("temp_day_median"))
+            d["temp_day_p25"] = _avg2((north or {}).get("temp_day_p25"), (south or {}).get("temp_day_p25"))
+            d["temp_day_p75"] = _avg2((north or {}).get("temp_day_p75"), (south or {}).get("temp_day_p75"))
+
         return out
 
     def get_stats_for_tile(self, tile_id: str, month: int, day: int) -> Optional[Dict[str, Any]]:

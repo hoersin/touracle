@@ -82,7 +82,9 @@
   const strategicPlayBtn = document.getElementById('strategicPlay');
   const strategicSpeed = document.getElementById('strategicSpeed');
   const strategicMonthTicks = document.getElementById('strategicMonthTicks');
+  const strategicTimeline = document.getElementById('strategicTimeline');
   const strategicLayerSelect = document.getElementById('strategicLayer');
+  const strategicQuickLayerSelect = document.getElementById('strategicQuickLayerSelect');
   const strategicWindOn = document.getElementById('strategicWindOn');
   const strategicWindMode = document.getElementById('strategicWindMode');
   const settingsCancel = document.getElementById('settingsCancel');
@@ -101,6 +103,16 @@
   const overlayContainer = document.getElementById('overlayContainer');
   const resizeHandle = document.getElementById('profileResizeHandle');
   let LAST_PROFILE = null;
+
+  function _updateStrategicTimelineCssVar() {
+    try {
+      const h = strategicTimeline ? Number(strategicTimeline.offsetHeight || 0) : 0;
+      document.documentElement.style.setProperty('--wm-strategic-timeline-h', `${Math.max(0, Math.round(h))}px`);
+    } catch (_) {}
+  }
+
+  // Compute initial bottom UI height (0 unless Climate mode is active).
+  try { setTimeout(() => { _updateStrategicTimelineCssVar(); }, 0); } catch (_) {}
 
   // Profile panel overlay selector (Temperature / Precipitation / Wind)
   let profileOverlaySelect = null;
@@ -987,6 +999,44 @@
   const STRATEGIC_CROSSFADE_MS = 300;
   const STRATEGIC_FETCH_THROTTLE_MS = 180;
 
+  // Cache strategic grid responses to keep slider scrubbing smooth.
+  // Keyed by (year, iso, quantized bbox). LRU + TTL to cap memory.
+  const STRATEGIC_CACHE_MAX = 96;
+  const STRATEGIC_CACHE_TTL_MS = 3 * 60 * 1000;
+  const STRATEGIC_CACHE = new Map(); // key -> { t:number, j:object }
+
+  function _q3(x) {
+    const v = Number(x);
+    if (!Number.isFinite(v)) return 'nan';
+    return (Math.round(v * 1000) / 1000).toFixed(3);
+  }
+
+  function _strategicCacheKey(year, iso, latMin, latMax, lonMin, lonMax) {
+    return `${String(year)}|${String(iso)}|${_q3(latMin)},${_q3(latMax)},${_q3(lonMin)},${_q3(lonMax)}`;
+  }
+
+  function _strategicCacheGet(key) {
+    const ent = STRATEGIC_CACHE.get(key);
+    if (!ent) return null;
+    if ((Date.now() - ent.t) > STRATEGIC_CACHE_TTL_MS) {
+      STRATEGIC_CACHE.delete(key);
+      return null;
+    }
+    // Touch LRU order
+    STRATEGIC_CACHE.delete(key);
+    STRATEGIC_CACHE.set(key, ent);
+    return ent.j;
+  }
+
+  function _strategicCacheSet(key, j) {
+    STRATEGIC_CACHE.set(key, { t: Date.now(), j });
+    while (STRATEGIC_CACHE.size > STRATEGIC_CACHE_MAX) {
+      const oldest = STRATEGIC_CACHE.keys().next().value;
+      if (oldest === undefined) break;
+      STRATEGIC_CACHE.delete(oldest);
+    }
+  }
+
   function _clamp01(t) {
     if (t < 0) return 0;
     if (t > 1) return 1;
@@ -1041,6 +1091,214 @@
     { t: 0.00, c: { r: 200, g: 215, b: 225 } },
     { t: 1.00, c: { r: 90, g: 115, b: 140 } },
   ];
+
+  // -------------------- Strategic Legend (in-map) --------------------
+  let STRATEGIC_LEGEND_EL = null;
+  function _ensureStrategicLegend() {
+    if (STRATEGIC_LEGEND_EL) return STRATEGIC_LEGEND_EL;
+    try {
+      const el = document.createElement('div');
+      el.className = 'wm-map-legend hidden';
+      el.innerHTML = [
+        '<div class="title" id="wmStrategicLegendTitle">Legend</div>',
+        '<div class="bar" id="wmStrategicLegendBar"></div>',
+        '<div class="ticks" id="wmStrategicLegendTicks"></div>',
+        '<div class="note" id="wmStrategicLegendNote" style="display:none"></div>',
+      ].join('');
+      // Attach to Leaflet map container so it stays inside the map.
+      const c = map && map.getContainer ? map.getContainer() : null;
+      if (c) c.appendChild(el);
+      STRATEGIC_LEGEND_EL = el;
+      return el;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _legendGradientCSS(stops) {
+    const parts = (stops || []).map(s => {
+      const p = Math.round(100 * _clamp01(Number(s.t)));
+      const c = s.c || { r: 0, g: 0, b: 0 };
+      return `rgb(${c.r},${c.g},${c.b}) ${p}%`;
+    });
+    if (!parts.length) return 'linear-gradient(to right, rgba(0,0,0,0.08), rgba(0,0,0,0.18))';
+    return `linear-gradient(to right, ${parts.join(', ')})`;
+  }
+
+  function _setLegend(title, stops, tickLabels, noteText) {
+    const el = _ensureStrategicLegend();
+    if (!el) return;
+    const titleEl = el.querySelector('#wmStrategicLegendTitle');
+    const barEl = el.querySelector('#wmStrategicLegendBar');
+    const ticksEl = el.querySelector('#wmStrategicLegendTicks');
+    const noteEl = el.querySelector('#wmStrategicLegendNote');
+    if (titleEl) titleEl.textContent = String(title || 'Legend');
+    if (barEl) barEl.style.background = _legendGradientCSS(stops);
+    if (ticksEl) {
+      ticksEl.innerHTML = '';
+      const labs = Array.isArray(tickLabels) ? tickLabels : [];
+      for (const t of labs) {
+        const s = document.createElement('span');
+        s.textContent = String(t);
+        ticksEl.appendChild(s);
+      }
+    }
+    if (noteEl) {
+      if (noteText) {
+        noteEl.style.display = 'block';
+        noteEl.textContent = String(noteText);
+      } else {
+        noteEl.style.display = 'none';
+        noteEl.textContent = '';
+      }
+    }
+  }
+
+  function _setLegendTooltips(containerTip, barTip, tickTip) {
+    const el = _ensureStrategicLegend();
+    if (!el) return;
+    const globalTip = (containerTip || barTip || tickTip) ? String(containerTip || barTip || tickTip) : null;
+    try {
+      if (globalTip) el.title = globalTip;
+      else el.removeAttribute('title');
+    } catch (_) {}
+    try {
+      const titleEl = el.querySelector('#wmStrategicLegendTitle');
+      if (titleEl) {
+        if (globalTip) titleEl.title = globalTip;
+        else titleEl.removeAttribute('title');
+      }
+    } catch (_) {}
+    try {
+      const barEl = el.querySelector('#wmStrategicLegendBar');
+      if (barEl) {
+        const tip = barTip ? String(barTip) : globalTip;
+        if (tip) barEl.title = tip;
+        else barEl.removeAttribute('title');
+      }
+    } catch (_) {}
+    try {
+      const ticksEl = el.querySelector('#wmStrategicLegendTicks');
+      if (ticksEl) {
+        if (globalTip) ticksEl.title = globalTip;
+        else ticksEl.removeAttribute('title');
+        for (const s of ticksEl.querySelectorAll('span')) {
+          const tip = tickTip ? String(tickTip) : globalTip;
+          if (tip) s.title = tip;
+          else s.removeAttribute('title');
+        }
+      }
+    } catch (_) {}
+    try {
+      const noteEl = el.querySelector('#wmStrategicLegendNote');
+      if (noteEl) {
+        if (globalTip) noteEl.title = globalTip;
+        else noteEl.removeAttribute('title');
+      }
+    } catch (_) {}
+  }
+
+  function _updateStrategicLegend() {
+    const el = _ensureStrategicLegend();
+    if (!el) return;
+    if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) {
+      el.classList.add('hidden');
+      return;
+    }
+
+    const layer = STRATEGIC_STATE.layer;
+    el.classList.remove('hidden');
+
+    if (layer === 'temperature_ride') {
+      _setLegend('Temperature (ride hours, °C)', PAL_TEMP, ['-5', '10', '25', '35'], null);
+      _setLegendTooltips(
+        'Ride-hours temperature (median of 10/12/14/16 local time).',
+        'Color encodes temperature (°C).',
+        'Tick labels are °C anchors for the palette.'
+      );
+      return;
+    }
+    if (layer === 'rain_ride') {
+      _setLegend('Precipitation (mm/day)', PAL_RAIN, ['0', '5', '10', '20'], null);
+      _setLegendTooltips(
+        'Daily precipitation sum (mm/day).',
+        'Color encodes precipitation (mm/day).',
+        'Tick labels are mm/day anchors.'
+      );
+      return;
+    }
+    if (layer === 'rain_tent') {
+      _setLegend('Rain (typical, mm/day)', PAL_RAIN, ['0', '3', '6', '12'], null);
+      _setLegendTooltips(
+        'Typical rain during tent hours (mm/day equivalent).',
+        'Color encodes typical rain (mm/day).',
+        'Tick labels are mm/day anchors.'
+      );
+      return;
+    }
+    if (layer === 'comfort_ride') {
+      _setLegend('Comfort (ride)', PAL_COMFORT, ['0', '0.5', '1.0'], null);
+      _setLegendTooltips(
+        'Comfort score combines temperature, rain and wind for riding.',
+        'Color encodes comfort score (0..1).',
+        'Tick labels are score anchors (0..1).' 
+      );
+      return;
+    }
+    if (layer === 'comfort_tent') {
+      _setLegend('Comfort (tent)', PAL_COMFORT, ['0', '0.5', '1.0'], null);
+      _setLegendTooltips(
+        'Comfort score combines temperature, rain and wind for tent hours.',
+        'Color encodes comfort score (0..1).',
+        'Tick labels are score anchors (0..1).'
+      );
+      return;
+    }
+    if (layer === 'wind_speed') {
+      _setLegend('Wind speed (m/s)', PAL_WIND, ['0', '4', '8', '16'], null);
+      _setLegendTooltips(
+        'Wind speed averaged for the day (m/s).',
+        'Color encodes wind speed (m/s).',
+        'Tick labels are m/s anchors.'
+      );
+      return;
+    }
+    if (layer === 'wind_dir') {
+      _setLegend('Wind direction', PAL_WIND, ['low', 'high'], 'Direction is shown by the wind overlay.');
+      _setLegendTooltips(
+        'Wind direction: use the animated flow/arrows overlay.',
+        'Background color is not used for direction.',
+        'Direction is shown by the overlay lines/arrows.'
+      );
+      return;
+    }
+
+    _setLegend('Legend', PAL_TEMP, [], null);
+    _setLegendTooltips(null, null, null);
+  }
+
+  function _syncStrategicQuickLayer() {
+    if (!strategicQuickLayerSelect) return;
+    try {
+      const lyr = STRATEGIC_STATE ? String(STRATEGIC_STATE.layer || '') : '';
+      const opt = strategicQuickLayerSelect.querySelector(`option[value="${lyr.replace(/"/g, '')}"]`);
+      if (opt) strategicQuickLayerSelect.value = lyr;
+    } catch (_) {}
+  }
+
+  function _setStrategicLayer(layer) {
+    STRATEGIC_STATE.layer = String(layer || 'temperature_ride');
+    try {
+      if (strategicLayerSelect) strategicLayerSelect.value = STRATEGIC_STATE.layer;
+    } catch (_) {}
+    if (strategicWindOn && STRATEGIC_STATE.layer === 'wind_speed' && !strategicWindOn.checked) {
+      strategicWindOn.checked = true;
+      STRATEGIC_STATE.windOn = true;
+    }
+    _syncStrategicQuickLayer();
+    _updateStrategicLegend();
+    _renderStrategic();
+  }
 
   function _buildYearDates(year) {
     const y = Number(year);
@@ -1160,6 +1418,11 @@
       },
       _reset: function() {
         if (!this._map || !this._container) return;
+        // Align overlay element with the current viewport.
+        // Leaflet panes are in *layer* coordinates; our drawing uses *container* pixel coords.
+        // Positioning the container at the layer-point for container (0,0) keeps them in sync.
+        const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+        L.DomUtil.setPosition(this._container, topLeft);
         const size = this._map.getSize();
         const dpr = (window.devicePixelRatio || 1);
         this._container.style.width = `${size.x}px`;
@@ -1220,6 +1483,8 @@
       },
       _reset: function() {
         if (!this._map || !this._container) return;
+        const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+        L.DomUtil.setPosition(this._container, topLeft);
         const size = this._map.getSize();
         const dpr = (window.devicePixelRatio || 1);
         this._container.style.width = `${size.x}px`;
@@ -1325,11 +1590,12 @@
           const sz = m2.getSize();
           // Fade trails without tinting the map (reduce alpha only)
           ctx.globalCompositeOperation = 'destination-in';
-          ctx.fillStyle = 'rgba(0,0,0,0.90)';
+          // Keep trails longer to make flow more visible.
+          ctx.fillStyle = 'rgba(0,0,0,0.95)';
           ctx.fillRect(0, 0, sz.x, sz.y);
           ctx.globalCompositeOperation = 'source-over';
-          ctx.strokeStyle = 'rgba(90,115,140,0.26)';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = 'rgba(90,115,140,0.60)';
+          ctx.lineWidth = 1.6;
 
           const animSpd = Math.max(0.1, Number(SETTINGS.animSpeed) || 1.0) * speedMul;
           for (const p of this._particles) {
@@ -1376,6 +1642,7 @@
     lastResp: null,
     lastFetchAt: 0,
     pendingFetch: null,
+    fetchAbort: null,
     heatLayer: null,
     windLayer: null,
   };
@@ -1395,6 +1662,7 @@
       strategicDaySlider.max = String(Math.max(0, STRATEGIC_STATE.dates.length - 1));
     }
     _renderMonthTicks(STRATEGIC_STATE.dates);
+    _updateStrategicLegend();
   }
 
   function _strategicSetDayIndex(idx) {
@@ -1404,6 +1672,7 @@
     STRATEGIC_STATE.dayIndex = i;
     if (strategicDaySlider) strategicDaySlider.value = String(i);
     _strategicSetLabels();
+    _updateStrategicLegend();
   }
 
   function _strategicCurrentISO() {
@@ -1598,15 +1867,64 @@
     const latMax = b.getNorth();
     const lonMin = b.getWest();
     const lonMax = b.getEast();
+
+    const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, iso, latMin, latMax, lonMin, lonMax);
+    const cached = _strategicCacheGet(cacheKey);
+    if (cached) {
+      STRATEGIC_STATE.lastResp = cached;
+      STRATEGIC_STATE.lastFetchAt = Date.now();
+      return;
+    }
+
     const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(iso)}`
       + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
       + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
     const t0 = Date.now();
-    const resp = await fetch(url);
+
+    // Abort any in-flight request; slider scrubs should only render the latest.
+    try {
+      if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
+    } catch (_) {}
+    const ac = new AbortController();
+    STRATEGIC_STATE.fetchAbort = ac;
+
+    const resp = await fetch(url, { signal: ac.signal });
     const j = await resp.json();
     if (!resp.ok) throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
     STRATEGIC_STATE.lastResp = j;
     STRATEGIC_STATE.lastFetchAt = t0;
+
+    try { _strategicCacheSet(cacheKey, j); } catch (_) {}
+  }
+
+  function _prefetchStrategicNeighbor(offset) {
+    try {
+      if (!STRATEGIC_STATE.active) return;
+      const n = STRATEGIC_STATE.dates.length;
+      if (!n) return;
+      const idx = STRATEGIC_STATE.dayIndex + offset;
+      if (idx < 0 || idx >= n) return;
+      const d = STRATEGIC_STATE.dates[idx];
+      if (!d || !d.iso) return;
+      const iso = d.iso;
+      const b = map.getBounds();
+      const latMin = b.getSouth();
+      const latMax = b.getNorth();
+      const lonMin = b.getWest();
+      const lonMax = b.getEast();
+      const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, iso, latMin, latMax, lonMin, lonMax);
+      if (_strategicCacheGet(cacheKey)) return;
+      const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(iso)}`
+        + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
+        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
+      fetch(url)
+        .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
+        .then(({ ok, status, j }) => {
+          if (!ok) throw new Error((j && j.error) ? j.error : `HTTP ${status}`);
+          _strategicCacheSet(cacheKey, j);
+        })
+        .catch(() => {});
+    } catch (_) {}
   }
 
   function _renderStrategic() {
@@ -1695,8 +2013,15 @@
       try {
         await _fetchStrategicGrid();
         _renderStrategic();
+
+        // Best-effort prefetch for smooth next/prev scrubbing.
+        setTimeout(() => {
+          _prefetchStrategicNeighbor(-1);
+          _prefetchStrategicNeighbor(+1);
+        }, 0);
       } catch (e) {
-        console.error('strategic fetch', e);
+        // Ignore abort noise during scrubbing.
+        if (!(e && (e.name === 'AbortError'))) console.error('strategic fetch', e);
       }
     }, delay);
   }
@@ -1705,6 +2030,8 @@
     const on = Boolean(active);
     if (STRATEGIC_STATE.active === on) return;
     STRATEGIC_STATE.active = on;
+
+    _updateStrategicTimelineCssVar();
 
     if (on) {
       _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR));
@@ -1733,6 +2060,8 @@
       try { STRATEGIC_STATE.windLayer.addTo(map); } catch (_) {}
 
       _scheduleStrategicFetch();
+      _updateStrategicLegend();
+      _syncStrategicQuickLayer();
     } else {
       STRATEGIC_STATE.playing = false;
       if (STRATEGIC_STATE.playTimer) {
@@ -1743,6 +2072,10 @@
         try { clearTimeout(STRATEGIC_STATE.pendingFetch); } catch (_) {}
         STRATEGIC_STATE.pendingFetch = null;
       }
+      try {
+        if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
+      } catch (_) {}
+      STRATEGIC_STATE.fetchAbort = null;
       if (STRATEGIC_STATE.windLayer) {
         STRATEGIC_STATE.windLayer.stop();
         STRATEGIC_STATE.windLayer.clear();
@@ -1751,8 +2084,16 @@
       if (STRATEGIC_STATE.heatLayer) {
         try { map.removeLayer(STRATEGIC_STATE.heatLayer); } catch (_) {}
       }
+      _updateStrategicLegend();
+      _syncStrategicQuickLayer();
     }
   }
+
+  try {
+    window.addEventListener('resize', () => {
+      _updateStrategicTimelineCssVar();
+    });
+  } catch (_) {}
 
   // UI wiring
   if (strategicLayerSelect) {
@@ -1762,7 +2103,15 @@
         strategicWindOn.checked = true;
         STRATEGIC_STATE.windOn = true;
       }
+      _updateStrategicLegend();
+      _syncStrategicQuickLayer();
       _renderStrategic();
+    });
+  }
+  if (strategicQuickLayerSelect) {
+    strategicQuickLayerSelect.addEventListener('change', () => {
+      const layer = String(strategicQuickLayerSelect.value || '');
+      _setStrategicLayer(layer);
     });
   }
   if (strategicWindOn) {
