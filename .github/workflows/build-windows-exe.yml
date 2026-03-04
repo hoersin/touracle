@@ -9,6 +9,11 @@ on:
         default: false
         type: boolean
   push:
+    branches:
+      - main
+    paths-ignore:
+      - 'releases/windows/**'
+  push:
     tags:
       - "v*"
 
@@ -37,7 +42,7 @@ jobs:
           ./project/packaging/build_windows_exe.ps1 -Name Touracle
 
       - name: Publish build to repo
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_repo }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_to_repo) || (github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]' && github.actor != 'github-actions') }}
         shell: pwsh
         run: |
           git lfs install
