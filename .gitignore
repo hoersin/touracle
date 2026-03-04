@@ -52,5 +52,6 @@ project/data/session_state.json
 
 # --- Archives ---
 *.zip
+!releases/windows/**/*.zip
 # --- Logs ---
 *.log

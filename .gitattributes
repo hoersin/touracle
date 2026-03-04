@@ -5,3 +5,5 @@ project/cache/offline_weather_*test*.sqlite filter=lfs diff=lfs merge=lfs -text
 releases/windows/**/*.exe filter=lfs diff=lfs merge=lfs -text
 releases/windows/**/*.dll filter=lfs diff=lfs merge=lfs -text
 releases/windows/**/*.pyd filter=lfs diff=lfs merge=lfs -text
+releases/windows/**/*.zip filter=lfs diff=lfs merge=lfs -text
+releases/windows/**/*.pyz filter=lfs diff=lfs merge=lfs -text
