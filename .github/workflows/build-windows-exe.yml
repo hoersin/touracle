@@ -2,9 +2,18 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_to_repo:
+        description: "Commit releases/windows/Touracle back to the repo (requires contents:write)"
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -26,6 +35,18 @@ jobs:
         shell: pwsh
         run: |
           ./project/packaging/build_windows_exe.ps1 -Name Touracle
+
+      - name: Publish build to repo
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_repo }}
+        shell: pwsh
+        run: |
+          git lfs install
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+
+          git add releases/windows/Touracle
+          git commit -m "Update Windows bundle (releases/windows)" || exit 0
+          git push
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
