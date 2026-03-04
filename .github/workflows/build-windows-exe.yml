@@ -1,0 +1,35 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install + build
+        shell: pwsh
+        run: |
+          ./project/packaging/build_windows_exe.ps1 -Name Touracle
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Touracle-windows
+          path: releases/windows/Touracle/
+          if-no-files-found: error

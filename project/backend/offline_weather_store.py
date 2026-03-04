@@ -73,7 +73,9 @@ class OfflineWeatherStore:
         # Auto-detect: prefer the DB with the most complete tile coverage.
         # Some DBs can be multi-year but very sparse (few tiles) and thus unusable
         # for most routes. Tie-break using the widest historical year span.
-        cache_dir = Path("project/cache")
+        # Resolve cache dir relative to this source file so packaged builds
+        # and "run from anywhere" invocations still find the offline DB.
+        cache_dir = Path(__file__).resolve().parents[1] / "cache"
         candidates: List[Path] = []
         try:
             year_dbs: List[Tuple[int, Path]] = []
@@ -88,7 +90,7 @@ class OfflineWeatherStore:
                 candidates.append(p)
         except Exception:
             pass
-        candidates.append(Path("project/cache/offline_weather.sqlite"))
+        candidates.append(cache_dir / "offline_weather.sqlite")
 
         best: Tuple[int, int, int, float, OfflineTileConfig] | None = None
         for path in candidates:

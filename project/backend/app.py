@@ -57,7 +57,8 @@ except Exception:
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / 'data'
 ENV_GPX = os.environ.get('GPX_PATH')
-GPX_FILE = Path(ENV_GPX) if ENV_GPX else (DATA_DIR / '2026-02-13_2781422668_von Montpellier nach Bayonne.gpx')
+# Default to the repo-tracked demo route so fresh clones work out of the box.
+GPX_FILE = Path(ENV_GPX) if ENV_GPX else (DATA_DIR / 'milano_to_rome_demo.gpx')
 DEBUG_DIR = BASE_DIR / 'debug_output'
 DEBUG_DIR.mkdir(exist_ok=True)
 STATS_CACHE_DIR = BASE_DIR / 'cache' / 'stats'
@@ -139,7 +140,7 @@ def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
     # Build candidate path: project/cache/offline_weather_<year>.sqlite
     try:
         if OfflineWeatherStore is not None:
-            p = Path('project/cache') / f'offline_weather_{y}.sqlite'
+            p = BASE_DIR / 'cache' / f'offline_weather_{y}.sqlite'
             if p.exists():
                 cfg = OfflineWeatherStore._load_config(p)  # type: ignore[attr-defined]
                 if cfg is not None:

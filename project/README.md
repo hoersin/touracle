@@ -50,6 +50,39 @@ Windows (PowerShell)
 	```
 4. Open http://localhost:5002 in your browser
 
+## Windows executable (.exe)
+
+This repo includes a GitHub Actions workflow that builds a Windows executable using PyInstaller.
+
+- Trigger it manually: GitHub → **Actions** → **Build Windows EXE** → **Run workflow**
+- Or tag a release (e.g. `v1.0.0`) to build on tag push
+
+The build output is published as an Actions artifact named **Touracle-windows** (download it from the workflow run). The executable is `Touracle.exe` inside the `releases/windows/Touracle/` folder.
+
+If you want to commit the built Windows bundle into the repository, place it under `releases/windows/Touracle/`.
+
+### Git LFS (offline SQL + Windows binaries)
+
+This repo is configured to store offline weather databases (`project/cache/offline_weather*.sqlite`) in **Git LFS**.
+
+On your machine (once):
+
+```bash
+git lfs install
+```
+
+Then you can commit the offline DB (example):
+
+```bash
+git add project/cache/offline_weather_2025.sqlite
+git commit -m "Add offline weather DB (LFS)"
+git push
+```
+
+Windows build outputs under `releases/windows/` are also tracked via Git LFS.
+
+Note: committing `.exe` binaries directly into the git repo is usually discouraged (large diffs, repo bloat). A common alternative is attaching the artifact to a GitHub Release.
+
 
 ## Project Structure
 

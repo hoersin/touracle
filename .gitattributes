@@ -1,3 +1,7 @@
 project/cache/offline_weather_*.sqlite filter=lfs diff=lfs merge=lfs -text
 project/cache/offline_weather.sqlite filter=lfs diff=lfs merge=lfs -text
 project/cache/offline_weather_*test*.sqlite filter=lfs diff=lfs merge=lfs -text
+
+releases/windows/**/*.exe filter=lfs diff=lfs merge=lfs -text
+releases/windows/**/*.dll filter=lfs diff=lfs merge=lfs -text
+releases/windows/**/*.pyd filter=lfs diff=lfs merge=lfs -text

@@ -33,7 +33,11 @@ build/
 /cache/
 /debug_output/
 project/debug_output/
-project/cache/
+# Ignore all cache content by default, but allow committing offline tile DBs
+# (they are tracked via Git LFS in .gitattributes).
+project/cache/**
+!project/cache/offline_weather.sqlite
+!project/cache/offline_weather_*.sqlite
 
 # SQLite transient files (avoid committing WAL/SHM)
 *.sqlite-wal
