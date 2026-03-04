@@ -108,5 +108,11 @@ Note: committing `.exe` binaries directly into the git repo is usually discourag
 
 Anyone can clone and test the app. For private repositories, invite collaborators via GitHub. For public repos, simply share the link.
 
+Optional dev/debug dependencies (not required to run the app):
+
+```bash
+pip install -r project/requirements-dev.txt
+```
+
 ---
 Touracle is a prototype—feedback and contributions are welcome!

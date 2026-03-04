@@ -1,0 +1,2 @@
+# Optional dependencies for development/debug tooling
+cairosvg
