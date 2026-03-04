@@ -1151,7 +1151,11 @@
     const ticksEl = el.querySelector('#wmStrategicLegendTicks');
     const noteEl = el.querySelector('#wmStrategicLegendNote');
     if (titleEl) titleEl.textContent = String(title || 'Legend');
-    if (barEl) barEl.style.background = _legendGradientCSS(stops);
+    if (barEl) {
+      barEl.classList.remove('steps');
+      barEl.innerHTML = '';
+      barEl.style.background = _legendGradientCSS(stops);
+    }
     if (ticksEl) {
       ticksEl.innerHTML = '';
       const labs = Array.isArray(tickLabels) ? tickLabels : [];
@@ -1161,6 +1165,53 @@
         ticksEl.appendChild(s);
       }
     }
+    if (noteEl) {
+      if (noteText) {
+        noteEl.style.display = 'block';
+        noteEl.textContent = String(noteText);
+      } else {
+        noteEl.style.display = 'none';
+        noteEl.textContent = '';
+      }
+    }
+  }
+
+  function _setLegendSteps(title, segments, tickLabels, noteText) {
+    const el = _ensureStrategicLegend();
+    if (!el) return;
+    const titleEl = el.querySelector('#wmStrategicLegendTitle');
+    const barEl = el.querySelector('#wmStrategicLegendBar');
+    const ticksEl = el.querySelector('#wmStrategicLegendTicks');
+    const noteEl = el.querySelector('#wmStrategicLegendNote');
+    if (titleEl) titleEl.textContent = String(title || 'Legend');
+
+    if (barEl) {
+      barEl.classList.add('steps');
+      barEl.style.background = 'none';
+      barEl.innerHTML = '';
+      const segs = Array.isArray(segments) ? segments : [];
+      for (const seg of segs) {
+        const d = document.createElement('div');
+        d.className = 'seg';
+        const col = String(seg && seg.color ? seg.color : 'rgba(0,0,0,0.08)');
+        d.style.background = col;
+        if (seg && Number.isFinite(Number(seg.flex)) && Number(seg.flex) > 0) {
+          d.style.flex = String(Number(seg.flex));
+        }
+        barEl.appendChild(d);
+      }
+    }
+
+    if (ticksEl) {
+      ticksEl.innerHTML = '';
+      const labs = Array.isArray(tickLabels) ? tickLabels : [];
+      for (const t of labs) {
+        const s = document.createElement('span');
+        s.textContent = String(t);
+        ticksEl.appendChild(s);
+      }
+    }
+
     if (noteEl) {
       if (noteText) {
         noteEl.style.display = 'block';
@@ -1228,7 +1279,20 @@
     el.classList.remove('hidden');
 
     if (layer === 'temperature_ride') {
-      _setLegend('Temperature (ride hours, °C)', PAL_TEMP, ['-5', '10', '25', '35'], null);
+      _setLegendSteps(
+        'Temperature (ride hours, °C)',
+        [
+          { color: 'rgba(20,60,160,0.95)' },
+          { color: 'rgba(0,190,210,0.95)' },
+          { color: 'rgba(40,160,80,0.95)' },
+          { color: 'rgba(240,220,80,0.95)' },
+          { color: 'rgba(245,155,60,0.95)' },
+          { color: 'rgba(215,60,45,0.95)' },
+          { color: 'rgba(150,60,190,0.95)' },
+        ],
+        ['<5', '10', '15', '20', '25', '30', '≥30'],
+        null
+      );
       _setLegendTooltips(
         'Ride-hours temperature (median of 10/12/14/16 local time).',
         'Color encodes temperature (°C).',
@@ -1237,7 +1301,17 @@
       return;
     }
     if (layer === 'rain_ride') {
-      _setLegend('Precipitation (mm/day)', PAL_RAIN, ['0', '5', '10', '20'], null);
+      _setLegendSteps(
+        'Precipitation (mm/day)',
+        [
+          { color: 'rgba(255,255,255,0.0)' },
+          { color: 'rgba(170,145,235,0.90)' },
+          { color: 'rgba(135,85,220,0.90)' },
+          { color: 'rgba(85,40,160,0.90)' },
+        ],
+        ['<2', '2', '5', '10', '≥10'],
+        null
+      );
       _setLegendTooltips(
         'Daily precipitation sum (mm/day).',
         'Color encodes precipitation (mm/day).',
@@ -1255,11 +1329,22 @@
       return;
     }
     if (layer === 'comfort_ride') {
-      _setLegend('Comfort (ride)', PAL_COMFORT, ['0', '0.5', '1.0'], null);
+      _setLegendSteps(
+        'Ride comfort (bikepacking)',
+        [
+          { color: 'rgba(220,55,55,0.95)' },   // red
+          { color: 'rgba(245,155,60,0.95)' },  // orange
+          { color: 'rgba(240,220,80,0.95)' },  // yellow
+          { color: 'rgba(40,160,80,0.95)' },   // green
+          { color: 'rgba(0,120,70,0.95)' },    // deep green
+        ],
+        ['≤-3', '-1', '0', '2', '4'],
+        null
+      );
       _setLegendTooltips(
-        'Comfort score combines temperature, rain and wind for riding.',
-        'Color encodes comfort score (0..1).',
-        'Tick labels are score anchors (0..1).' 
+        'Bikepacking comfort index = TempScore + RainScore + WindScore.',
+        'Color encodes comfort (higher is better).',
+        'Bins: ≥4 deep green, 2..3 green, 0..1 yellow, -1..-2 orange, ≤-3 red.'
       );
       return;
     }
@@ -1282,11 +1367,21 @@
       return;
     }
     if (layer === 'wind_dir') {
-      _setLegend('Wind direction', PAL_WIND, ['low', 'high'], 'Direction is shown by the wind overlay.');
+      _setLegendSteps(
+        'Wind (streamlines)',
+        [
+          { color: 'rgba(180,180,180,0.75)' },
+          { color: 'rgba(60,130,220,0.75)' },
+          { color: 'rgba(245,155,60,0.75)' },
+          { color: 'rgba(220,55,55,0.75)' },
+        ],
+        ['0', '3', '6', '10', '>10'],
+        'Direction by streamline direction; color encodes speed.'
+      );
       _setLegendTooltips(
-        'Wind direction: use the animated flow/arrows overlay.',
-        'Background color is not used for direction.',
-        'Direction is shown by the overlay lines/arrows.'
+        'Wind streamlines: direction and speed.',
+        'Color encodes wind speed (m/s).',
+        'Speed bins: 0–3 grey, 3–6 blue, 6–10 orange, >10 red.'
       );
       return;
     }
@@ -1309,7 +1404,7 @@
     try {
       if (strategicLayerSelect) strategicLayerSelect.value = STRATEGIC_STATE.layer;
     } catch (_) {}
-    if (strategicWindOn && STRATEGIC_STATE.layer === 'wind_speed' && !strategicWindOn.checked) {
+    if (strategicWindOn && (STRATEGIC_STATE.layer === 'wind_speed' || STRATEGIC_STATE.layer === 'wind_dir') && !strategicWindOn.checked) {
       strategicWindOn.checked = true;
       STRATEGIC_STATE.windOn = true;
     }
@@ -1409,21 +1504,20 @@
         this._container.style.top = '0';
         this._container.style.pointerEvents = 'none';
 
-        this._cA = L.DomUtil.create('canvas', '', this._container);
-        this._cB = L.DomUtil.create('canvas', '', this._container);
-        [this._cA, this._cB].forEach(c => {
+        // Render into a hidden buffer canvas, then blit to the visible canvas.
+        // This avoids flicker when repeatedly updating (e.g., day-to-day scrubbing).
+        this._front = L.DomUtil.create('canvas', '', this._container);
+        this._buffer = L.DomUtil.create('canvas', '', this._container);
+        [this._front, this._buffer].forEach(c => {
           c.style.position = 'absolute';
           c.style.left = '0';
           c.style.top = '0';
           c.style.width = '100%';
           c.style.height = '100%';
-          c.style.opacity = '0';
-          c.style.transition = `opacity ${STRATEGIC_CROSSFADE_MS}ms ease`;
         });
-        this._front = this._cA;
-        this._back = this._cB;
-        this._front.style.opacity = '1';
-        this._back.style.opacity = '0';
+        // Keep buffer hidden; drawing to it is fine.
+        this._buffer.style.visibility = 'hidden';
+        this._buffer.style.pointerEvents = 'none';
 
         m.getPanes().overlayPane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
@@ -1445,7 +1539,7 @@
         const dpr = (window.devicePixelRatio || 1);
         this._container.style.width = `${size.x}px`;
         this._container.style.height = `${size.y}px`;
-        [this._cA, this._cB].forEach(c => {
+        [this._front, this._buffer].forEach(c => {
           c.width = Math.max(1, Math.floor(size.x * dpr));
           c.height = Math.max(1, Math.floor(size.y * dpr));
         });
@@ -1454,19 +1548,20 @@
         if (!this._map) return;
         this._reset();
         const dpr = (window.devicePixelRatio || 1);
-        const ctx = this._back.getContext('2d');
-        if (!ctx) return;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, this._back.width, this._back.height);
-        ctx.scale(dpr, dpr);
-        try { drawFn(ctx, this._map.getSize()); } catch (e) { console.error('strategic draw', e); }
+        const bctx = this._buffer.getContext('2d');
+        const fctx = this._front.getContext('2d');
+        if (!bctx || !fctx) return;
 
-        // Crossfade
-        this._back.style.opacity = '1';
-        this._front.style.opacity = '0';
-        const prevFront = this._front;
-        this._front = this._back;
-        this._back = prevFront;
+        // Draw into buffer in CSS pixels.
+        bctx.setTransform(1, 0, 0, 1, 0, 0);
+        bctx.clearRect(0, 0, this._buffer.width, this._buffer.height);
+        bctx.scale(dpr, dpr);
+        try { drawFn(bctx, this._map.getSize()); } catch (e) { console.error('strategic draw', e); }
+
+        // Blit buffer to front (device pixels); no intermediate blank frame.
+        fctx.setTransform(1, 0, 0, 1, 0, 0);
+        fctx.clearRect(0, 0, this._front.width, this._front.height);
+        fctx.drawImage(this._buffer, 0, 0);
       },
     });
     return new Layer();
@@ -1582,7 +1677,7 @@
         }
         ctx.globalAlpha = 1;
       },
-      startFlow: function(sampleFn) {
+      startFlow: function(sampleFn, opts) {
         this.stop();
         this._reset();
         const m = this._map;
@@ -1596,11 +1691,24 @@
 
         const size = m.getSize();
         const speedMul = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
-        const density = Math.max(50, Math.min(1200, Math.round((Number(SETTINGS.windDensity) || 40) * 12)));
+
+        // Density proportional to wind speed (using viewport hint when available).
+        const speedHint = (opts && Number.isFinite(opts.speedHint)) ? Number(opts.speedHint) : 4.0;
+        const base = Math.max(20, Math.min(240, Number(SETTINGS.windDensity) || 40));
+        const speedFactor = Math.max(0.6, Math.min(2.2, 0.6 + 0.12 * speedHint));
+        const density = Math.max(60, Math.min(2200, Math.round(base * 10 * speedFactor)));
         this._particles = [];
         for (let i = 0; i < density; i++) {
           this._particles.push({ x: Math.random() * size.x, y: Math.random() * size.y, a: Math.random() });
         }
+
+        const colForSpeed = (sp) => {
+          const s = Math.max(0, Number(sp) || 0);
+          if (s < 3) return 'rgba(180,180,180,0.35)';
+          if (s < 6) return 'rgba(60,130,220,0.35)';
+          if (s < 10) return 'rgba(245,155,60,0.35)';
+          return 'rgba(220,55,55,0.35)';
+        };
 
         const step = () => {
           if (!this._map) return;
@@ -1609,11 +1717,10 @@
           // Fade trails without tinting the map (reduce alpha only)
           ctx.globalCompositeOperation = 'destination-in';
           // Keep trails longer to make flow more visible.
-          ctx.fillStyle = 'rgba(0,0,0,0.95)';
+          ctx.fillStyle = 'rgba(0,0,0,0.94)';
           ctx.fillRect(0, 0, sz.x, sz.y);
           ctx.globalCompositeOperation = 'source-over';
-          ctx.strokeStyle = 'rgba(90,115,140,0.60)';
-          ctx.lineWidth = 1.6;
+          ctx.lineWidth = 1.0;
 
           const animSpd = Math.max(0.1, Number(SETTINGS.animSpeed) || 1.0) * speedMul;
           for (const p of this._particles) {
@@ -1626,6 +1733,7 @@
               continue;
             }
             const sp = Math.max(0, Number(s.wind_speed_ms));
+            ctx.strokeStyle = colForSpeed(sp);
             const theta = ((Number(s.wind_dir_deg) + 180) % 360) * Math.PI / 180;
             const mag = (0.35 + 0.10 * sp) * animSpd;
             p.x += Math.sin(theta) * mag;
@@ -1645,6 +1753,56 @@
       },
     });
     return new Layer();
+  }
+
+  function _bikepackingTempScore(tC) {
+    const t = Number(tC);
+    if (!Number.isFinite(t)) return 0;
+    if (t >= 15 && t <= 22) return 2;
+    if (t >= 10 && t < 15) return 1;
+    if (t > 22 && t <= 28) return 1;
+    if (t < 5) return -2;
+    if (t > 30) return -2;
+    return 0;
+  }
+
+  function _bikepackingRainScore(rMm) {
+    const r = Math.max(0, Number(rMm));
+    if (!Number.isFinite(r)) return 0;
+    if (r < 1) return 2;
+    if (r <= 5) return 0;
+    return -2;
+  }
+
+  function _bikepackingWindScore(wMs) {
+    const w = Math.max(0, Number(wMs));
+    if (!Number.isFinite(w)) return 0;
+    if (w < 3) return 2;
+    if (w <= 6) return 1;
+    if (w > 8) return -2;
+    return 0;
+  }
+
+  function _bikepackingComfortScore(point) {
+    if (!point) return null;
+    const t = Number(point.temp_day_median);
+    const r = Number(point.precipitation_mm);
+    const w = Number(point.wind_speed_ms);
+    if (!Number.isFinite(t) || !Number.isFinite(r) || !Number.isFinite(w)) return null;
+    return _bikepackingTempScore(t) + _bikepackingRainScore(r) + _bikepackingWindScore(w);
+  }
+
+  function _meanWindSpeed(points) {
+    let sum = 0;
+    let n = 0;
+    for (const p of (points || [])) {
+      if (!p) continue;
+      const w = Number(p.wind_speed_ms);
+      if (!Number.isFinite(w)) continue;
+      sum += Math.max(0, w);
+      n += 1;
+    }
+    return n ? (sum / n) : 0;
   }
 
   const STRATEGIC_STATE = {
@@ -2251,75 +2409,204 @@
     return paths;
   }
 
-  function _drawFilledThreshold(ctx, grid, tileMap, meta, valueKey, threshold, rgba, alpha) {
-    const paths = _marchingSquaresPaths(grid, threshold);
-    if (!paths || !paths.length) {
-      // No boundaries: either fully above or fully below.
-      try {
-        const b = map.getBounds();
-        const nw = b.getNorthWest();
-        const s = _sampleInterpolated(tileMap, meta, nw.lat, nw.lng);
-        const v = s ? Number(s[valueKey]) : NaN;
-        if (Number.isFinite(v) && v >= threshold) {
-          const size = map.getSize();
-          ctx.save();
-          ctx.globalAlpha = _clamp01(alpha);
-          ctx.fillStyle = `rgba(${rgba.r},${rgba.g},${rgba.b},1)`;
-          ctx.fillRect(0, 0, size.x, size.y);
-          ctx.restore();
-        }
-      } catch (_) {}
-      return;
+  function _chaikinSmoothOpen(points, iterations) {
+    const it = Math.max(0, Math.min(3, Math.round(Number(iterations) || 0)));
+    let pts = Array.isArray(points) ? points : [];
+    for (let k = 0; k < it; k++) {
+      if (!pts || pts.length < 3) break;
+      const out = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = pts[i];
+        const p1 = pts[i + 1];
+        const q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+        const r = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+        out.push(q, r);
+      }
+      out.push(pts[pts.length - 1]);
+      pts = out;
     }
+    return pts;
+  }
 
-    const size = map.getSize();
-    let outsideHigh = false;
-    try {
-      const b = map.getBounds();
-      const nw = b.getNorthWest();
-      const s = _sampleInterpolated(tileMap, meta, nw.lat, nw.lng);
-      const v = s ? Number(s[valueKey]) : NaN;
-      outsideHigh = (Number.isFinite(v) && v >= threshold);
-    } catch (_) {}
+  function _chaikinSmoothClosed(points, iterations) {
+    const it = Math.max(0, Math.min(2, Math.round(Number(iterations) || 0)));
+    let pts = Array.isArray(points) ? points : [];
+    for (let k = 0; k < it; k++) {
+      if (!pts || pts.length < 4) break;
+      const out = [];
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        const p0 = pts[i];
+        const p1 = pts[(i + 1) % n];
+        const q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+        const r = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+        out.push(q, r);
+      }
+      pts = out;
+    }
+    return pts;
+  }
+
+  function _drawFilledThresholdCells(ctx, grid, threshold, rgba, alpha, smoothIters) {
+    if (!grid) return;
+    const thr = Number(threshold);
+    if (!Number.isFinite(thr)) return;
+    const aFill = _clamp01(alpha);
+
+    const interpT = (v0, v1) => {
+      const a = Number(v0);
+      const b = Number(v1);
+      const t = (Math.abs(b - a) < 1e-12) ? 0.5 : ((thr - a) / (b - a));
+      return _clamp01(t);
+    };
+    const lerpXY = (p0, p1, t) => ({ x: _lerp(p0.x, p1.x, t), y: _lerp(p0.y, p1.y, t) });
 
     ctx.save();
-    ctx.globalAlpha = _clamp01(alpha);
+    ctx.globalAlpha = aFill;
     ctx.fillStyle = `rgba(${rgba.r},${rgba.g},${rgba.b},1)`;
+    ctx.beginPath();
 
-    if (outsideHigh) {
-      // Fill whole viewport, then punch out the low regions delimited by contour paths.
-      ctx.fillRect(0, 0, size.x, size.y);
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath();
-      for (const path of paths) {
-        const p0 = path[0];
-        const q0 = map.latLngToContainerPoint([p0.lat, p0.lon]);
-        ctx.moveTo(q0.x, q0.y);
-        for (let i = 1; i < path.length; i++) {
-          const pt = path[i];
-          const q = map.latLngToContainerPoint([pt.lat, pt.lon]);
-          ctx.lineTo(q.x, q.y);
+    for (let r = 0; r < grid.rows - 1; r++) {
+      for (let c = 0; c < grid.cols - 1; c++) {
+        const vTL = grid.val[r][c];
+        const vTR = grid.val[r][c + 1];
+        const vBR = grid.val[r + 1][c + 1];
+        const vBL = grid.val[r + 1][c];
+        const latTL = grid.lat[r][c], lonTL = grid.lon[r][c];
+        const latTR = grid.lat[r][c + 1], lonTR = grid.lon[r][c + 1];
+        const latBR = grid.lat[r + 1][c + 1], lonBR = grid.lon[r + 1][c + 1];
+        const latBL = grid.lat[r + 1][c], lonBL = grid.lon[r + 1][c];
+        if ([vTL, vTR, vBR, vBL, latTL, lonTL, latTR, lonTR, latBR, lonBR, latBL, lonBL].some(x => x === null)) continue;
+
+        const a = Number(vTL), b = Number(vTR), e = Number(vBR), d = Number(vBL);
+        if (![a, b, d, e].every(Number.isFinite)) continue;
+
+        const qTL = map.latLngToContainerPoint([Number(latTL), Number(lonTL)]);
+        const qTR = map.latLngToContainerPoint([Number(latTR), Number(lonTR)]);
+        const qBR = map.latLngToContainerPoint([Number(latBR), Number(lonBR)]);
+        const qBL = map.latLngToContainerPoint([Number(latBL), Number(lonBL)]);
+
+        const aboveTL = a >= thr;
+        const aboveTR = b >= thr;
+        const aboveBR = e >= thr;
+        const aboveBL = d >= thr;
+        let code = 0;
+        if (aboveTL) code |= 8;
+        if (aboveTR) code |= 4;
+        if (aboveBR) code |= 2;
+        if (aboveBL) code |= 1;
+        if (code === 0) continue;
+
+        const tTop = (aboveTL !== aboveTR) ? interpT(a, b) : null;
+        const tRight = (aboveTR !== aboveBR) ? interpT(b, e) : null;
+        const tBottom = (aboveBL !== aboveBR) ? interpT(d, e) : null;
+        const tLeft = (aboveTL !== aboveBL) ? interpT(a, d) : null;
+        const top = (tTop === null) ? null : lerpXY(qTL, qTR, tTop);
+        const right = (tRight === null) ? null : lerpXY(qTR, qBR, tRight);
+        const bottom = (tBottom === null) ? null : lerpXY(qBL, qBR, tBottom);
+        const left = (tLeft === null) ? null : lerpXY(qTL, qBL, tLeft);
+
+        const polys = [];
+        const center = (a + b + d + e) / 4.0;
+
+        switch (code) {
+          case 15: polys.push([qTL, qTR, qBR, qBL]); break;
+          case 1: if (left && bottom) polys.push([qBL, bottom, left]); break;
+          case 2: if (right && bottom) polys.push([qBR, right, bottom]); break;
+          case 3: if (left && right) polys.push([qBL, qBR, right, left]); break;
+          case 4: if (top && right) polys.push([qTR, right, top]); break;
+          case 5:
+            if (top && right && bottom && left) {
+              if (center >= thr) polys.push([top, qTR, right, bottom, qBL, left]);
+              else { polys.push([qTR, right, top]); polys.push([qBL, bottom, left]); }
+            }
+            break;
+          case 6: if (top && bottom) polys.push([top, qTR, qBR, bottom]); break;
+          case 7: if (top && left) polys.push([top, qTR, qBR, qBL, left]); break;
+          case 8: if (left && top) polys.push([qTL, top, left]); break;
+          case 9: if (top && bottom) polys.push([qTL, top, bottom, qBL]); break;
+          case 10:
+            if (top && right && bottom && left) {
+              if (center >= thr) polys.push([qTL, top, right, qBR, bottom, left]);
+              else { polys.push([qTL, left, top]); polys.push([qBR, right, bottom]); }
+            }
+            break;
+          case 11: if (right && bottom) polys.push([qTL, qTR, right, bottom, qBL]); break;
+          case 12: if (left && right) polys.push([qTL, qTR, right, left]); break;
+          case 13: if (right && bottom) polys.push([qTL, qTR, right, bottom, qBL]); break;
+          case 14: if (left && bottom) polys.push([left, qTL, qTR, qBR, bottom]); break;
+          default: break;
         }
-        ctx.closePath();
-      }
-      ctx.fill('evenodd');
-    } else {
-      // Fill only the high islands.
-      ctx.beginPath();
-      for (const path of paths) {
-        const p0 = path[0];
-        const q0 = map.latLngToContainerPoint([p0.lat, p0.lon]);
-        ctx.moveTo(q0.x, q0.y);
-        for (let i = 1; i < path.length; i++) {
-          const pt = path[i];
-          const q = map.latLngToContainerPoint([pt.lat, pt.lon]);
-          ctx.lineTo(q.x, q.y);
+
+        for (const poly of polys) {
+          if (!poly || poly.length < 3) continue;
+          const pts = (smoothIters && poly.length >= 4) ? _chaikinSmoothClosed(poly, smoothIters) : poly;
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.closePath();
         }
-        ctx.closePath();
       }
-      ctx.fill('evenodd');
     }
+
+    ctx.fill();
     ctx.restore();
+  }
+
+  function _drawRainZoneLabels(ctx, points, valueKey, bands) {
+    try {
+      const vals = Array.isArray(points) ? points : [];
+      const thresholds = (bands || []).map(b => Number(b.thr)).filter(Number.isFinite).sort((a, b) => a - b);
+      if (!thresholds.length) return;
+
+      // Build ranges: [t0,t1), [t1,t2), ..., [tLast, +inf)
+      const ranges = thresholds.map((thr, i) => ({
+        lo: thr,
+        hi: (i + 1 < thresholds.length) ? thresholds[i + 1] : Infinity,
+      }));
+
+      // Pick a representative point per range: the max value in that range.
+      const picked = [];
+      for (const rg of ranges) {
+        let best = null;
+        let bestV = -Infinity;
+        for (const p of vals) {
+          if (!p) continue;
+          const v = Number(p[valueKey]);
+          const lat = Number(p.lat);
+          const lon = Number(p.lon);
+          if (!Number.isFinite(v) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+          if (!(v >= rg.lo && v < rg.hi)) continue;
+          if (v > bestV) { bestV = v; best = { v, lat, lon }; }
+        }
+        if (best) picked.push(best);
+      }
+      if (!picked.length) return;
+
+      // Draw tiny labels; avoid placing them too close.
+      ctx.save();
+      ctx.globalAlpha = 1;
+      ctx.font = '9px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const placed = [];
+      for (const p of picked) {
+        const q = map.latLngToContainerPoint([p.lat, p.lon]);
+        const tooClose = placed.some(o => {
+          const dx = o.x - q.x;
+          const dy = o.y - q.y;
+          return (dx * dx + dy * dy) < (60 * 60);
+        });
+        if (tooClose) continue;
+        const text = `${Math.round(p.v)}mm`;
+        const w = ctx.measureText(text).width;
+        ctx.fillStyle = 'rgba(255,255,255,0.70)';
+        ctx.fillRect(q.x - w / 2 - 3, q.y - 8, w + 6, 14);
+        ctx.fillStyle = 'rgba(20,20,20,0.75)';
+        ctx.fillText(text, q.x, q.y);
+        placed.push({ x: q.x, y: q.y });
+      }
+      ctx.restore();
+    } catch (_) {}
   }
 
   function _drawIsolines(ctx, grid, thresholds, strokeStyle, lineWidth, labelSet) {
@@ -2329,27 +2616,31 @@
     ctx.globalAlpha = 1;
     ctx.fillStyle = strokeStyle;
     ctx.font = '12px system-ui, -apple-system, sans-serif';
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
 
     for (const thr of thresholds) {
       const paths = _marchingSquaresPaths(grid, thr);
       if (!paths || !paths.length) continue;
       for (const path of paths) {
         if (!path || path.length < 2) continue;
-        ctx.beginPath();
-        const q0 = map.latLngToContainerPoint([path[0].lat, path[0].lon]);
-        ctx.moveTo(q0.x, q0.y);
-        for (let i = 1; i < path.length; i++) {
+        let pts = [];
+        for (let i = 0; i < path.length; i++) {
           const q = map.latLngToContainerPoint([path[i].lat, path[i].lon]);
-          ctx.lineTo(q.x, q.y);
+          pts.push({ x: q.x, y: q.y });
         }
+        pts = _chaikinSmoothOpen(pts, 1);
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
         ctx.stroke();
 
         // Labels (selected isolines only)
-        if (labelSet && labelSet.has(thr) && path.length >= 4) {
-          const mid = Math.floor(path.length / 2);
-          const pA = map.latLngToContainerPoint([path[Math.max(0, mid - 1)].lat, path[Math.max(0, mid - 1)].lon]);
-          const pB = map.latLngToContainerPoint([path[Math.min(path.length - 1, mid + 1)].lat, path[Math.min(path.length - 1, mid + 1)].lon]);
-          const pM = map.latLngToContainerPoint([path[mid].lat, path[mid].lon]);
+        if (labelSet && labelSet.has(thr) && pts.length >= 6) {
+          const mid = Math.floor(pts.length / 2);
+          const pA = pts[Math.max(0, mid - 2)];
+          const pB = pts[Math.min(pts.length - 1, mid + 2)];
+          const pM = pts[mid];
           const ang = Math.atan2(pB.y - pA.y, pB.x - pA.x);
           const text = `${thr}°C`;
           ctx.save();
@@ -2363,6 +2654,72 @@
           ctx.restore();
         }
       }
+    }
+    ctx.restore();
+  }
+
+  function _drawBandedCellFill(ctx, grid, thresholds, bandColors, alpha) {
+    // Simple, non-overlapping banded fill based on the cell-center value.
+    // This avoids stacked semi-transparent fills that can create visible grid artifacts.
+    if (!grid) return;
+    const thr = Array.isArray(thresholds) ? thresholds.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
+    const cols = Array.isArray(bandColors) ? bandColors : [];
+    if (cols.length < thr.length + 1) return;
+
+    const aFill = _clamp01(alpha);
+    // Pre-project all grid nodes once.
+    const proj = Array.from({ length: grid.rows }, () => Array.from({ length: grid.cols }, () => null));
+    for (let r = 0; r < grid.rows; r++) {
+      for (let c = 0; c < grid.cols; c++) {
+        const lat = grid.lat[r][c];
+        const lon = grid.lon[r][c];
+        if (lat === null || lon === null) continue;
+        const q = map.latLngToContainerPoint([Number(lat), Number(lon)]);
+        proj[r][c] = { x: q.x, y: q.y };
+      }
+    }
+
+    // Collect quads per band index.
+    const paths = Array.from({ length: thr.length + 1 }, () => []);
+    for (let r = 0; r < grid.rows - 1; r++) {
+      for (let c = 0; c < grid.cols - 1; c++) {
+        const a = Number(grid.val[r][c]);
+        const b = Number(grid.val[r][c + 1]);
+        const d = Number(grid.val[r + 1][c]);
+        const e = Number(grid.val[r + 1][c + 1]);
+        if (![a, b, d, e].every(Number.isFinite)) continue;
+        const qTL = proj[r][c];
+        const qTR = proj[r][c + 1];
+        const qBL = proj[r + 1][c];
+        const qBR = proj[r + 1][c + 1];
+        if (!qTL || !qTR || !qBL || !qBR) continue;
+
+        const center = (a + b + d + e) / 4.0;
+        let idx = 0;
+        while (idx < thr.length && center >= thr[idx]) idx++;
+        const col = cols[idx];
+        if (!col) continue;
+        paths[idx].push([qTL, qTR, qBR, qBL]);
+      }
+    }
+
+    ctx.save();
+    for (let i = 0; i < paths.length; i++) {
+      const quads = paths[i];
+      if (!quads || !quads.length) continue;
+      const col = cols[i];
+      if (!col) continue;
+      ctx.globalAlpha = aFill;
+      ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},1)`;
+      ctx.beginPath();
+      for (const q of quads) {
+        ctx.moveTo(q[0].x, q[0].y);
+        ctx.lineTo(q[1].x, q[1].y);
+        ctx.lineTo(q[2].x, q[2].y);
+        ctx.lineTo(q[3].x, q[3].y);
+        ctx.closePath();
+      }
+      ctx.fill();
     }
     ctx.restore();
   }
@@ -2390,28 +2747,23 @@
         const grid = _gridFromPoints(resp.points, valueKey);
         if (!grid) return;
 
-        // Base (all area): <5°C deep blue
-        ctx.save();
-        ctx.globalAlpha = 0.45;
-        ctx.fillStyle = 'rgba(20,60,160,1)';
-        ctx.fillRect(0, 0, w, h);
-        ctx.restore();
-
-        const bands = [
-          { thr: 5,  c: { r: 0,   g: 190, b: 210 } }, // cyan
-          { thr: 10, c: { r: 40,  g: 160, b: 80  } }, // green
-          { thr: 15, c: { r: 240, g: 220, b: 80  } }, // yellow
-          { thr: 20, c: { r: 245, g: 155, b: 60  } }, // orange
-          { thr: 25, c: { r: 215, g: 60,  b: 45  } }, // red
-          { thr: 30, c: { r: 150, g: 60,  b: 190 } }, // violet
+        // Non-overlapping band fill (transparent so basemap remains readable)
+        const thr = [5, 10, 15, 20, 25, 30];
+        const cols = [
+          { r: 20,  g: 60,  b: 160 }, // <5°C deep blue
+          { r: 0,   g: 190, b: 210 }, // 5–10 cyan
+          { r: 40,  g: 160, b: 80  }, // 10–15 green
+          { r: 240, g: 220, b: 80  }, // 15–20 yellow
+          { r: 245, g: 155, b: 60  }, // 20–25 orange
+          { r: 215, g: 60,  b: 45  }, // 25–30 red
+          { r: 150, g: 60,  b: 190 }, // >=30 violet
         ];
-        for (const bnd of bands) {
-          _drawFilledThreshold(ctx, grid, tileMap, meta, valueKey, bnd.thr, bnd.c, 0.45);
-        }
+        _drawBandedCellFill(ctx, grid, thr, cols, 0.22);
 
         // Isolines every 5°C
         const isoThr = [5,10,15,20,25,30];
-        _drawIsolines(ctx, grid, isoThr, '#555', 1, new Set([10,15,20,25]));
+        // No labels; keep lines subtle.
+        _drawIsolines(ctx, grid, isoThr, 'rgba(60,60,60,0.60)', 1, null);
         return;
       }
 
@@ -2421,14 +2773,97 @@
         const grid = _gridFromPoints(resp.points, valueKey);
         if (!grid) return;
 
-        const bands = [
-          { thr: 2,  c: { r: 170, g: 145, b: 235 } }, // light violet
-          { thr: 5,  c: { r: 135, g: 85,  b: 220 } }, // violet
-          { thr: 10, c: { r: 85,  g: 40,  b: 160 } }, // dark violet
+        // Non-overlapping band fill; leave <2mm/day unshaded.
+        const thr = [2, 5, 10];
+        const cols = [
+          null,
+          { r: 170, g: 145, b: 235 }, // 2–5
+          { r: 135, g: 85,  b: 220 }, // 5–10
+          { r: 85,  g: 40,  b: 160 }, // >=10
         ];
-        for (const bnd of bands) {
-          _drawFilledThreshold(ctx, grid, tileMap, meta, valueKey, bnd.thr, bnd.c, 0.40);
+        _drawBandedCellFill(ctx, grid, thr, cols, 0.20);
+
+        // Iso-lines at the same band thresholds.
+        _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        return;
+      }
+
+      if (layer === 'comfort_ride') {
+        // Bikepacking comfort index (TempScore + RainScore + WindScore)
+        const pts = (resp.points || []).map(p => {
+          if (!p) return null;
+          const s = _bikepackingComfortScore(p);
+          if (s === null) return null;
+          return { ...p, bikepacking_comfort: s };
+        }).filter(Boolean);
+        const valueKey = 'bikepacking_comfort';
+        const grid = _gridFromPoints(pts, valueKey);
+        if (!grid) return;
+
+        // Render as categorical cell fill (opacity ~45%)
+        const aFill = 0.45;
+        const colorFor = (score) => {
+          const s = Number(score);
+          if (!Number.isFinite(s)) return null;
+          if (s >= 4) return { r: 0, g: 120, b: 70 };      // deep green
+          if (s >= 2) return { r: 40, g: 160, b: 80 };     // green
+          if (s >= 0) return { r: 240, g: 220, b: 80 };    // yellow
+          if (s >= -2) return { r: 245, g: 155, b: 60 };   // orange
+          return { r: 220, g: 55, b: 55 };                 // red
+        };
+
+        // Pre-project all grid nodes once.
+        const proj = Array.from({ length: grid.rows }, () => Array.from({ length: grid.cols }, () => null));
+        for (let r = 0; r < grid.rows; r++) {
+          for (let c = 0; c < grid.cols; c++) {
+            const lat = grid.lat[r][c];
+            const lon = grid.lon[r][c];
+            if (lat === null || lon === null) continue;
+            const q = map.latLngToContainerPoint([Number(lat), Number(lon)]);
+            proj[r][c] = { x: q.x, y: q.y };
+          }
         }
+
+        const bins = new Map();
+        for (let r = 0; r < grid.rows - 1; r++) {
+          for (let c = 0; c < grid.cols - 1; c++) {
+            const a = Number(grid.val[r][c]);
+            const b = Number(grid.val[r][c + 1]);
+            const d = Number(grid.val[r + 1][c]);
+            const e = Number(grid.val[r + 1][c + 1]);
+            if (![a, b, d, e].every(Number.isFinite)) continue;
+            const qTL = proj[r][c];
+            const qTR = proj[r][c + 1];
+            const qBL = proj[r + 1][c];
+            const qBR = proj[r + 1][c + 1];
+            if (!qTL || !qTR || !qBL || !qBR) continue;
+
+            const center = (a + b + d + e) / 4.0;
+            const s = Math.round(center);
+            const col = colorFor(s);
+            if (!col) continue;
+            const key = `${col.r},${col.g},${col.b}`;
+            if (!bins.has(key)) bins.set(key, { col, quads: [] });
+            bins.get(key).quads.push([qTL, qTR, qBR, qBL]);
+          }
+        }
+
+        ctx.save();
+        ctx.globalAlpha = aFill;
+        for (const { col, quads } of bins.values()) {
+          if (!quads || !quads.length) continue;
+          ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},1)`;
+          ctx.beginPath();
+          for (const q of quads) {
+            ctx.moveTo(q[0].x, q[0].y);
+            ctx.lineTo(q[1].x, q[1].y);
+            ctx.lineTo(q[2].x, q[2].y);
+            ctx.lineTo(q[3].x, q[3].y);
+            ctx.closePath();
+          }
+          ctx.fill();
+        }
+        ctx.restore();
         return;
       }
 
@@ -2447,13 +2882,9 @@
         STRATEGIC_STATE.windLayer.clear();
       } else {
         const sampleFn = (lat, lon) => _sampleInterpolated(tileMap, meta, lat, lon);
-        const mode = STRATEGIC_STATE.windMode;
-        if (mode === 'arrows') {
-          STRATEGIC_STATE.windLayer.drawArrows(resp.points, sampleFn);
-        } else {
-          STRATEGIC_STATE.windLayer.clear();
-          STRATEGIC_STATE.windLayer.startFlow(sampleFn);
-        }
+        // Phase 2: streamlines only (no arrows)
+        STRATEGIC_STATE.windLayer.clear();
+        STRATEGIC_STATE.windLayer.startFlow(sampleFn, { speedHint: _meanWindSpeed(resp.points) });
       }
     }
   }

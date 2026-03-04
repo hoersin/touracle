@@ -172,6 +172,16 @@
       overflow: hidden;
       background: linear-gradient(to right, rgba(0,0,0,0.08), rgba(0,0,0,0.18));
     }
+    /* Discrete (stepped) legend bar */
+    .wm-map-legend .bar.steps {
+      display: flex;
+      gap: 0;
+      background: none;
+    }
+    .wm-map-legend .bar.steps .seg {
+      height: 100%;
+      flex: 1;
+    }
     .wm-map-legend .ticks {
       display: flex;
       justify-content: space-between;
@@ -498,6 +508,8 @@
                 <select id="strategicLayer">
                   <option value="temperature_ride">Temperature (Ride)</option>
                   <option value="rain_ride">Rain (Ride)</option>
+                  <option value="wind_dir">Wind</option>
+                  <option value="comfort_ride">Ride Comfort</option>
                 </select>
                 <label style="display:flex;align-items:center;gap:8px; font-size:12px; color:#334155;">
                   <input type="checkbox" id="strategicWindOn" class="wm-toggle" />
@@ -506,7 +518,6 @@
                 <label for="strategicWindMode" style="font-size:12px;color:#334155">Wind mode:</label>
                 <select id="strategicWindMode">
                   <option value="flow">Flow lines</option>
-                  <option value="arrows">Sparse arrows</option>
                 </select>
               </div>
             </div>
@@ -658,6 +669,8 @@
         <select id="strategicQuickLayerSelect" aria-label="Strategic quick layer" title="Quick layer">
           <option value="temperature_ride">Temperature (Ride)</option>
           <option value="rain_ride">Rain (Ride)</option>
+          <option value="wind_dir">Wind</option>
+          <option value="comfort_ride">Ride Comfort</option>
         </select>
       </div>
       <div id="profilePanel" style="position:relative; width:100%;">
@@ -937,7 +950,7 @@
       }
     })();
   </script>
-  <script src="/map.js?v=29"></script>
+  <script src="/map.js?v=34"></script>
   <script src="/frontend/profile_zoom.js?v=1"></script>
   <script>
     // Assisted test helpers: always available in Console
