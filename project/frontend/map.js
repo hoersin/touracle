@@ -1338,13 +1338,13 @@
           { color: 'rgba(40,160,80,0.95)' },   // green
           { color: 'rgba(0,120,70,0.95)' },    // deep green
         ],
-        ['≤-3', '-1', '0', '2', '4'],
+        ['<-2', '0', '2', '4', '≥4'],
         null
       );
       _setLegendTooltips(
         'Bikepacking comfort index = TempScore + RainScore + WindScore.',
         'Color encodes comfort (higher is better).',
-        'Bins: ≥4 deep green, 2..3 green, 0..1 yellow, -1..-2 orange, ≤-3 red.'
+        'ISO bands: ≥4 deep green, 2..4 green, 0..2 yellow, -2..0 orange, < -2 red.'
       );
       return;
     }
@@ -1688,6 +1688,8 @@
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
         ctx.scale(dpr, dpr);
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
 
         const size = m.getSize();
         const speedMul = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
@@ -1704,10 +1706,11 @@
 
         const colForSpeed = (sp) => {
           const s = Math.max(0, Number(sp) || 0);
-          if (s < 3) return 'rgba(180,180,180,0.35)';
-          if (s < 6) return 'rgba(60,130,220,0.35)';
-          if (s < 10) return 'rgba(245,155,60,0.35)';
-          return 'rgba(220,55,55,0.35)';
+          // Higher alpha so streamlines remain readable over basemap.
+          if (s < 3) return 'rgba(180,180,180,0.62)';
+          if (s < 6) return 'rgba(60,130,220,0.62)';
+          if (s < 10) return 'rgba(245,155,60,0.62)';
+          return 'rgba(220,55,55,0.62)';
         };
 
         const step = () => {
@@ -1717,10 +1720,10 @@
           // Fade trails without tinting the map (reduce alpha only)
           ctx.globalCompositeOperation = 'destination-in';
           // Keep trails longer to make flow more visible.
-          ctx.fillStyle = 'rgba(0,0,0,0.94)';
+          ctx.fillStyle = 'rgba(0,0,0,0.96)';
           ctx.fillRect(0, 0, sz.x, sz.y);
           ctx.globalCompositeOperation = 'source-over';
-          ctx.lineWidth = 1.0;
+          ctx.lineWidth = 1.6;
 
           const animSpd = Math.max(0.1, Number(SETTINGS.animSpeed) || 1.0) * speedMul;
           for (const p of this._particles) {
@@ -1753,6 +1756,212 @@
       },
     });
     return new Layer();
+  }
+
+  // --- Land mask for Strategic overlays (used when includeSea=false) ---
+  let STRATEGIC_LAND = null; // GeoJSON FeatureCollection
+  let STRATEGIC_LAND_LOADING = false;
+
+  function _geoFeatureBbox(feature) {
+    try {
+      const g = feature && feature.geometry;
+      const coords = g && g.coordinates;
+      if (!coords) return null;
+      let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+      const walk = (c) => {
+        if (!Array.isArray(c) || c.length === 0) return;
+        if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+          const lon = Number(c[0]);
+          const lat = Number(c[1]);
+          if (Number.isFinite(lat) && Number.isFinite(lon)) {
+            minLat = Math.min(minLat, lat);
+            maxLat = Math.max(maxLat, lat);
+            minLon = Math.min(minLon, lon);
+            maxLon = Math.max(maxLon, lon);
+          }
+          return;
+        }
+        for (const x of c) walk(x);
+      };
+      walk(coords);
+      if (!(minLat <= maxLat && minLon <= maxLon)) return null;
+      return { minLat, maxLat, minLon, maxLon };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _bboxIntersects(a, b) {
+    if (!a || !b) return false;
+    return !(a.maxLat < b.minLat || a.minLat > b.maxLat || a.maxLon < b.minLon || a.minLon > b.maxLon);
+  }
+
+  async function _ensureStrategicLandMaskLoaded() {
+    if (STRATEGIC_LAND || STRATEGIC_LAND_LOADING) return;
+    STRATEGIC_LAND_LOADING = true;
+    try {
+      const r = await fetch('/ne_110m_land.geojson');
+      const j = await r.json();
+      if (j && j.type === 'FeatureCollection' && Array.isArray(j.features)) {
+        // Precompute bboxes for quick culling.
+        for (const f of j.features) {
+          try { f.__bbox = _geoFeatureBbox(f); } catch (_) {}
+        }
+        STRATEGIC_LAND = j;
+      }
+    } catch (e) {
+      console.warn('Land mask load failed', e);
+    } finally {
+      STRATEGIC_LAND_LOADING = false;
+      try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
+    }
+  }
+
+  function _beginStrategicLandClip(ctx) {
+    // Returns true if a clip was applied (caller must ctx.restore()).
+    if (!ctx) return false;
+    if (SETTINGS && SETTINGS.includeSea) return false;
+    if (!STRATEGIC_LAND || !STRATEGIC_LAND.features) {
+      // Load lazily; render will refresh once ready.
+      _ensureStrategicLandMaskLoaded();
+      return false;
+    }
+
+    let view = null;
+    try {
+      const b = map.getBounds();
+      view = {
+        minLat: b.getSouth() - 1.0,
+        maxLat: b.getNorth() + 1.0,
+        minLon: b.getWest() - 1.0,
+        maxLon: b.getEast() + 1.0,
+      };
+    } catch (_) {}
+
+    ctx.save();
+    ctx.beginPath();
+
+    const drawRing = (ring) => {
+      if (!Array.isArray(ring) || ring.length < 2) return;
+      let started = false;
+      for (const pt of ring) {
+        if (!pt || pt.length < 2) continue;
+        const lon = Number(pt[0]);
+        const lat = Number(pt[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const q = map.latLngToContainerPoint([lat, lon]);
+        if (!started) { ctx.moveTo(q.x, q.y); started = true; }
+        else ctx.lineTo(q.x, q.y);
+      }
+      if (started) ctx.closePath();
+    };
+
+    const geom = (g) => {
+      if (!g || !g.type || !g.coordinates) return;
+      if (g.type === 'Polygon') {
+        for (const ring of g.coordinates) drawRing(ring);
+        return;
+      }
+      if (g.type === 'MultiPolygon') {
+        for (const poly of g.coordinates) {
+          for (const ring of poly) drawRing(ring);
+        }
+      }
+    };
+
+    for (const f of STRATEGIC_LAND.features) {
+      if (!f) continue;
+      if (view) {
+        const bb = f.__bbox;
+        if (bb && !_bboxIntersects(bb, view)) continue;
+      }
+      geom(f.geometry);
+    }
+
+    // Use even-odd so holes (lakes) punch out correctly even if ring winding varies.
+    try { ctx.clip('evenodd'); } catch (_) { try { ctx.clip(); } catch (_) {} }
+    return true;
+  }
+
+  // --- Strategic cursor readout (tooltip) ---
+  let STRATEGIC_CURSOR_EL = null;
+
+  function _ensureStrategicCursorReadout() {
+    if (STRATEGIC_CURSOR_EL) return STRATEGIC_CURSOR_EL;
+    try {
+      const el = document.createElement('div');
+      el.id = 'wmStrategicCursorReadout';
+      el.style.position = 'absolute';
+      el.style.left = '0px';
+      el.style.top = '0px';
+      el.style.zIndex = '1700';
+      el.style.display = 'none';
+      el.style.pointerEvents = 'none';
+      el.style.whiteSpace = 'pre';
+      el.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+      el.style.fontSize = '11px';
+      el.style.lineHeight = '1.2';
+      el.style.color = 'rgba(10,10,10,0.82)';
+      // Nearly transparent, minimal chrome.
+      el.style.background = 'rgba(255,255,255,0.42)';
+      el.style.border = '1px solid rgba(0,0,0,0.10)';
+      el.style.borderRadius = '10px';
+      el.style.padding = '6px 8px';
+      el.style.backdropFilter = 'blur(2px)';
+      el.style.boxShadow = '0 2px 10px rgba(0,0,0,0.08)';
+
+      const c = map && map.getContainer ? map.getContainer() : null;
+      if (!c) return null;
+      c.appendChild(el);
+      STRATEGIC_CURSOR_EL = el;
+      return el;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _hideStrategicCursorReadout() {
+    const el = STRATEGIC_CURSOR_EL;
+    if (!el) return;
+    el.style.display = 'none';
+  }
+
+  function _fmtNum(v, digits) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    const d = Number.isFinite(Number(digits)) ? Math.max(0, Math.min(3, Number(digits))) : 0;
+    return n.toFixed(d);
+  }
+
+  function _comfortLabel(score) {
+    const s = Number(score);
+    if (!Number.isFinite(s)) return '';
+    if (s >= 4) return 'excellent';
+    if (s >= 2) return 'good';
+    if (s >= 0) return 'ok';
+    if (s >= -2) return 'poor';
+    return 'bad';
+  }
+
+  function _strategicSampleAt(lat, lon) {
+    if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return null;
+    const resp = STRATEGIC_STATE.lastResp;
+    if (!resp || !resp.points) return null;
+
+    let meta = STRATEGIC_STATE._meta;
+    let tileMap = STRATEGIC_STATE._tileMap;
+    if (!meta) {
+      const bboxRaw = _bboxFromResp(resp);
+      const tileKm = Number(resp.tile_km || 50);
+      meta = bboxRaw ? { bbox: bboxRaw, tile_km: tileKm } : null;
+      STRATEGIC_STATE._meta = meta;
+    }
+    if (!tileMap) {
+      tileMap = _makeTileMap(resp.points);
+      STRATEGIC_STATE._tileMap = tileMap;
+    }
+    if (!meta || !tileMap) return null;
+    return _sampleInterpolated(tileMap, meta, lat, lon);
   }
 
   function _bikepackingTempScore(tC) {
@@ -1816,6 +2025,10 @@
     playing: false,
     playTimer: null,
     lastResp: null,
+    _meta: null,
+    _tileMap: null,
+    _cursorMoveHandler: null,
+    _cursorLeaveHandler: null,
     lastFetchAt: 0,
     pendingFetch: null,
     fetchAbort: null,
@@ -2724,6 +2937,79 @@
     ctx.restore();
   }
 
+  function _drawBandedTileFill(ctx, points, meta, valueKeyOrFn, thresholds, bandColors, alpha) {
+    // Banded fill by drawing each source tile as its own quad (lat/lon bounds derived from tile_km).
+    // This avoids holes caused by trying to coerce latitude-dependent lon steps into a rectangular grid.
+    if (!ctx || !meta || !points) return;
+    const bbox = meta.bbox;
+    const tileKm = Number(meta.tile_km);
+    if (!bbox || !Number.isFinite(tileKm) || tileKm <= 0) return;
+
+    const thr = Array.isArray(thresholds) ? thresholds.map(Number).filter(Number.isFinite).sort((a, b) => a - b) : [];
+    const cols = Array.isArray(bandColors) ? bandColors : [];
+    if (cols.length < thr.length + 1) return;
+
+    const aFill = _clamp01(alpha);
+    const stepLat = tileKm / 111.32;
+    const getVal = (p) => {
+      try {
+        if (typeof valueKeyOrFn === 'function') return valueKeyOrFn(p);
+        const v = Number(p && p[valueKeyOrFn]);
+        return Number.isFinite(v) ? v : null;
+      } catch (_) {
+        return null;
+      }
+    };
+
+    const quadsByIdx = Array.from({ length: thr.length + 1 }, () => []);
+    for (const p of (points || [])) {
+      if (!p) continue;
+      const latC = Number(p.lat);
+      const lonC = Number(p.lon);
+      if (!Number.isFinite(latC) || !Number.isFinite(lonC)) continue;
+      const v = getVal(p);
+      if (!Number.isFinite(v)) continue;
+
+      let idx = 0;
+      while (idx < thr.length && v >= thr[idx]) idx++;
+      const col = cols[idx];
+      if (!col) continue;
+
+      const c = Math.max(0.05, Math.cos(latC * Math.PI / 180));
+      const stepLon = tileKm / (111.32 * c);
+      const lat0 = latC - stepLat * 0.5;
+      const lat1 = latC + stepLat * 0.5;
+      const lon0 = lonC - stepLon * 0.5;
+      const lon1 = lonC + stepLon * 0.5;
+
+      const qTL = map.latLngToContainerPoint([lat0, lon0]);
+      const qTR = map.latLngToContainerPoint([lat0, lon1]);
+      const qBR = map.latLngToContainerPoint([lat1, lon1]);
+      const qBL = map.latLngToContainerPoint([lat1, lon0]);
+      quadsByIdx[idx].push([qTL, qTR, qBR, qBL]);
+    }
+
+    ctx.save();
+    ctx.globalAlpha = aFill;
+    for (let i = 0; i < quadsByIdx.length; i++) {
+      const quads = quadsByIdx[i];
+      if (!quads || !quads.length) continue;
+      const col = cols[i];
+      if (!col) continue;
+      ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},1)`;
+      ctx.beginPath();
+      for (const q of quads) {
+        ctx.moveTo(q[0].x, q[0].y);
+        ctx.lineTo(q[1].x, q[1].y);
+        ctx.lineTo(q[2].x, q[2].y);
+        ctx.lineTo(q[3].x, q[3].y);
+        ctx.closePath();
+      }
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   function _renderStrategic() {
     if (!STRATEGIC_STATE.active) return;
     const resp = STRATEGIC_STATE.lastResp;
@@ -2736,16 +3022,24 @@
     const tileMap = _makeTileMap(resp.points);
     const layer = STRATEGIC_STATE.layer;
 
+    // Cache for cursor readout + wind sampling.
+    STRATEGIC_STATE._meta = meta;
+    STRATEGIC_STATE._tileMap = tileMap;
+
     STRATEGIC_STATE.isoLayer.drawWith((ctx, size) => {
       const w = size.x;
       const h = size.y;
       ctx.clearRect(0, 0, w, h);
 
+      const needLandClip = !(SETTINGS && SETTINGS.includeSea)
+        && (layer === 'temperature_ride' || layer === 'rain_ride' || layer === 'comfort_ride');
+      const clipped = needLandClip ? _beginStrategicLandClip(ctx) : false;
+
       if (layer === 'temperature_ride') {
         // Temperature iso-surfaces (riding-hours median temperature)
         const valueKey = 'temp_day_median';
         const grid = _gridFromPoints(resp.points, valueKey);
-        if (!grid) return;
+        // Fill tiles directly (prevents gaps near coasts); isolines still use grid when available.
 
         // Non-overlapping band fill (transparent so basemap remains readable)
         const thr = [5, 10, 15, 20, 25, 30];
@@ -2758,12 +3052,13 @@
           { r: 215, g: 60,  b: 45  }, // 25–30 red
           { r: 150, g: 60,  b: 190 }, // >=30 violet
         ];
-        _drawBandedCellFill(ctx, grid, thr, cols, 0.22);
+        _drawBandedTileFill(ctx, resp.points, meta, valueKey, thr, cols, 0.22);
 
         // Isolines every 5°C
         const isoThr = [5,10,15,20,25,30];
         // No labels; keep lines subtle.
-        _drawIsolines(ctx, grid, isoThr, 'rgba(60,60,60,0.60)', 1, null);
+        if (grid) _drawIsolines(ctx, grid, isoThr, 'rgba(60,60,60,0.60)', 1, null);
+        if (clipped) ctx.restore();
         return;
       }
 
@@ -2771,7 +3066,7 @@
         // Rainfall zones (daily precipitation median, used as planning rain field)
         const valueKey = 'precipitation_mm';
         const grid = _gridFromPoints(resp.points, valueKey);
-        if (!grid) return;
+        // Fill tiles directly (prevents gaps near coasts); isolines still use grid when available.
 
         // Non-overlapping band fill; leave <2mm/day unshaded.
         const thr = [2, 5, 10];
@@ -2781,10 +3076,11 @@
           { r: 135, g: 85,  b: 220 }, // 5–10
           { r: 85,  g: 40,  b: 160 }, // >=10
         ];
-        _drawBandedCellFill(ctx, grid, thr, cols, 0.20);
+        _drawBandedTileFill(ctx, resp.points, meta, valueKey, thr, cols, 0.20);
 
         // Iso-lines at the same band thresholds.
-        _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        if (clipped) ctx.restore();
         return;
       }
 
@@ -2798,76 +3094,26 @@
         }).filter(Boolean);
         const valueKey = 'bikepacking_comfort';
         const grid = _gridFromPoints(pts, valueKey);
-        if (!grid) return;
+        // Fill tiles directly (prevents gaps near coasts); isolines use grid when available.
 
-        // Render as categorical cell fill (opacity ~45%)
-        const aFill = 0.45;
-        const colorFor = (score) => {
-          const s = Number(score);
-          if (!Number.isFinite(s)) return null;
-          if (s >= 4) return { r: 0, g: 120, b: 70 };      // deep green
-          if (s >= 2) return { r: 40, g: 160, b: 80 };     // green
-          if (s >= 0) return { r: 240, g: 220, b: 80 };    // yellow
-          if (s >= -2) return { r: 245, g: 155, b: 60 };   // orange
-          return { r: 220, g: 55, b: 55 };                 // red
-        };
-
-        // Pre-project all grid nodes once.
-        const proj = Array.from({ length: grid.rows }, () => Array.from({ length: grid.cols }, () => null));
-        for (let r = 0; r < grid.rows; r++) {
-          for (let c = 0; c < grid.cols; c++) {
-            const lat = grid.lat[r][c];
-            const lon = grid.lon[r][c];
-            if (lat === null || lon === null) continue;
-            const q = map.latLngToContainerPoint([Number(lat), Number(lon)]);
-            proj[r][c] = { x: q.x, y: q.y };
-          }
-        }
-
-        const bins = new Map();
-        for (let r = 0; r < grid.rows - 1; r++) {
-          for (let c = 0; c < grid.cols - 1; c++) {
-            const a = Number(grid.val[r][c]);
-            const b = Number(grid.val[r][c + 1]);
-            const d = Number(grid.val[r + 1][c]);
-            const e = Number(grid.val[r + 1][c + 1]);
-            if (![a, b, d, e].every(Number.isFinite)) continue;
-            const qTL = proj[r][c];
-            const qTR = proj[r][c + 1];
-            const qBL = proj[r + 1][c];
-            const qBR = proj[r + 1][c + 1];
-            if (!qTL || !qTR || !qBL || !qBR) continue;
-
-            const center = (a + b + d + e) / 4.0;
-            const s = Math.round(center);
-            const col = colorFor(s);
-            if (!col) continue;
-            const key = `${col.r},${col.g},${col.b}`;
-            if (!bins.has(key)) bins.set(key, { col, quads: [] });
-            bins.get(key).quads.push([qTL, qTR, qBR, qBL]);
-          }
-        }
-
-        ctx.save();
-        ctx.globalAlpha = aFill;
-        for (const { col, quads } of bins.values()) {
-          if (!quads || !quads.length) continue;
-          ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},1)`;
-          ctx.beginPath();
-          for (const q of quads) {
-            ctx.moveTo(q[0].x, q[0].y);
-            ctx.lineTo(q[1].x, q[1].y);
-            ctx.lineTo(q[2].x, q[2].y);
-            ctx.lineTo(q[3].x, q[3].y);
-            ctx.closePath();
-          }
-          ctx.fill();
-        }
-        ctx.restore();
+        // ISO-style banded fill + isolines (same rendering approach as temperature/rain)
+        const thr = [-2, 0, 2, 4];
+        const cols = [
+          { r: 220, g: 55,  b: 55 },  // < -2 red
+          { r: 245, g: 155, b: 60 },  // -2..0 orange
+          { r: 240, g: 220, b: 80 },  // 0..2 yellow
+          { r: 40,  g: 160, b: 80 },  // 2..4 green
+          { r: 0,   g: 120, b: 70 },  // >= 4 deep green
+        ];
+        _drawBandedTileFill(ctx, pts, meta, valueKey, thr, cols, 0.22);
+        if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        if (clipped) ctx.restore();
         return;
       }
 
       // Other strategic layers are not part of Phase 1 iso-weather rendering.
+
+      if (clipped) ctx.restore();
     });
 
     // Wind overlay
@@ -2947,6 +3193,64 @@
       try { STRATEGIC_STATE.isoLayer.addTo(map); } catch (_) {}
       try { STRATEGIC_STATE.windLayer.addTo(map); } catch (_) {}
 
+      // Cursor readout
+      _ensureStrategicCursorReadout();
+      try {
+        if (STRATEGIC_STATE._cursorMoveHandler) map.off('mousemove', STRATEGIC_STATE._cursorMoveHandler);
+      } catch (_) {}
+      STRATEGIC_STATE._cursorMoveHandler = (e) => {
+        if (!STRATEGIC_STATE.active) return;
+        const el = _ensureStrategicCursorReadout();
+        if (!el) return;
+        const ll = e && e.latlng ? e.latlng : null;
+        const pt = e && e.containerPoint ? e.containerPoint : (ll ? map.latLngToContainerPoint(ll) : null);
+        if (!ll || !pt) {
+          _hideStrategicCursorReadout();
+          return;
+        }
+
+        const s = _strategicSampleAt(ll.lat, ll.lng);
+        if (!s) {
+          _hideStrategicCursorReadout();
+          return;
+        }
+
+        const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+        const mmdd = _mmddFromDOY(STRATEGIC_STATE.doy);
+        const dateStr = `${y}-${mmdd}`;
+
+        const t = Number(s.temp_day_median);
+        const r = Number(s.precipitation_mm);
+        const w = Number(s.wind_speed_ms);
+        const wdFrom = Number(s.wind_dir_deg);
+        const wdTo = Number.isFinite(wdFrom) ? ((wdFrom + 180) % 360) : null;
+        const comfort = ([t, r, w].every(Number.isFinite))
+          ? (_bikepackingTempScore(t) + _bikepackingRainScore(r) + _bikepackingWindScore(w))
+          : null;
+
+        const lines = [
+          `${dateStr}`,
+          `Temp: ${_fmtNum(t, 1)} °C`,
+          `Rain: ${_fmtNum(r, 1)} mm/day`,
+          `Wind: ${_fmtNum(w, 1)} m/s${Number.isFinite(wdTo) ? ` (to ${Math.round(wdTo)}°)` : ''}`,
+          `Comfort: ${Number.isFinite(comfort) ? String(Math.round(comfort)) : '—'}${Number.isFinite(comfort) ? ` (${_comfortLabel(comfort)})` : ''}`,
+        ];
+        el.textContent = lines.join('\n');
+        el.style.display = 'block';
+        el.style.left = `${Math.round(pt.x + 14)}px`;
+        el.style.top = `${Math.round(pt.y + 14)}px`;
+      };
+      map.on('mousemove', STRATEGIC_STATE._cursorMoveHandler);
+
+      try {
+        const c = map.getContainer();
+        if (STRATEGIC_STATE._cursorLeaveHandler) c.removeEventListener('mouseleave', STRATEGIC_STATE._cursorLeaveHandler);
+        STRATEGIC_STATE._cursorLeaveHandler = () => {
+          _hideStrategicCursorReadout();
+        };
+        c.addEventListener('mouseleave', STRATEGIC_STATE._cursorLeaveHandler);
+      } catch (_) {}
+
       _scheduleStrategicFetch();
       _updateStrategicLegend();
       _syncStrategicQuickLayer();
@@ -2964,6 +3268,21 @@
         if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
       } catch (_) {}
       STRATEGIC_STATE.fetchAbort = null;
+
+      STRATEGIC_STATE._meta = null;
+      STRATEGIC_STATE._tileMap = null;
+
+      try {
+        if (STRATEGIC_STATE._cursorMoveHandler) map.off('mousemove', STRATEGIC_STATE._cursorMoveHandler);
+      } catch (_) {}
+      STRATEGIC_STATE._cursorMoveHandler = null;
+      try {
+        const c = map.getContainer();
+        if (c && STRATEGIC_STATE._cursorLeaveHandler) c.removeEventListener('mouseleave', STRATEGIC_STATE._cursorLeaveHandler);
+      } catch (_) {}
+      STRATEGIC_STATE._cursorLeaveHandler = null;
+      _hideStrategicCursorReadout();
+
       if (STRATEGIC_STATE.windLayer) {
         STRATEGIC_STATE.windLayer.stop();
         STRATEGIC_STATE.windLayer.clear();
@@ -3142,6 +3461,14 @@
     try { REVERSED = Boolean(SETTINGS.reverse); } catch (_) {}
     try { _setOverlayMode(String(SETTINGS.overlayMode || OVERLAY_MODE), { skipPersist: true }); } catch (_) {}
     try { applySettingsToForm(SETTINGS); } catch (_) {}
+
+    // Strategic overlay reacts to includeSea/interpolation/etc.
+    try {
+      if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
+        _scheduleStrategicFetch();
+        _renderStrategic();
+      }
+    } catch (_) {}
   }
   
   // Debug helper: wait for manual step() call

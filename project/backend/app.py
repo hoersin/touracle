@@ -424,6 +424,18 @@ def profile_js():
     return resp
 
 
+@app.route('/ne_110m_land.geojson')
+def ne_110m_land_geojson():
+    """Public-domain Natural Earth land polygons (110m) for coastline masking."""
+    resp = send_from_directory(app.static_folder, 'ne_110m_land.geojson')
+    try:
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+    except Exception:
+        pass
+    return resp
+
+
 @app.route('/api/upload_gpx', methods=['POST'])
 def upload_gpx():
     try:
