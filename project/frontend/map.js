@@ -3,9 +3,16 @@
   // Prefer canvas renderer so snapshotting (html2canvas) captures route layers without SVG transform drift.
   const map = L.map('map', { preferCanvas: true });
   try { window.__WM_LEAFLET_MAP__ = map; } catch (_) {}
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  // Base maps
+  const _osmTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(map);
+  });
+  // Neutral basemap (light grey styling, suited for meteorological overlays)
+  const _neutralTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  });
+  let _activeBaseLayer = _osmTiles;
+  _activeBaseLayer.addTo(map);
 
   function fmt(num, digits = 1) {
     return (num === null || num === undefined) ? '-' : Number(num).toFixed(digits);
@@ -80,7 +87,7 @@
   const strategicTimelineLabel = document.getElementById('strategicTimelineLabel');
   const strategicDaySlider = document.getElementById('strategicDaySlider');
   const strategicPlayBtn = document.getElementById('strategicPlay');
-  const strategicSpeed = document.getElementById('strategicSpeed');
+  const strategicSpeed = document.getElementById('strategicSpeed'); // legacy (removed from UI)
   const strategicMonthTicks = document.getElementById('strategicMonthTicks');
   const strategicTimeline = document.getElementById('strategicTimeline');
   const strategicLayerSelect = document.getElementById('strategicLayer');
@@ -982,6 +989,17 @@
       strategicSetActive && strategicSetActive(m === 'climate');
     } catch (_) {}
 
+    // Basemap simplification for Strategic Climate Map.
+    try {
+      const wantNeutral = (m === 'climate');
+      const next = wantNeutral ? _neutralTiles : _osmTiles;
+      if (_activeBaseLayer !== next) {
+        try { map.removeLayer(_activeBaseLayer); } catch (_) {}
+        _activeBaseLayer = next;
+        try { _activeBaseLayer.addTo(map); } catch (_) {}
+      }
+    } catch (_) {}
+
     // Map needs a resize nudge when toggling profile/map visibility.
     if (m !== 'settings') {
       setTimeout(() => { try { map.invalidateSize(); } catch (_) {} }, 60);
@@ -1632,8 +1650,8 @@
   const STRATEGIC_STATE = {
     active: false,
     year: Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR),
-    dates: [],
-    dayIndex: 0,
+    // Continuous day-of-year (1..365)
+    doy: 1.0,
     layer: (strategicLayerSelect && strategicLayerSelect.value) ? strategicLayerSelect.value : 'temperature_ride',
     windOn: false,
     windMode: (strategicWindMode && strategicWindMode.value) ? strategicWindMode.value : 'flow',
@@ -1643,41 +1661,112 @@
     lastFetchAt: 0,
     pendingFetch: null,
     fetchAbort: null,
-    heatLayer: null,
+    isoLayer: null,
     windLayer: null,
   };
 
+  // --- Day-of-Year helpers (non-leap year) ---
+  const _DOY_MONTHS = [
+    { name: 'Jan', days: 31 },
+    { name: 'Feb', days: 28 },
+    { name: 'Mar', days: 31 },
+    { name: 'Apr', days: 30 },
+    { name: 'May', days: 31 },
+    { name: 'Jun', days: 30 },
+    { name: 'Jul', days: 31 },
+    { name: 'Aug', days: 31 },
+    { name: 'Sep', days: 30 },
+    { name: 'Oct', days: 31 },
+    { name: 'Nov', days: 30 },
+    { name: 'Dec', days: 31 },
+  ];
+  const _DOY_MONTH_STARTS = (() => {
+    let acc = 1;
+    const out = [];
+    for (let i = 0; i < _DOY_MONTHS.length; i++) {
+      out.push({ month: i + 1, name: _DOY_MONTHS[i].name, doy: acc });
+      acc += _DOY_MONTHS[i].days;
+    }
+    return out;
+  })();
+
+  function _clampDOY(d) {
+    const v = Number(d);
+    if (!Number.isFinite(v)) return 1.0;
+    if (v < 1) return 1.0;
+    if (v > 365) return 365.0;
+    return v;
+  }
+
+  function _doyToMonthDay(doyInt) {
+    let d = Math.max(1, Math.min(365, Math.round(Number(doyInt) || 1)));
+    for (let i = 0; i < _DOY_MONTHS.length; i++) {
+      const md = _DOY_MONTHS[i].days;
+      if (d <= md) return { month: i + 1, day: d, monthName: _DOY_MONTHS[i].name };
+      d -= md;
+    }
+    return { month: 12, day: 31, monthName: 'Dec' };
+  }
+
+  function _mmddFromDOY(doyInt) {
+    const md = _doyToMonthDay(doyInt);
+    const mm = String(md.month).padStart(2, '0');
+    const dd = String(md.day).padStart(2, '0');
+    return `${mm}-${dd}`;
+  }
+
+  function _labelFromDOY(doyFloat) {
+    const d = Math.max(1, Math.min(365, Math.round(Number(doyFloat) || 1)));
+    const md = _doyToMonthDay(d);
+    return `${md.monthName} ${md.day}`;
+  }
+
+  function _renderMonthTicksDOY() {
+    if (!strategicMonthTicks) return;
+    strategicMonthTicks.innerHTML = '';
+    const n = 365;
+    for (const s of _DOY_MONTH_STARTS) {
+      const x = ((s.doy - 1) / (n - 1)) * 100;
+      const el = document.createElement('div');
+      el.className = 'wm-tick wm-major';
+      el.style.left = `${x}%`;
+      strategicMonthTicks.appendChild(el);
+
+      const lab = document.createElement('div');
+      lab.className = 'wm-month-label';
+      lab.style.left = `${x}%`;
+      lab.textContent = s.name;
+      strategicMonthTicks.appendChild(lab);
+    }
+  }
+
   function _strategicSetLabels() {
-    const d = STRATEGIC_STATE.dates[STRATEGIC_STATE.dayIndex];
-    const txt = d ? d.label : '—';
+    const txt = _labelFromDOY(STRATEGIC_STATE.doy);
     if (strategicDayLabel) strategicDayLabel.textContent = txt;
-    if (strategicTimelineLabel) strategicTimelineLabel.textContent = d ? _fmtISO(d.iso) : '—';
+    if (strategicTimelineLabel) strategicTimelineLabel.textContent = txt;
   }
 
   function _strategicSetYear(year) {
     STRATEGIC_STATE.year = Number(year || STRATEGIC_DEFAULT_YEAR);
-    STRATEGIC_STATE.dates = _buildYearDates(STRATEGIC_STATE.year);
-    if (strategicDaySlider) {
-      strategicDaySlider.min = '0';
-      strategicDaySlider.max = String(Math.max(0, STRATEGIC_STATE.dates.length - 1));
-    }
-    _renderMonthTicks(STRATEGIC_STATE.dates);
+    _renderMonthTicksDOY();
     _updateStrategicLegend();
   }
 
-  function _strategicSetDayIndex(idx) {
-    const n = STRATEGIC_STATE.dates.length;
-    if (!n) return;
-    const i = Math.max(0, Math.min(n - 1, Math.round(Number(idx) || 0)));
-    STRATEGIC_STATE.dayIndex = i;
-    if (strategicDaySlider) strategicDaySlider.value = String(i);
+  function _strategicSetDOY(doyVal) {
+    STRATEGIC_STATE.doy = _clampDOY(doyVal);
+    if (strategicDaySlider) strategicDaySlider.value = String(STRATEGIC_STATE.doy);
     _strategicSetLabels();
     _updateStrategicLegend();
   }
 
-  function _strategicCurrentISO() {
-    const d = STRATEGIC_STATE.dates[STRATEGIC_STATE.dayIndex];
-    return d ? d.iso : null;
+  function _strategicCurrentMMDDPair() {
+    // Continuous DOY interpolation between adjacent days.
+    const d = _clampDOY(STRATEGIC_STATE.doy);
+    const base = Math.floor(d);
+    const frac = d - base;
+    const d0 = Math.max(1, Math.min(365, base));
+    const d1 = (d0 >= 365) ? 1 : (d0 + 1);
+    return { d0, d1, frac, mmdd0: _mmddFromDOY(d0), mmdd1: _mmddFromDOY(d1) };
   }
 
   function _bboxFromResp(resp) {
@@ -1858,25 +1947,21 @@
     return null;
   }
 
-  async function _fetchStrategicGrid() {
+  async function _fetchStrategicGridForMMDD(mmdd) {
     if (!STRATEGIC_STATE.active) return;
-    const iso = _strategicCurrentISO();
-    if (!iso) return;
     const b = map.getBounds();
     const latMin = b.getSouth();
     const latMax = b.getNorth();
     const lonMin = b.getWest();
     const lonMax = b.getEast();
 
-    const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, iso, latMin, latMax, lonMin, lonMax);
+    const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, mmdd, latMin, latMax, lonMin, lonMax);
     const cached = _strategicCacheGet(cacheKey);
     if (cached) {
-      STRATEGIC_STATE.lastResp = cached;
-      STRATEGIC_STATE.lastFetchAt = Date.now();
-      return;
+      return cached;
     }
 
-    const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(iso)}`
+    const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(String(mmdd))}`
       + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
       + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
     const t0 = Date.now();
@@ -1891,30 +1976,92 @@
     const resp = await fetch(url, { signal: ac.signal });
     const j = await resp.json();
     if (!resp.ok) throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
-    STRATEGIC_STATE.lastResp = j;
-    STRATEGIC_STATE.lastFetchAt = t0;
-
     try { _strategicCacheSet(cacheKey, j); } catch (_) {}
+    STRATEGIC_STATE.lastFetchAt = t0;
+    return j;
   }
 
-  function _prefetchStrategicNeighbor(offset) {
+  function _blendStrategicPoints(aPoints, bPoints, frac) {
+    const fa = _clamp01(1 - frac);
+    const fb = _clamp01(frac);
+    const aMap = _makeTileMap(aPoints);
+    const bMap = _makeTileMap(bPoints);
+    const keys = new Set();
+    for (const p of (aPoints || [])) if (p && p.tile_id) keys.add(String(p.tile_id));
+    for (const p of (bPoints || [])) if (p && p.tile_id) keys.add(String(p.tile_id));
+
+    const out = [];
+    const lerpNum = (x, y) => {
+      const a = Number(x);
+      const b = Number(y);
+      const okA = Number.isFinite(a);
+      const okB = Number.isFinite(b);
+      if (!okA && !okB) return null;
+      if (!okA) return b;
+      if (!okB) return a;
+      return a * fa + b * fb;
+    };
+    const lerpDir = (xDeg, yDeg) => {
+      const a = Number(xDeg);
+      const b = Number(yDeg);
+      if (!Number.isFinite(a) && !Number.isFinite(b)) return null;
+      if (!Number.isFinite(a)) return b;
+      if (!Number.isFinite(b)) return a;
+      const aR = a * Math.PI / 180;
+      const bR = b * Math.PI / 180;
+      const x = Math.cos(aR) * fa + Math.cos(bR) * fb;
+      const y = Math.sin(aR) * fa + Math.sin(bR) * fb;
+      let deg = Math.atan2(y, x) * 180 / Math.PI;
+      if (deg < 0) deg += 360;
+      return deg;
+    };
+
+    for (const k of keys) {
+      const pa = aMap.get(k);
+      const pb = bMap.get(k);
+      const p = pa || pb;
+      if (!p) continue;
+      const merged = { ...p };
+      const numKeys = [
+        'temperature_c','precipitation_mm','rain_probability','rain_typical_mm',
+        'wind_speed_ms','wind_var_deg','temp_day_median','temp_day_p25','temp_day_p75'
+      ];
+      for (const nk of numKeys) merged[nk] = lerpNum(pa && pa[nk], pb && pb[nk]);
+      merged.wind_dir_deg = lerpDir(pa && pa.wind_dir_deg, pb && pb.wind_dir_deg);
+      out.push(merged);
+    }
+    return out;
+  }
+
+  async function _fetchStrategicGrid() {
+    if (!STRATEGIC_STATE.active) return;
+    const { mmdd0, mmdd1, frac } = _strategicCurrentMMDDPair();
+    const a = await _fetchStrategicGridForMMDD(mmdd0);
+    const b = (mmdd1 === mmdd0) ? a : await _fetchStrategicGridForMMDD(mmdd1);
+    if (!a || !a.points) return;
+    const blended = {
+      ...a,
+      points: (b && b.points) ? _blendStrategicPoints(a.points, b.points, frac) : a.points,
+    };
+    STRATEGIC_STATE.lastResp = blended;
+  }
+
+  function _prefetchStrategicNeighbor(offsetDays) {
     try {
       if (!STRATEGIC_STATE.active) return;
-      const n = STRATEGIC_STATE.dates.length;
-      if (!n) return;
-      const idx = STRATEGIC_STATE.dayIndex + offset;
-      if (idx < 0 || idx >= n) return;
-      const d = STRATEGIC_STATE.dates[idx];
-      if (!d || !d.iso) return;
-      const iso = d.iso;
+      const base = Math.floor(_clampDOY(STRATEGIC_STATE.doy));
+      let d = base + Number(offsetDays || 0);
+      while (d < 1) d += 365;
+      while (d > 365) d -= 365;
+      const mmdd = _mmddFromDOY(d);
       const b = map.getBounds();
       const latMin = b.getSouth();
       const latMax = b.getNorth();
       const lonMin = b.getWest();
       const lonMax = b.getEast();
-      const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, iso, latMin, latMax, lonMin, lonMax);
+      const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, mmdd, latMin, latMax, lonMin, lonMax);
       if (_strategicCacheGet(cacheKey)) return;
-      const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(iso)}`
+      const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(String(mmdd))}`
         + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
         + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
       fetch(url)
@@ -1927,11 +2074,304 @@
     } catch (_) {}
   }
 
+  function _gridFromPoints(points, valueKey) {
+    const mp = new Map();
+    let rowMin = Infinity, rowMax = -Infinity, colMin = Infinity, colMax = -Infinity;
+    for (const p of (points || [])) {
+      if (!p) continue;
+      const r = Number(p.row);
+      const c = Number(p.col);
+      const lat = Number(p.lat);
+      const lon = Number(p.lon);
+      const v = Number(p[valueKey]);
+      if (!Number.isFinite(r) || !Number.isFinite(c) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      if (!Number.isFinite(v)) continue;
+      const key = `${r}|${c}`;
+      mp.set(key, { r, c, lat, lon, v });
+      rowMin = Math.min(rowMin, r);
+      rowMax = Math.max(rowMax, r);
+      colMin = Math.min(colMin, c);
+      colMax = Math.max(colMax, c);
+    }
+    if (!Number.isFinite(rowMin) || !Number.isFinite(colMin)) return null;
+    const rows = (rowMax - rowMin + 1);
+    const cols = (colMax - colMin + 1);
+    if (rows <= 1 || cols <= 1) return null;
+
+    const lat = Array.from({ length: rows }, () => Array.from({ length: cols }, () => null));
+    const lon = Array.from({ length: rows }, () => Array.from({ length: cols }, () => null));
+    const val = Array.from({ length: rows }, () => Array.from({ length: cols }, () => null));
+    for (const it of mp.values()) {
+      const rr = it.r - rowMin;
+      const cc = it.c - colMin;
+      if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
+      lat[rr][cc] = it.lat;
+      lon[rr][cc] = it.lon;
+      val[rr][cc] = it.v;
+    }
+    return { rowMin, colMin, rows, cols, lat, lon, val };
+  }
+
+  function _marchingSquaresPaths(grid, threshold) {
+    // Returns array of paths; each path is array of {lat,lon}
+    if (!grid) return [];
+    const segs = [];
+    const thr = Number(threshold);
+    if (!Number.isFinite(thr)) return [];
+
+    const interpPt = (p0, p1, v0, v1) => {
+      const a = Number(v0);
+      const b = Number(v1);
+      const t = (Math.abs(b - a) < 1e-12) ? 0.5 : ((thr - a) / (b - a));
+      const u = _clamp01(t);
+      return { lat: _lerp(p0.lat, p1.lat, u), lon: _lerp(p0.lon, p1.lon, u) };
+    };
+
+    for (let r = 0; r < grid.rows - 1; r++) {
+      for (let c = 0; c < grid.cols - 1; c++) {
+        const vTL = grid.val[r][c];
+        const vTR = grid.val[r][c + 1];
+        const vBR = grid.val[r + 1][c + 1];
+        const vBL = grid.val[r + 1][c];
+        const latTL = grid.lat[r][c], lonTL = grid.lon[r][c];
+        const latTR = grid.lat[r][c + 1], lonTR = grid.lon[r][c + 1];
+        const latBR = grid.lat[r + 1][c + 1], lonBR = grid.lon[r + 1][c + 1];
+        const latBL = grid.lat[r + 1][c], lonBL = grid.lon[r + 1][c];
+
+        if ([vTL, vTR, vBR, vBL, latTL, lonTL, latTR, lonTR, latBR, lonBR, latBL, lonBL].some(x => x === null)) continue;
+
+        const a = Number(vTL), b = Number(vTR), d = Number(vBL), e = Number(vBR);
+        const pTL = { lat: Number(latTL), lon: Number(lonTL) };
+        const pTR = { lat: Number(latTR), lon: Number(lonTR) };
+        const pBR = { lat: Number(latBR), lon: Number(lonBR) };
+        const pBL = { lat: Number(latBL), lon: Number(lonBL) };
+        const aboveTL = a >= thr;
+        const aboveTR = b >= thr;
+        const aboveBR = e >= thr;
+        const aboveBL = d >= thr;
+
+        const crossings = {};
+        // top edge TL-TR
+        if (aboveTL !== aboveTR) crossings.top = interpPt(pTL, pTR, a, b);
+        // right edge TR-BR
+        if (aboveTR !== aboveBR) crossings.right = interpPt(pTR, pBR, b, e);
+        // bottom edge BL-BR (note order left->right)
+        if (aboveBL !== aboveBR) crossings.bottom = interpPt(pBL, pBR, d, e);
+        // left edge TL-BL (note order top->bottom)
+        if (aboveTL !== aboveBL) crossings.left = interpPt(pTL, pBL, a, d);
+
+        const edges = Object.keys(crossings);
+        if (edges.length === 2) {
+          segs.push([crossings[edges[0]], crossings[edges[1]]]);
+        } else if (edges.length === 4) {
+          // Ambiguous saddle: decide using cell center value.
+          const center = (a + b + d + e) / 4.0;
+          if (center >= thr) {
+            // Connect top-right and bottom-left
+            segs.push([crossings.top, crossings.right]);
+            segs.push([crossings.bottom, crossings.left]);
+          } else {
+            // Connect top-left and bottom-right
+            segs.push([crossings.top, crossings.left]);
+            segs.push([crossings.bottom, crossings.right]);
+          }
+        }
+      }
+    }
+
+    // Chain segments into paths.
+    const keyOf = (p) => `${(Math.round(p.lat * 1e5) / 1e5).toFixed(5)},${(Math.round(p.lon * 1e5) / 1e5).toFixed(5)}`;
+    const adj = new Map();
+    const segUsed = new Array(segs.length).fill(false);
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      const k0 = keyOf(s[0]);
+      const k1 = keyOf(s[1]);
+      if (!adj.has(k0)) adj.set(k0, []);
+      if (!adj.has(k1)) adj.set(k1, []);
+      adj.get(k0).push({ i, end: 0, other: k1 });
+      adj.get(k1).push({ i, end: 1, other: k0 });
+    }
+
+    const paths = [];
+    for (let i = 0; i < segs.length; i++) {
+      if (segUsed[i]) continue;
+      segUsed[i] = true;
+      const s0 = segs[i];
+      let path = [s0[0], s0[1]];
+
+      // Extend forward
+      while (true) {
+        const end = path[path.length - 1];
+        const k = keyOf(end);
+        const opts = adj.get(k) || [];
+        let next = null;
+        for (const o of opts) {
+          if (segUsed[o.i]) continue;
+          next = o;
+          break;
+        }
+        if (!next) break;
+        segUsed[next.i] = true;
+        const seg = segs[next.i];
+        const pA = seg[0];
+        const pB = seg[1];
+        const kA = keyOf(pA);
+        const kB = keyOf(pB);
+        if (kA === k) path.push(pB);
+        else if (kB === k) path.push(pA);
+        else break;
+      }
+
+      // Extend backward
+      while (true) {
+        const start = path[0];
+        const k = keyOf(start);
+        const opts = adj.get(k) || [];
+        let next = null;
+        for (const o of opts) {
+          if (segUsed[o.i]) continue;
+          next = o;
+          break;
+        }
+        if (!next) break;
+        segUsed[next.i] = true;
+        const seg = segs[next.i];
+        const pA = seg[0];
+        const pB = seg[1];
+        const kA = keyOf(pA);
+        const kB = keyOf(pB);
+        if (kA === k) path.unshift(pB);
+        else if (kB === k) path.unshift(pA);
+        else break;
+      }
+
+      if (path.length >= 2) paths.push(path);
+    }
+    return paths;
+  }
+
+  function _drawFilledThreshold(ctx, grid, tileMap, meta, valueKey, threshold, rgba, alpha) {
+    const paths = _marchingSquaresPaths(grid, threshold);
+    if (!paths || !paths.length) {
+      // No boundaries: either fully above or fully below.
+      try {
+        const b = map.getBounds();
+        const nw = b.getNorthWest();
+        const s = _sampleInterpolated(tileMap, meta, nw.lat, nw.lng);
+        const v = s ? Number(s[valueKey]) : NaN;
+        if (Number.isFinite(v) && v >= threshold) {
+          const size = map.getSize();
+          ctx.save();
+          ctx.globalAlpha = _clamp01(alpha);
+          ctx.fillStyle = `rgba(${rgba.r},${rgba.g},${rgba.b},1)`;
+          ctx.fillRect(0, 0, size.x, size.y);
+          ctx.restore();
+        }
+      } catch (_) {}
+      return;
+    }
+
+    const size = map.getSize();
+    let outsideHigh = false;
+    try {
+      const b = map.getBounds();
+      const nw = b.getNorthWest();
+      const s = _sampleInterpolated(tileMap, meta, nw.lat, nw.lng);
+      const v = s ? Number(s[valueKey]) : NaN;
+      outsideHigh = (Number.isFinite(v) && v >= threshold);
+    } catch (_) {}
+
+    ctx.save();
+    ctx.globalAlpha = _clamp01(alpha);
+    ctx.fillStyle = `rgba(${rgba.r},${rgba.g},${rgba.b},1)`;
+
+    if (outsideHigh) {
+      // Fill whole viewport, then punch out the low regions delimited by contour paths.
+      ctx.fillRect(0, 0, size.x, size.y);
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath();
+      for (const path of paths) {
+        const p0 = path[0];
+        const q0 = map.latLngToContainerPoint([p0.lat, p0.lon]);
+        ctx.moveTo(q0.x, q0.y);
+        for (let i = 1; i < path.length; i++) {
+          const pt = path[i];
+          const q = map.latLngToContainerPoint([pt.lat, pt.lon]);
+          ctx.lineTo(q.x, q.y);
+        }
+        ctx.closePath();
+      }
+      ctx.fill('evenodd');
+    } else {
+      // Fill only the high islands.
+      ctx.beginPath();
+      for (const path of paths) {
+        const p0 = path[0];
+        const q0 = map.latLngToContainerPoint([p0.lat, p0.lon]);
+        ctx.moveTo(q0.x, q0.y);
+        for (let i = 1; i < path.length; i++) {
+          const pt = path[i];
+          const q = map.latLngToContainerPoint([pt.lat, pt.lon]);
+          ctx.lineTo(q.x, q.y);
+        }
+        ctx.closePath();
+      }
+      ctx.fill('evenodd');
+    }
+    ctx.restore();
+  }
+
+  function _drawIsolines(ctx, grid, thresholds, strokeStyle, lineWidth, labelSet) {
+    ctx.save();
+    ctx.strokeStyle = strokeStyle;
+    ctx.lineWidth = lineWidth;
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = strokeStyle;
+    ctx.font = '12px system-ui, -apple-system, sans-serif';
+
+    for (const thr of thresholds) {
+      const paths = _marchingSquaresPaths(grid, thr);
+      if (!paths || !paths.length) continue;
+      for (const path of paths) {
+        if (!path || path.length < 2) continue;
+        ctx.beginPath();
+        const q0 = map.latLngToContainerPoint([path[0].lat, path[0].lon]);
+        ctx.moveTo(q0.x, q0.y);
+        for (let i = 1; i < path.length; i++) {
+          const q = map.latLngToContainerPoint([path[i].lat, path[i].lon]);
+          ctx.lineTo(q.x, q.y);
+        }
+        ctx.stroke();
+
+        // Labels (selected isolines only)
+        if (labelSet && labelSet.has(thr) && path.length >= 4) {
+          const mid = Math.floor(path.length / 2);
+          const pA = map.latLngToContainerPoint([path[Math.max(0, mid - 1)].lat, path[Math.max(0, mid - 1)].lon]);
+          const pB = map.latLngToContainerPoint([path[Math.min(path.length - 1, mid + 1)].lat, path[Math.min(path.length - 1, mid + 1)].lon]);
+          const pM = map.latLngToContainerPoint([path[mid].lat, path[mid].lon]);
+          const ang = Math.atan2(pB.y - pA.y, pB.x - pA.x);
+          const text = `${thr}°C`;
+          ctx.save();
+          ctx.translate(pM.x, pM.y);
+          ctx.rotate(ang);
+          ctx.fillStyle = 'rgba(255,255,255,0.75)';
+          const w = ctx.measureText(text).width;
+          ctx.fillRect(-w / 2 - 3, -10, w + 6, 14);
+          ctx.fillStyle = strokeStyle;
+          ctx.fillText(text, -w / 2, 2);
+          ctx.restore();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
   function _renderStrategic() {
     if (!STRATEGIC_STATE.active) return;
     const resp = STRATEGIC_STATE.lastResp;
     if (!resp || !resp.points) return;
-    if (!STRATEGIC_STATE.heatLayer) return;
+    if (!STRATEGIC_STATE.isoLayer) return;
 
     const bboxRaw = _bboxFromResp(resp);
     const tileKm = Number(resp.tile_km || 50);
@@ -1939,44 +2379,60 @@
     const tileMap = _makeTileMap(resp.points);
     const layer = STRATEGIC_STATE.layer;
 
-    STRATEGIC_STATE.heatLayer.drawWith((ctx, size) => {
+    STRATEGIC_STATE.isoLayer.drawWith((ctx, size) => {
       const w = size.x;
       const h = size.y;
-      // Render at reduced resolution then upscale for smoothness
-      const target = Math.max(260, Math.min(520, Math.round(Math.min(w, h) * 0.55)));
-      const offW = Math.round(target * (w / Math.max(1, Math.min(w, h))));
-      const offH = Math.round(target * (h / Math.max(1, Math.min(w, h))));
-      const off = document.createElement('canvas');
-      off.width = Math.max(1, offW);
-      off.height = Math.max(1, offH);
-      const octx = off.getContext('2d');
-      if (!octx) return;
-      const img = octx.createImageData(off.width, off.height);
-      const data = img.data;
-      const sx = w / off.width;
-      const sy = h / off.height;
-      for (let y = 0; y < off.height; y++) {
-        for (let x = 0; x < off.width; x++) {
-          const cx = x * sx;
-          const cy = y * sy;
-          const ll = map.containerPointToLatLng([cx, cy]);
-          const s = _sampleInterpolated(tileMap, meta, ll.lat, ll.lng);
-          const col = _heatColorFor(layer, s);
-          const idx = (y * off.width + x) * 4;
-          if (!col) {
-            data[idx + 3] = 0;
-            continue;
-          }
-          data[idx + 0] = col.r;
-          data[idx + 1] = col.g;
-          data[idx + 2] = col.b;
-          data[idx + 3] = Math.round(255 * _clamp01(col.a));
-        }
-      }
-      octx.putImageData(img, 0, 0);
-      ctx.imageSmoothingEnabled = true;
       ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(off, 0, 0, w, h);
+
+      if (layer === 'temperature_ride') {
+        // Temperature iso-surfaces (riding-hours median temperature)
+        const valueKey = 'temp_day_median';
+        const grid = _gridFromPoints(resp.points, valueKey);
+        if (!grid) return;
+
+        // Base (all area): <5°C deep blue
+        ctx.save();
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = 'rgba(20,60,160,1)';
+        ctx.fillRect(0, 0, w, h);
+        ctx.restore();
+
+        const bands = [
+          { thr: 5,  c: { r: 0,   g: 190, b: 210 } }, // cyan
+          { thr: 10, c: { r: 40,  g: 160, b: 80  } }, // green
+          { thr: 15, c: { r: 240, g: 220, b: 80  } }, // yellow
+          { thr: 20, c: { r: 245, g: 155, b: 60  } }, // orange
+          { thr: 25, c: { r: 215, g: 60,  b: 45  } }, // red
+          { thr: 30, c: { r: 150, g: 60,  b: 190 } }, // violet
+        ];
+        for (const bnd of bands) {
+          _drawFilledThreshold(ctx, grid, tileMap, meta, valueKey, bnd.thr, bnd.c, 0.45);
+        }
+
+        // Isolines every 5°C
+        const isoThr = [5,10,15,20,25,30];
+        _drawIsolines(ctx, grid, isoThr, '#555', 1, new Set([10,15,20,25]));
+        return;
+      }
+
+      if (layer === 'rain_ride') {
+        // Rainfall zones (daily precipitation median, used as planning rain field)
+        const valueKey = 'precipitation_mm';
+        const grid = _gridFromPoints(resp.points, valueKey);
+        if (!grid) return;
+
+        const bands = [
+          { thr: 2,  c: { r: 170, g: 145, b: 235 } }, // light violet
+          { thr: 5,  c: { r: 135, g: 85,  b: 220 } }, // violet
+          { thr: 10, c: { r: 85,  g: 40,  b: 160 } }, // dark violet
+        ];
+        for (const bnd of bands) {
+          _drawFilledThreshold(ctx, grid, tileMap, meta, valueKey, bnd.thr, bnd.c, 0.40);
+        }
+        return;
+      }
+
+      // Other strategic layers are not part of Phase 1 iso-weather rendering.
     });
 
     // Wind overlay
@@ -2035,15 +2491,16 @@
 
     if (on) {
       _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR));
-      // Default day: today mapped into selected year (month/day)
+      // Default DOY: today (UTC) mapped into 1..365
       try {
         const today = new Date();
-        const y = STRATEGIC_STATE.year;
-        const iso = `${y}-${String(today.getMonth() + 1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
-        const idx = STRATEGIC_STATE.dates.findIndex(d => d.iso === iso);
-        _strategicSetDayIndex(idx >= 0 ? idx : 0);
+        const y = 2021; // non-leap reference
+        const d0 = new Date(Date.UTC(y, today.getUTCMonth(), today.getUTCDate()));
+        const start = new Date(Date.UTC(y, 0, 1));
+        const doy = 1 + Math.floor((d0 - start) / (24 * 3600 * 1000));
+        _strategicSetDOY(Math.max(1, Math.min(365, doy)));
       } catch (_) {
-        _strategicSetDayIndex(0);
+        _strategicSetDOY(1);
       }
       if (strategicLayerSelect) STRATEGIC_STATE.layer = strategicLayerSelect.value;
       if (strategicWindMode) STRATEGIC_STATE.windMode = strategicWindMode.value;
@@ -2054,9 +2511,9 @@
         STRATEGIC_STATE.windOn = want;
       }
 
-      if (!STRATEGIC_STATE.heatLayer) STRATEGIC_STATE.heatLayer = _makeHeatLayer();
+      if (!STRATEGIC_STATE.isoLayer) STRATEGIC_STATE.isoLayer = _makeHeatLayer();
       if (!STRATEGIC_STATE.windLayer) STRATEGIC_STATE.windLayer = _makeWindLayer();
-      try { STRATEGIC_STATE.heatLayer.addTo(map); } catch (_) {}
+      try { STRATEGIC_STATE.isoLayer.addTo(map); } catch (_) {}
       try { STRATEGIC_STATE.windLayer.addTo(map); } catch (_) {}
 
       _scheduleStrategicFetch();
@@ -2081,8 +2538,8 @@
         STRATEGIC_STATE.windLayer.clear();
         try { map.removeLayer(STRATEGIC_STATE.windLayer); } catch (_) {}
       }
-      if (STRATEGIC_STATE.heatLayer) {
-        try { map.removeLayer(STRATEGIC_STATE.heatLayer); } catch (_) {}
+      if (STRATEGIC_STATE.isoLayer) {
+        try { map.removeLayer(STRATEGIC_STATE.isoLayer); } catch (_) {}
       }
       _updateStrategicLegend();
       _syncStrategicQuickLayer();
@@ -2128,14 +2585,14 @@
   }
   if (strategicDaySlider) {
     strategicDaySlider.addEventListener('input', () => {
-      _strategicSetDayIndex(strategicDaySlider.value);
+      _strategicSetDOY(strategicDaySlider.value);
       _scheduleStrategicFetch();
     });
   }
   if (strategicPlayBtn) {
     strategicPlayBtn.addEventListener('click', () => {
       STRATEGIC_STATE.playing = !STRATEGIC_STATE.playing;
-      strategicPlayBtn.textContent = STRATEGIC_STATE.playing ? 'Pause' : 'Play';
+      strategicPlayBtn.textContent = STRATEGIC_STATE.playing ? 'Pause' : '▶ Play Season';
       if (STRATEGIC_STATE.playTimer) {
         try { clearTimeout(STRATEGIC_STATE.playTimer); } catch (_) {}
         STRATEGIC_STATE.playTimer = null;
@@ -2143,27 +2600,19 @@
       if (STRATEGIC_STATE.playing) {
         const tick = () => {
           if (!STRATEGIC_STATE.playing) return;
-          const sp = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
-          const n = STRATEGIC_STATE.dates.length;
-          if (n) {
-            let i = STRATEGIC_STATE.dayIndex + 1;
-            if (i >= n) i = 0;
-            _strategicSetDayIndex(i);
-            _scheduleStrategicFetch();
-          }
-          const delay = Math.round(650 / sp);
+          // Animation logic: d += 0.5 per frame, ~5 fps
+          let d = _clampDOY(STRATEGIC_STATE.doy + 0.5);
+          if (d >= 365) d = 1;
+          _strategicSetDOY(d);
+          _scheduleStrategicFetch();
+          const delay = 200;
           STRATEGIC_STATE.playTimer = setTimeout(tick, delay);
         };
-        const sp0 = Math.max(0.25, Number(strategicSpeed && strategicSpeed.value) || 1.0);
-        STRATEGIC_STATE.playTimer = setTimeout(tick, Math.round(200 / sp0));
+        STRATEGIC_STATE.playTimer = setTimeout(tick, 200);
       }
     });
   }
-  if (strategicSpeed) {
-    strategicSpeed.addEventListener('input', () => {
-      // take effect next interval; flow overlay also reads this for motion scaling
-    });
-  }
+  // Speed slider removed in Phase 1.
 
   map.on('moveend zoomend', () => {
     if (!STRATEGIC_STATE.active) return;

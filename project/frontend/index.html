@@ -498,11 +498,6 @@
                 <select id="strategicLayer">
                   <option value="temperature_ride">Temperature (Ride)</option>
                   <option value="rain_ride">Rain (Ride)</option>
-                  <option value="rain_tent">Rain (Tent)</option>
-                  <option value="wind_speed">Wind Speed</option>
-                  <option value="wind_dir">Wind Direction (Median + Variance)</option>
-                  <option value="comfort_ride">Comfort (Ride)</option>
-                  <option value="comfort_tent">Comfort (Tent)</option>
                 </select>
                 <label style="display:flex;align-items:center;gap:8px; font-size:12px; color:#334155;">
                   <input type="checkbox" id="strategicWindOn" class="wm-toggle" />
@@ -648,16 +643,12 @@
 
   <div id="strategicTimeline" aria-label="Strategic time slider">
     <div class="row">
-      <button id="strategicPlay" type="button">Play</button>
-      <span class="label" id="strategicTimelineLabel">—</span>
+      <button id="strategicPlay" type="button">▶ Play Season</button>
       <div class="wm-strategic-slidercol">
-        <input id="strategicDaySlider" type="range" min="0" max="364" step="1" value="0" />
+        <div class="label" id="strategicTimelineLabel">—</div>
+        <input id="strategicDaySlider" type="range" min="1" max="365" step="0.1" value="1" />
         <div id="strategicMonthTicks" aria-hidden="true"></div>
       </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#334155">
-        <span>Speed</span>
-        <input id="strategicSpeed" type="range" min="0.25" max="4" step="0.25" value="1" />
-      </label>
     </div>
   </div>
 
@@ -667,11 +658,6 @@
         <select id="strategicQuickLayerSelect" aria-label="Strategic quick layer" title="Quick layer">
           <option value="temperature_ride">Temperature (Ride)</option>
           <option value="rain_ride">Rain (Ride)</option>
-          <option value="rain_tent">Rain (Tent)</option>
-          <option value="wind_speed">Wind Speed</option>
-          <option value="wind_dir">Wind Direction</option>
-          <option value="comfort_ride">Comfort (Ride)</option>
-          <option value="comfort_tent">Comfort (Tent)</option>
         </select>
       </div>
       <div id="profilePanel" style="position:relative; width:100%;">
