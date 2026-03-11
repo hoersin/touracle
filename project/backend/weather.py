@@ -96,6 +96,15 @@ def compute_weather_statistics_daily(df: pd.DataFrame, month: int, day: int) -> 
         rain_prob = float(rain_days / valid_days) if valid_days > 0 else 0.0
         typical_rain = float(np.nanmedian(prcp_series[prcp_series > 0.1])) if (prcp_series > 0.1).any() else 0.0
         prcp_med = float(np.nanmedian(prcp_series)) if valid_days > 0 else 0.0
+        # Across-year precipitation distribution for this calendar day (includes 0mm days).
+        try:
+            rain_p25 = float(np.nanpercentile(prcp_series, 25)) if valid_days > 0 else 0.0
+            rain_p75 = float(np.nanpercentile(prcp_series, 75)) if valid_days > 0 else 0.0
+            rain_p90 = float(np.nanpercentile(prcp_series, 90)) if valid_days > 0 else 0.0
+        except Exception:
+            rain_p25 = 0.0
+            rain_p75 = 0.0
+            rain_p90 = 0.0
         log.info('[WEATHER] Rain probability: %.1f%% (%d/%d)', rain_prob * 100.0, rain_days, valid_days)
         log.info('[WEATHER] Typical rain amount: %.2f mm (median of >0.1mm)', typical_rain)
     else:
@@ -103,6 +112,9 @@ def compute_weather_statistics_daily(df: pd.DataFrame, month: int, day: int) -> 
         prcp_med = 0.0
         rain_prob = 0.0
         typical_rain = 0.0
+        rain_p25 = 0.0
+        rain_p75 = 0.0
+        rain_p90 = 0.0
     # Open-Meteo and Meteostat daily wind speeds are typically in km/h; the rest of this
     # project labels the field as m/s, so we convert here.
     if 'wspd' in subset.columns and subset['wspd'].notna().any():
@@ -117,6 +129,10 @@ def compute_weather_statistics_daily(df: pd.DataFrame, month: int, day: int) -> 
         "precipitation_mm": prcp_med,
         "rain_probability": rain_prob,
         "rain_typical_mm": typical_rain,
+        # Percentiles across years for this calendar day (daily precipitation sum).
+        "rain_hist_p25_mm": rain_p25,
+        "rain_hist_p75_mm": rain_p75,
+        "rain_hist_p90_mm": rain_p90,
         "wind_speed_ms": wspd_med,
         "wind_dir_deg": wind_stats["wind_dir_deg"],
         "wind_var_deg": wind_stats["wind_var_deg"],

@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS climatology (
   precipitation_mm REAL,
   rain_probability REAL,
   rain_typical_mm REAL,
+  -- Across-year precipitation distribution for this calendar day (includes 0mm days)
+  rain_hist_p25_mm REAL,
+  rain_hist_p75_mm REAL,
+  rain_hist_p90_mm REAL,
 
   wind_speed_ms REAL,
   wind_dir_deg REAL,

@@ -63,6 +63,24 @@ DEBUG_DIR = BASE_DIR / 'debug_output'
 DEBUG_DIR.mkdir(exist_ok=True)
 STATS_CACHE_DIR = BASE_DIR / 'cache' / 'stats'
 STATS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _stats_has_rain_percentiles(stats: Any) -> bool:
+    """Detect whether a cached stats dict includes the newer rain percentile fields.
+
+    Older cache files only had rain median/probability/typical; for tooltip spans
+    we need at least p25/p75/p90 keys to exist.
+    """
+    try:
+        if not isinstance(stats, dict):
+            return False
+        return (
+            ('rain_hist_p25_mm' in stats)
+            and ('rain_hist_p75_mm' in stats)
+            and ('rain_hist_p90_mm' in stats)
+        )
+    except Exception:
+        return False
 UPLOAD_DIR = BASE_DIR / 'data'
 UPLOAD_DIR.mkdir(exist_ok=True)
 SESSION_FILE = DATA_DIR / 'session_state.json'
@@ -436,6 +454,18 @@ def ne_110m_land_geojson():
     return resp
 
 
+@app.route('/ne_50m_land.geojson')
+def ne_50m_land_geojson():
+    """Public-domain Natural Earth land polygons (50m) for improved shoreline rendering."""
+    resp = send_from_directory(app.static_folder, 'ne_50m_land.geojson')
+    try:
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+    except Exception:
+        pass
+    return resp
+
+
 @app.route('/api/upload_gpx', methods=['POST'])
 def upload_gpx():
     try:
@@ -641,8 +671,12 @@ def api_map():
                     try:
                         stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
                         matching = int(stats.get('_match_days', 0) or 0)
-                        cache_hit = True
-                        log.info('[CACHE] hit %s', stats_name)
+                        if _stats_has_rain_percentiles(stats):
+                            cache_hit = True
+                            log.info('[CACHE] hit %s', stats_name)
+                        else:
+                            cache_hit = False
+                            log.info('[CACHE] stale %s (missing rain percentiles) -> recompute', stats_name)
                     except Exception:
                         cache_hit = False
 
@@ -1434,6 +1468,25 @@ def api_map_stream():
                 return f"yspan{int(years_window)}"
             return f"y{int(years_start_req)}-{int(years_end_req)}"
 
+        def _span_exact_match(st: Any) -> bool:
+            """True iff `st` explicitly matches the requested historical year span.
+
+            This prevents offline/cached single-year tiles (e.g. 2025-only) from being
+            used when the user explicitly selected a different year (e.g. 2020).
+            """
+            try:
+                if years_start_req is None or years_end_req is None:
+                    return True
+                if not isinstance(st, dict):
+                    return False
+                ys = st.get('_years_start')
+                ye = st.get('_years_end')
+                if ys is None or ye is None:
+                    return False
+                return int(ys) == int(years_start_req) and int(ye) == int(years_end_req)
+            except Exception:
+                return False
+
         def _years_span_from_stats(st: Any) -> int:
             try:
                 if not isinstance(st, dict):
@@ -1641,8 +1694,19 @@ def api_map_stream():
                     if rep_stats_path.exists():
                         stats = __import__('json').load(open(rep_stats_path, 'r', encoding='utf-8'))
                         matches = int(stats.get('_match_days', 0) or 0)
-                        rep_cache_hit = True
-                        log.info('[CACHE][SSE] hit %s', rep_stats_name)
+                        if not _stats_has_rain_percentiles(stats):
+                            rep_cache_hit = False
+                            stats = None
+                            matches = 0
+                            log.info('[CACHE][SSE] stale %s (missing rain percentiles) -> recompute', rep_stats_name)
+                        elif not _span_exact_match(stats):
+                            rep_cache_hit = False
+                            stats = None
+                            matches = 0
+                            log.info('[CACHE][SSE] stale %s (years span mismatch) -> recompute', rep_stats_name)
+                        else:
+                            rep_cache_hit = True
+                            log.info('[CACHE][SSE] hit %s', rep_stats_name)
                 except Exception:
                     rep_cache_hit = False
 
@@ -1650,7 +1714,11 @@ def api_map_stream():
                 cached_span = _years_span_from_stats(stats) if rep_cache_hit else 0
 
                 # Always probe offline availability (cheap) to support fallback when API is unavailable.
-                offline_stats = _get_offline_stats(rep_lat, rep_lon, mm, dd)
+                # Only accept offline/cached data that matches the requested year span unless the
+                # request explicitly disallows online (offline-only/strict).
+                must_accept_offline_anyway = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
+                offline_stats_raw = _get_offline_stats(rep_lat, rep_lon, mm, dd)
+                offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                 offline_span = _years_span_from_stats(offline_stats) if offline_stats is not None else 0
 
                 need_multi = int(years_window) >= 2
@@ -1726,7 +1794,8 @@ def api_map_stream():
                 _record_provider(df_prov)
 
                 if (stats is None) and (df is None or len(df) < (1 if fetch_mode == 'single_day' else 30)):
-                    # If API is unavailable, fall back to offline single-year if present.
+                    # If API is unavailable, fall back to OFFLINE only if it matches the requested span.
+                    # Otherwise use dummy stats to avoid showing a different year than selected.
                     if offline_stats is not None:
                         stats = dict(offline_stats)
                         matches = int(stats.get('_match_days', 0) or 0)
@@ -2032,6 +2101,10 @@ def api_map_stream():
                         try:
                             stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
                             matching = int(stats.get('_match_days', 0) or 0)
+                            if not _stats_has_rain_percentiles(stats):
+                                raise RuntimeError('stale cache (missing rain percentiles)')
+                            if not _span_exact_match(stats):
+                                raise RuntimeError('stale cache (years span mismatch)')
                             try:
                                 provenance_counts['disk_cache'] += 1
                                 ys = stats.get('_years_start')
@@ -2074,7 +2147,9 @@ def api_map_stream():
                             pass
 
                     # Offline-first per point/day: if tile stats exist, skip any network requests.
-                    offline_stats = _get_offline_stats(lat, lon, mm, dd)
+                    must_accept_offline_anyway = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
+                    offline_stats_raw = _get_offline_stats(lat, lon, mm, dd)
+                    offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                     offline_fallback_stats = None
                     try:
                         want_multi_year = (years_start_req is not None and years_end_req is not None and int(years_end_req) - int(years_start_req) + 1 >= 2)

@@ -41,6 +41,13 @@ class OfflineWeatherStore:
         self.cfg = cfg
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(self.cfg.db_path), check_same_thread=False)
+        try:
+            cols = {str(r[1]) for r in self._conn.execute("PRAGMA table_info(climatology)").fetchall()}
+        except Exception:
+            cols = set()
+        self._has_rain_hist_percentiles = (
+            "rain_hist_p25_mm" in cols and "rain_hist_p75_mm" in cols and "rain_hist_p90_mm" in cols
+        )
 
     def close(self) -> None:
         try:
@@ -391,45 +398,91 @@ class OfflineWeatherStore:
         """Return stats for an exact (tile_id, month, day)."""
 
         with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT
-                    temperature_c, temp_p25, temp_p75, temp_std,
-                    precipitation_mm, rain_probability, rain_typical_mm,
-                    wind_speed_ms, wind_dir_deg, wind_var_deg,
-                    temp_hist_p25, temp_hist_p75, temp_day_p25, temp_day_p75, temp_day_median,
-                    samples_daily, samples_rain, samples_wind, samples_day_means, samples_day_hours
-                FROM climatology
-                WHERE tile_id=? AND month=? AND day=?
-                """,
-                (str(tile_id), int(month), int(day)),
-            ).fetchone()
+            if self._has_rain_hist_percentiles:
+                row = self._conn.execute(
+                    """
+                    SELECT
+                        temperature_c, temp_p25, temp_p75, temp_std,
+                        precipitation_mm, rain_probability, rain_typical_mm,
+                        rain_hist_p25_mm, rain_hist_p75_mm, rain_hist_p90_mm,
+                        wind_speed_ms, wind_dir_deg, wind_var_deg,
+                        temp_hist_p25, temp_hist_p75, temp_day_p25, temp_day_p75, temp_day_median,
+                        samples_daily, samples_rain, samples_wind, samples_day_means, samples_day_hours
+                    FROM climatology
+                    WHERE tile_id=? AND month=? AND day=?
+                    """,
+                    (str(tile_id), int(month), int(day)),
+                ).fetchone()
+            else:
+                row = self._conn.execute(
+                    """
+                    SELECT
+                        temperature_c, temp_p25, temp_p75, temp_std,
+                        precipitation_mm, rain_probability, rain_typical_mm,
+                        wind_speed_ms, wind_dir_deg, wind_var_deg,
+                        temp_hist_p25, temp_hist_p75, temp_day_p25, temp_day_p75, temp_day_median,
+                        samples_daily, samples_rain, samples_wind, samples_day_means, samples_day_hours
+                    FROM climatology
+                    WHERE tile_id=? AND month=? AND day=?
+                    """,
+                    (str(tile_id), int(month), int(day)),
+                ).fetchone()
 
         if not row:
             return None
 
-        (
-            temperature_c,
-            temp_p25,
-            temp_p75,
-            temp_std,
-            precipitation_mm,
-            rain_probability,
-            rain_typical_mm,
-            wind_speed_ms,
-            wind_dir_deg,
-            wind_var_deg,
-            temp_hist_p25,
-            temp_hist_p75,
-            temp_day_p25,
-            temp_day_p75,
-            temp_day_median,
-            samples_daily,
-            samples_rain,
-            samples_wind,
-            samples_day_means,
-            samples_day_hours,
-        ) = row
+        if self._has_rain_hist_percentiles:
+            (
+                temperature_c,
+                temp_p25,
+                temp_p75,
+                temp_std,
+                precipitation_mm,
+                rain_probability,
+                rain_typical_mm,
+                rain_hist_p25_mm,
+                rain_hist_p75_mm,
+                rain_hist_p90_mm,
+                wind_speed_ms,
+                wind_dir_deg,
+                wind_var_deg,
+                temp_hist_p25,
+                temp_hist_p75,
+                temp_day_p25,
+                temp_day_p75,
+                temp_day_median,
+                samples_daily,
+                samples_rain,
+                samples_wind,
+                samples_day_means,
+                samples_day_hours,
+            ) = row
+        else:
+            (
+                temperature_c,
+                temp_p25,
+                temp_p75,
+                temp_std,
+                precipitation_mm,
+                rain_probability,
+                rain_typical_mm,
+                wind_speed_ms,
+                wind_dir_deg,
+                wind_var_deg,
+                temp_hist_p25,
+                temp_hist_p75,
+                temp_day_p25,
+                temp_day_p75,
+                temp_day_median,
+                samples_daily,
+                samples_rain,
+                samples_wind,
+                samples_day_means,
+                samples_day_hours,
+            ) = row
+            rain_hist_p25_mm = None
+            rain_hist_p75_mm = None
+            rain_hist_p90_mm = None
 
         stats: Dict[str, Any] = {
             "temperature_c": temperature_c,
@@ -439,6 +492,9 @@ class OfflineWeatherStore:
             "precipitation_mm": precipitation_mm,
             "rain_probability": rain_probability,
             "rain_typical_mm": rain_typical_mm,
+            "rain_hist_p25_mm": rain_hist_p25_mm,
+            "rain_hist_p75_mm": rain_hist_p75_mm,
+            "rain_hist_p90_mm": rain_hist_p90_mm,
             "wind_speed_ms": wind_speed_ms,
             "wind_dir_deg": wind_dir_deg,
             "wind_var_deg": wind_var_deg,

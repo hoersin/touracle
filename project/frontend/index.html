@@ -88,6 +88,16 @@
     .wm-pref-group:first-child { padding-top: 0; margin-top: 0; border-top: none; }
     .wm-pref-title { font-size: 12px; font-weight: 800; color: #0f172a; margin: 0 0 8px 0; }
 
+    /* Preferences visibility per mode */
+    body[data-mode="tour"] .wm-pref-group[data-wm-scope="climate"] { display: none; }
+    body[data-mode="climate"] .wm-pref-group[data-wm-scope="tour"] { display: none; }
+
+    /* Comfort thresholds: Climate mode has no route context → no head/tail split */
+    body[data-mode="climate"] label[for="setWindTailComfort"],
+    body[data-mode="climate"] #setWindTailComfort {
+      display: none;
+    }
+
     /* Main pane shifts right of sidebar */
     #mainPane {
       position: relative;
@@ -129,8 +139,9 @@
     #controls label { font-family: inherit; }
     #strategicControls { display: none; }
 
-    /* Climate mode base map: desaturated, low contrast, but readable roads */
-    body[data-mode="climate"] .leaflet-tile-pane {
+    /* Climate mode base map: apply the desaturated look ONLY for the neutral basemap.
+       Wind/rain layers use the standard OSM basemap (no filter). */
+    body[data-mode="climate"][data-wm-basemap="neutral"] .leaflet-tile-pane {
       filter: saturate(0.45) brightness(1.08) contrast(0.92) sepia(0.12);
     }
 
@@ -154,10 +165,7 @@
       pointer-events: auto;
       cursor: default;
     }
-    /* In Climate mode the bottom Strategic UI bar is fixed; lift legend above it. */
-    body[data-mode="climate"] .wm-map-legend {
-      bottom: calc(12px + var(--wm-strategic-timeline-h, 0px));
-    }
+    /* In Climate mode the legend lives inside the climate box (bottom-right). */
     .wm-map-legend.hidden { display: none; }
     .wm-map-legend .title {
       font-size: 11px;
@@ -198,6 +206,72 @@
       line-height: 1.1;
     }
 
+    /* Climate controls (bottom-right): Layer + Year + Legend */
+    .wm-climate-box {
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(0,0,0,0.14);
+      border-radius: 10px;
+      padding: 8px 10px;
+      box-sizing: border-box;
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #111827;
+      backdrop-filter: blur(3px);
+      box-shadow: 0 2px 10px rgba(0,0,0,0.10);
+      min-width: 240px;
+      max-width: 300px;
+      pointer-events: auto;
+      display: none;
+    }
+    body[data-mode="climate"] .wm-climate-box { display: block; }
+    /* Lift above fixed strategic timeline */
+    body[data-mode="climate"] .leaflet-bottom.leaflet-right .wm-climate-box {
+      margin-bottom: calc(12px + var(--wm-strategic-timeline-h, 0px));
+      margin-right: 12px;
+    }
+    .wm-climate-box .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 4px 0;
+    }
+    .wm-climate-box .lab {
+      width: 52px;
+      font-size: 12px;
+      color: rgba(51, 65, 85, 1);
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+    .wm-climate-box .sel {
+      flex: 1 1 auto;
+      border: 1px solid rgba(0,0,0,0.15);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: rgba(255,255,255,0.92);
+      font-size: 12px;
+      font-family: inherit;
+      color: #111827;
+      cursor: pointer;
+    }
+    .wm-climate-box .legendHost { margin-top: 8px; }
+    /* Reuse legend markup, but make it blend into the climate box */
+    .wm-climate-box .wm-map-legend {
+      position: static;
+      left: auto;
+      bottom: auto;
+      min-width: 0;
+      max-width: none;
+      background: transparent;
+      border: none;
+      padding: 0;
+      box-shadow: none;
+      backdrop-filter: none;
+    }
+    .wm-climate-box .wm-map-legend .title { margin-bottom: 6px; }
+
+    /* Avoid duplicate/overlapping climate selectors */
+    body[data-mode="climate"] #strategicControls { display: none; }
+    body[data-mode="climate"] .wm-map-quicklayer { display: none; }
+
     /* Strategic quick layer dropdown (top-right, Climate mode) */
     .wm-map-quicklayer {
       position: absolute;
@@ -207,7 +281,7 @@
       display: none;
       pointer-events: auto;
     }
-    body[data-mode="climate"] .wm-map-quicklayer { display: block; }
+    /* (Intentionally not shown in Climate mode; the climate box replaces it.) */
     .wm-map-quicklayer select {
       border: 1px solid rgba(0,0,0,0.15);
       border-radius: 8px;
@@ -400,16 +474,18 @@
       transform: translateY(-1px);
     }
     
-    /* Position Leaflet attribution inside map bounds, lower right corner */
-    .leaflet-control-attribution {
+    /* Position Leaflet attribution inside map bounds, top right (north) */
+    #map .leaflet-control-attribution {
       position: absolute !important;
-      bottom: 60px !important;
+      top: 8px !important;
+      bottom: auto !important;
       right: 8px !important;
       background: rgba(255,255,255,0.8) !important;
       padding: 2px 6px !important;
       font-size: 10px !important;
       border-radius: 3px !important;
       box-shadow: 0 1px 3px rgba(0,0,0,0.15) !important;
+      z-index: 1200 !important;
     }
 
     /* Modes */
@@ -533,7 +609,7 @@
                   <button id="settingsSave" type="button">Update</button>
                 </div>
 
-                <div class="wm-pref-group">
+                <div class="wm-pref-group" data-wm-scope="tour">
                   <div class="wm-pref-title">Tour Setup</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
                     <label for="startDate">Start Date</label>
@@ -553,9 +629,25 @@
                   </div>
                 </div>
 
-                <div class="wm-pref-group">
+                <div class="wm-pref-group" data-wm-scope="tour">
+                  <div class="wm-pref-title">Historic Climate</div>
+                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setHistLast">Last historical year</label>
+                    <input type="number" id="setHistLast" min="1970" max="2100" step="1" />
+                    <label for="setHistYears"># historic years</label>
+                    <input type="number" id="setHistYears" min="1" max="50" step="1" />
+                  </div>
+                </div>
+
+                <div class="wm-pref-group" data-wm-scope="tour">
                   <div class="wm-pref-title">Profile Display</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
+                    <label for="setWeatherVisualizationMode">Tour visualization</label>
+                    <select id="setWeatherVisualizationMode">
+                      <option value="glyphs">Glyphs</option>
+                      <option value="bands">Bands</option>
+                    </select>
+
                     <label for="setOverlayMode">Profile overlay</label>
                     <select id="setOverlayMode">
                       <option value="temperature">Temperature</option>
@@ -574,7 +666,7 @@
                   </div>
                 </div>
 
-                <div class="wm-pref-group">
+                <div class="wm-pref-group" data-wm-scope="climate">
                   <div class="wm-pref-title">Strategic (Climate Mode)</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
                     <label for="setStrategicYear">Strategic year (default)</label>
@@ -604,17 +696,7 @@
                   </div>
                 </div>
 
-                <div class="wm-pref-group">
-                  <div class="wm-pref-title">Historic Climate</div>
-                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setHistLast">Last historical year</label>
-                    <input type="number" id="setHistLast" min="1970" max="2100" step="1" />
-                    <label for="setHistYears"># historic years</label>
-                    <input type="number" id="setHistYears" min="1" max="50" step="1" />
-                  </div>
-                </div>
-
-                <div class="wm-pref-group">
+                <div class="wm-pref-group" data-wm-scope="both">
                   <div class="wm-pref-title">Comfort Thresholds</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
                     <label for="setTempCold">Comfort min temp (°C)</label>
@@ -630,7 +712,7 @@
                   </div>
                 </div>
 
-                <div class="wm-pref-group">
+                <div class="wm-pref-group" data-wm-scope="tour">
                   <div class="wm-pref-title">Tour Planning</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
                     <label for="setRideHours">Ride hours (start-end)</label>
@@ -676,9 +758,11 @@
       <div id="profilePanel" style="position:relative; width:100%;">
     <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
-      <div id="tourSummaryBadges" style="display:flex; align-items:center; gap:10px; padding:6px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box;">
+      <div id="tourSummaryBadges" style="display:flex; align-items:center; gap:12px; padding:7px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box; min-height:58px;">
+        <!-- Profile hover tooltip (moved into the Tour Summary white band to use space and avoid overlaying the map/profile) -->
+        <div id="profileTooltip" style="align-self:center; flex:0 1 auto; min-width:300px; max-width:56vw; max-height:calc(100% - 10px); overflow:auto; font-family:system-ui, -apple-system, sans-serif; font-size:11px; line-height:1.25; color:#222; background:rgba(255,255,255,0.86); border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:10px 9px; display:none; white-space:normal; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12)"></div>
         <div id="tourSummaryBadgesItems" style="display:flex; gap:18px; align-items:center; justify-content:center; flex-wrap:wrap; flex:1;"></div>
-        <button id="share" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border:1px solid rgba(0,0,0,0.18); border-radius:8px; background:rgba(255,255,255,0.9); cursor:pointer;">
+        <button id="share" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; margin-left:12px; border:1px solid rgba(0,0,0,0.18); border-radius:8px; background:rgba(255,255,255,0.9); cursor:pointer;">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 16V3" />
             <path d="M8 7l4-4 4 4" />
@@ -693,8 +777,6 @@
     <div id="profileResizeHandle" style="position:absolute; top:0; left:0; right:0; height:8px; z-index:1700; background:transparent;"></div>
     <canvas id="profileCanvas"></canvas>
     <canvas id="profileCursorCanvas" style="position:absolute; inset:0; pointer-events:none"></canvas>
-    <!-- Profile tooltip positioned in upper left corner, 33% of canvas width -->
-    <div id="profileTooltip" style="position:absolute; left:12px; top:12px; width:33%; min-width:260px; max-width:380px; height:auto; min-height:fit-content; z-index:1500; font-family:system-ui, -apple-system, sans-serif; font-size:9px; line-height:1.3; color:#222; background:rgba(255,255,255,0.85); border:1px solid rgba(0,0,0,0.15); border-radius:6px; padding:8px 7px; display:none; white-space:normal; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12)"></div>
       </div>
     </main>
   </div>
@@ -950,7 +1032,7 @@
       }
     })();
   </script>
-  <script src="/map.js?v=38"></script>
+  <script src="/map.js?v=76"></script>
   <script src="/frontend/profile_zoom.js?v=1"></script>
   <script>
     // Assisted test helpers: always available in Console

@@ -270,6 +270,22 @@ def ensure_schema(conn: sqlite3.Connection, schema_sql_path: Path) -> None:
     sql = schema_sql_path.read_text(encoding="utf-8")
     conn.executescript(sql)
 
+    # Lightweight migrations for evolving schemas.
+    # (CREATE TABLE IF NOT EXISTS does not add columns to existing DBs.)
+    try:
+        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(climatology)").fetchall()}
+        need = [
+            ("rain_hist_p25_mm", "REAL"),
+            ("rain_hist_p75_mm", "REAL"),
+            ("rain_hist_p90_mm", "REAL"),
+        ]
+        for name, typ in need:
+            if name not in cols:
+                conn.execute(f"ALTER TABLE climatology ADD COLUMN {name} {typ}")
+        conn.commit()
+    except Exception:
+        pass
+
 
 def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
@@ -307,10 +323,11 @@ def replace_climatology_rows(conn: sqlite3.Connection, tile_id: str, rows: List[
                     tile_id, month, day,
           temperature_c, temp_p25, temp_p75, temp_std,
           precipitation_mm, rain_probability, rain_typical_mm,
+          rain_hist_p25_mm, rain_hist_p75_mm, rain_hist_p90_mm,
           wind_speed_ms, wind_dir_deg, wind_var_deg,
           temp_hist_p25, temp_hist_p75, temp_day_p25, temp_day_p75, temp_day_median,
           samples_daily, samples_rain, samples_wind, samples_day_means, samples_day_hours
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         [
             (
@@ -324,6 +341,9 @@ def replace_climatology_rows(conn: sqlite3.Connection, tile_id: str, rows: List[
                 r.get("precipitation_mm"),
                 r.get("rain_probability"),
                 r.get("rain_typical_mm"),
+                r.get("rain_hist_p25_mm"),
+                r.get("rain_hist_p75_mm"),
+                r.get("rain_hist_p90_mm"),
                 r.get("wind_speed_ms"),
                 r.get("wind_dir_deg"),
                 r.get("wind_var_deg"),
@@ -469,6 +489,9 @@ def compute_climatology_rows(acc: dict) -> List[dict]:
         temp_std = std(tavg)
 
         precipitation_mm = median(prcp)
+        rain_hist_p25_mm = percentile(prcp, 25)
+        rain_hist_p75_mm = percentile(prcp, 75)
+        rain_hist_p90_mm = percentile(prcp, 90)
         prcp_arr = np.array([v for v in prcp if np.isfinite(v)], dtype=float)
         if prcp_arr.size > 0:
             rain_probability = float(np.mean(prcp_arr > 0.1))
@@ -510,6 +533,9 @@ def compute_climatology_rows(acc: dict) -> List[dict]:
                 "precipitation_mm": float(precipitation_mm) if np.isfinite(precipitation_mm) else None,
                 "rain_probability": float(rain_probability) if np.isfinite(rain_probability) else None,
                 "rain_typical_mm": float(rain_typical_mm) if np.isfinite(rain_typical_mm) else None,
+                "rain_hist_p25_mm": float(rain_hist_p25_mm) if np.isfinite(rain_hist_p25_mm) else None,
+                "rain_hist_p75_mm": float(rain_hist_p75_mm) if np.isfinite(rain_hist_p75_mm) else None,
+                "rain_hist_p90_mm": float(rain_hist_p90_mm) if np.isfinite(rain_hist_p90_mm) else None,
                 "wind_speed_ms": float(wind_speed_ms) if np.isfinite(wind_speed_ms) else None,
                 "wind_dir_deg": float(wind_stats.get("wind_dir_deg", float("nan"))) if wind_stats else None,
                 "wind_var_deg": float(wind_stats.get("wind_var_deg", float("nan"))) if wind_stats else None,

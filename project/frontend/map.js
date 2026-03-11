@@ -18,6 +18,206 @@
     return (num === null || num === undefined) ? '-' : Number(num).toFixed(digits);
   }
 
+  function _getAppMode() {
+    try {
+      const m = document.body && document.body.dataset ? String(document.body.dataset.mode || '') : '';
+      return (m === 'climate' || m === 'tour' || m === 'settings') ? m : 'tour';
+    } catch (_) {
+      return 'tour';
+    }
+  }
+
+  function _applyComfortWindUiForMode() {
+    try {
+      const mode = _getAppMode();
+      const labHead = document.querySelector('label[for="setWindHeadComfort"]');
+      if (labHead) {
+        labHead.textContent = (mode === 'climate') ? 'Comfort max wind (m/s)' : 'Comfort max headwind (m/s)';
+      }
+    } catch (_) {}
+  }
+
+  try {
+    // React to mode switches (navigation is wired externally in index.html).
+    const obs = new MutationObserver(() => { _applyComfortWindUiForMode(); });
+    if (document.body) obs.observe(document.body, { attributes: true, attributeFilter: ['data-mode'] });
+    setTimeout(() => { _applyComfortWindUiForMode(); }, 0);
+  } catch (_) {}
+
+  // -------------------- Climate controls (bottom-right): Layer + Year + Legend --------------------
+  let STRATEGIC_LEGEND_HOST = null;
+  let CLIMATE_BOX_CONTROL = null;
+  let climateLayerSelect = null;
+  let climateYearSelect = null;
+
+  function _populateYearOptionsFromPrefs(sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    try {
+      if (setStrategicYear && setStrategicYear.options && setStrategicYear.options.length) {
+        for (const opt of Array.from(setStrategicYear.options)) {
+          const o = document.createElement('option');
+          o.value = String(opt.value);
+          o.textContent = String(opt.textContent || opt.value);
+          sel.appendChild(o);
+        }
+        return;
+      }
+    } catch (_) {}
+    // Fallback: show a small recent range
+    let y1 = 2025;
+    try { y1 = Math.max(1970, Math.min(2100, (new Date()).getFullYear())); } catch (_) {}
+    for (let y = y1; y >= Math.max(1970, y1 - 6); y--) {
+      const o = document.createElement('option');
+      o.value = String(y);
+      o.textContent = String(y);
+      sel.appendChild(o);
+    }
+  }
+
+  function _populateLayerOptions(sel) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    try {
+      if (strategicLayerSelect && strategicLayerSelect.options && strategicLayerSelect.options.length) {
+        for (const opt of Array.from(strategicLayerSelect.options)) {
+          const o = document.createElement('option');
+          o.value = String(opt.value);
+          o.textContent = String(opt.textContent || opt.value);
+          sel.appendChild(o);
+        }
+        return;
+      }
+    } catch (_) {}
+    // Fallback
+    const defs = [
+      { v: 'temperature_ride', t: 'Temperature (Ride)' },
+      { v: 'rain_ride', t: 'Rain (Ride)' },
+      { v: 'wind_dir', t: 'Wind' },
+      { v: 'comfort_ride', t: 'Ride Comfort' },
+    ];
+    for (const d of defs) {
+      const o = document.createElement('option');
+      o.value = d.v;
+      o.textContent = d.t;
+      sel.appendChild(o);
+    }
+  }
+
+  function _ensureClimateBoxControl() {
+    if (CLIMATE_BOX_CONTROL) return CLIMATE_BOX_CONTROL;
+    CLIMATE_BOX_CONTROL = L.control({ position: 'bottomright' });
+    CLIMATE_BOX_CONTROL.onAdd = () => {
+      const wrap = L.DomUtil.create('div', 'wm-climate-box');
+      wrap.setAttribute('aria-label', 'Climatic map controls');
+
+      const rowLayer = document.createElement('div');
+      rowLayer.className = 'row';
+      const labLayer = document.createElement('div');
+      labLayer.className = 'lab';
+      labLayer.textContent = 'Layer';
+      const selLayer = document.createElement('select');
+      selLayer.className = 'sel';
+      _populateLayerOptions(selLayer);
+      rowLayer.appendChild(labLayer);
+      rowLayer.appendChild(selLayer);
+      wrap.appendChild(rowLayer);
+
+      const rowYear = document.createElement('div');
+      rowYear.className = 'row';
+      const labYear = document.createElement('div');
+      labYear.className = 'lab';
+      labYear.textContent = 'Year';
+      const selYear = document.createElement('select');
+      selYear.className = 'sel';
+      _populateYearOptionsFromPrefs(selYear);
+      rowYear.appendChild(labYear);
+      rowYear.appendChild(selYear);
+      wrap.appendChild(rowYear);
+
+      const legendHost = document.createElement('div');
+      legendHost.className = 'legendHost';
+      wrap.appendChild(legendHost);
+      STRATEGIC_LEGEND_HOST = legendHost;
+
+      climateLayerSelect = selLayer;
+      climateYearSelect = selYear;
+
+      try { L.DomEvent.disableClickPropagation(wrap); } catch (_) {}
+      try { L.DomEvent.disableScrollPropagation(wrap); } catch (_) {}
+
+      selLayer.addEventListener('change', () => {
+        const v = String(selLayer.value || 'temperature_ride');
+        try { _setStrategicLayer(v); } catch (_) {}
+        try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+        try { _applyStrategicBasemap(); } catch (_) {}
+      });
+      selYear.addEventListener('change', () => {
+        const y = Number(selYear.value);
+        if (!Number.isFinite(y)) return;
+        try { SETTINGS.strategicYear = y; saveSettings(SETTINGS); } catch (_) {}
+        try { _strategicSetYear(y); } catch (_) {}
+        try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+      });
+
+      // Attach legend markup into this box.
+      try {
+        const el = _ensureStrategicLegend();
+        if (el && el.parentNode !== legendHost) legendHost.appendChild(el);
+      } catch (_) {}
+
+      return wrap;
+    };
+    try { CLIMATE_BOX_CONTROL.addTo(map); } catch (_) {}
+    return CLIMATE_BOX_CONTROL;
+  }
+
+  function _syncClimateBoxUI() {
+    try { _ensureClimateBoxControl(); } catch (_) {}
+    if (!STRATEGIC_STATE) return;
+    try {
+      if (climateLayerSelect) {
+        if (strategicLayerSelect && strategicLayerSelect.options && climateLayerSelect.options.length !== strategicLayerSelect.options.length) {
+          _populateLayerOptions(climateLayerSelect);
+        }
+        climateLayerSelect.value = String(STRATEGIC_STATE.layer || 'temperature_ride');
+      }
+    } catch (_) {}
+    try {
+      if (climateYearSelect) {
+        if (setStrategicYear && setStrategicYear.options && climateYearSelect.options.length !== setStrategicYear.options.length) {
+          _populateYearOptionsFromPrefs(climateYearSelect);
+        }
+        const y = Number(STRATEGIC_STATE.year || (SETTINGS && SETTINGS.strategicYear) || 2025);
+        climateYearSelect.value = String(Number.isFinite(y) ? y : 2025);
+      }
+    } catch (_) {}
+    try {
+      const el = _ensureStrategicLegend();
+      if (el && STRATEGIC_LEGEND_HOST && el.parentNode !== STRATEGIC_LEGEND_HOST) STRATEGIC_LEGEND_HOST.appendChild(el);
+    } catch (_) {}
+  }
+
+  function _strategicWantsStandardBasemap() {
+    const layer = STRATEGIC_STATE ? String(STRATEGIC_STATE.layer || '') : '';
+    return (layer === 'rain_ride' || layer === 'rain' || layer === 'precipitation' || layer === 'wind_dir' || layer === 'wind_speed');
+  }
+
+  function _applyStrategicBasemap() {
+    try {
+      const m = _getAppMode();
+      // Tour planning always uses standard OSM.
+      const wantOSM = (m !== 'climate') ? true : _strategicWantsStandardBasemap();
+      try { document.body.dataset.wmBasemap = wantOSM ? 'osm' : 'neutral'; } catch (_) {}
+      const next = wantOSM ? _osmTiles : _neutralTiles;
+      if (_activeBaseLayer !== next) {
+        try { map.removeLayer(_activeBaseLayer); } catch (_) {}
+        _activeBaseLayer = next;
+        try { _activeBaseLayer.addTo(map); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   function msToKmh(ms) {
     return (ms === null || ms === undefined) ? null : (Number(ms) * 3.6);
   }
@@ -72,6 +272,7 @@
   const setWindHeadComfort = document.getElementById('setWindHeadComfort');
   const setWindTailComfort = document.getElementById('setWindTailComfort');
   const setGlyphType = document.getElementById('setGlyphType');
+  const setWeatherVisualizationMode = document.getElementById('setWeatherVisualizationMode');
   const setStrategicYear = document.getElementById('setStrategicYear');
   const setIncludeSea = document.getElementById('setIncludeSea');
   const setInterpolation = document.getElementById('setInterpolation');
@@ -106,6 +307,7 @@
   let profileCursorCtx = profileCursorCanvas ? profileCursorCanvas.getContext('2d') : null;
   const profileTooltip = document.getElementById('profileTooltip');
   const profilePanel = document.getElementById('profilePanel');
+  const tourSummaryBadges = document.getElementById('tourSummaryBadges');
   const mapEl = document.getElementById('map');
   const overlayContainer = document.getElementById('overlayContainer');
   const resizeHandle = document.getElementById('profileResizeHandle');
@@ -124,12 +326,31 @@
   // Profile panel overlay selector (Temperature / Precipitation / Wind)
   let profileOverlaySelect = null;
   try {
-    if (profilePanel) {
+    const host = tourSummaryBadges || profilePanel;
+    if (host) {
       const sel = document.createElement('select');
       sel.id = 'overlayMode';
-      sel.style.cssText = 'position:absolute; top:8px; right:22px; background:rgba(255,255,255,0.95); border:1px solid #ccc; border-radius:4px; padding:4px 8px; font-family:system-ui,-apple-system,sans-serif; font-size:11px; z-index:1000; box-shadow:0 2px 4px rgba(0,0,0,0.1); cursor:pointer; pointer-events:auto;';
+      // Mounted in Tour Summary band (preferred) or in profile panel as fallback.
+      sel.style.cssText = tourSummaryBadges
+        ? 'align-self:center; position:relative; background:rgba(255,255,255,0.95); border:1px solid #cfcfcf; border-radius:10px; padding:7px 12px; font-family:system-ui,-apple-system,sans-serif; font-size:13px; cursor:pointer; pointer-events:auto; box-shadow:0 2px 4px rgba(0,0,0,0.08);'
+        : 'position:absolute; top:8px; right:22px; background:rgba(255,255,255,0.95); border:1px solid #cfcfcf; border-radius:10px; padding:7px 12px; font-family:system-ui,-apple-system,sans-serif; font-size:13px; z-index:1000; box-shadow:0 2px 4px rgba(0,0,0,0.08); cursor:pointer; pointer-events:auto;';
       sel.innerHTML = '<option value="temperature">Temperature</option><option value="precipitation">Precipitation</option><option value="wind">Wind</option>';
-      profilePanel.appendChild(sel);
+      // In the Tour Summary band, keep selector near the right side (before Share).
+      if (tourSummaryBadges) {
+        try { sel.style.marginLeft = '8px'; } catch (_) {}
+        try {
+          const shareBtn = document.getElementById('share');
+          if (shareBtn && shareBtn.parentElement === tourSummaryBadges) {
+            tourSummaryBadges.insertBefore(sel, shareBtn);
+          } else {
+            tourSummaryBadges.appendChild(sel);
+          }
+        } catch (_) {
+          tourSummaryBadges.appendChild(sel);
+        }
+      } else {
+        profilePanel.appendChild(sel);
+      }
       profileOverlaySelect = sel;
     }
   } catch (_) {}
@@ -639,16 +860,18 @@
 
   // Temperature → color (shared ramp with glyphs)
   function tempColor(t) {
-    // Palette B: Blue → Teal → Lime → Yellow → Orange → Crimson
+    // Global temperature palette (used across the whole app):
+    // violet → blue → green → yellow → orange → red → darkred
+    // Range: -20..40 °C
+    // Best bike temperature: 15..25 °C maps green → yellow.
     const anchors = [
-      { t: -20.0, c: [0x00, 0x5b, 0xff] }, // cold
-      { t: -10.0, c: [0x00, 0xb3, 0xcc] }, // cool
-      { t: 0.0,   c: [0x00, 0xd9, 0xa3] }, // freezing
-      { t: 15.0,  c: [0x7d, 0xff, 0x00] }, // mild
-      { t: 20.0,  c: [0xff, 0xf2, 0x00] }, // warm
-      { t: 25.0,  c: [0xff, 0x99, 0x33] }, // hot
-      { t: 30.0,  c: [0xff, 0x33, 0x33] }, // very hot
-      { t: 40.0,  c: [0xcc, 0x00, 0x00] }, // extreme
+      { t: -20.0, c: [0x96, 0x3c, 0xbe] }, // violet
+      { t: -10.0, c: [0x00, 0x5b, 0xff] }, // blue
+      { t: 15.0,  c: [0x28, 0xa0, 0x50] }, // green
+      { t: 25.0,  c: [0xf0, 0xdc, 0x50] }, // yellow
+      { t: 30.0,  c: [0xf5, 0x9b, 0x3c] }, // orange
+      { t: 35.0,  c: [0xd7, 0x3c, 0x2d] }, // red
+      { t: 40.0,  c: [0x8b, 0x00, 0x00] }, // darkred
     ];
     const tt = Math.max(anchors[0].t, Math.min(anchors[anchors.length-1].t, Number(t)));
     for (let i = 0; i < anchors.length - 1; i++) {
@@ -888,6 +1111,7 @@
       windTailComfort: 10,
       useClassicWeatherIcons: true,
       glyphType: 'classic',
+      weatherVisualizationMode: 'glyphs',
       overlayMode: 'temperature',
       // Strategic/tactical settings (Phase 1: persisted but not yet fully used)
       strategicYear: 2025,
@@ -937,6 +1161,9 @@
         useClassicWeatherIcons: (typeof j.useClassicWeatherIcons === 'boolean')
           ? j.useClassicWeatherIcons
           : ((typeof j.glyphType === 'string') ? (j.glyphType === 'classic') : defaults.useClassicWeatherIcons),
+        weatherVisualizationMode: (typeof j.weatherVisualizationMode === 'string')
+          ? j.weatherVisualizationMode
+          : defaults.weatherVisualizationMode,
         overlayMode: (typeof j.overlayMode === 'string') ? j.overlayMode : defaults.overlayMode,
         strategicYear: Number(j.strategicYear) || defaults.strategicYear,
         includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
@@ -985,20 +1212,43 @@
     if (m !== 'settings') LAST_NON_SETTINGS_MODE = m;
     try { document.body.dataset.mode = m; } catch (_) {}
 
+    // Climate box UI (layer/year/legend)
+    try { _syncClimateBoxUI(); } catch (_) {}
+
     try {
       strategicSetActive && strategicSetActive(m === 'climate');
     } catch (_) {}
 
-    // Basemap simplification for Strategic Climate Map.
-    try {
-      const wantNeutral = (m === 'climate');
-      const next = wantNeutral ? _neutralTiles : _osmTiles;
-      if (_activeBaseLayer !== next) {
-        try { map.removeLayer(_activeBaseLayer); } catch (_) {}
-        _activeBaseLayer = next;
-        try { _activeBaseLayer.addTo(map); } catch (_) {}
-      }
-    } catch (_) {}
+    // Climate mode must never show TOUR tactical visuals (bands/glyphs).
+    if (m === 'climate') {
+      try { _setTourBandsEnabled(false); } catch (_) {}
+      try {
+        const tip = document.querySelector && document.querySelector('.wm-tour-bands-tip');
+        if (tip) tip.style.display = 'none';
+      } catch (_) {}
+      try {
+        // Hide glyph marker layers from prior TOUR runs.
+        if (glyphLayerNew) { try { map.removeLayer(glyphLayerNew); } catch (_) {} }
+        if (glyphLayer) { try { map.removeLayer(glyphLayer); } catch (_) {} }
+      } catch (_) {}
+    }
+    if (m === 'tour') {
+      // Restore preferred TOUR visualization when coming back from Climate mode.
+      try { _setTourBandsEnabled(_tourWantBands()); } catch (_) {}
+      try {
+        const wantGlyphs = SETTINGS && String(SETTINGS.weatherVisualizationMode || 'glyphs') === 'glyphs';
+        if (wantGlyphs) {
+          if (glyphLayerNew) { try { glyphLayerNew.addTo(map); } catch (_) {} }
+          if (glyphLayer) { try { glyphLayer.addTo(map); } catch (_) {} }
+        } else {
+          if (glyphLayerNew) { try { map.removeLayer(glyphLayerNew); } catch (_) {} }
+          if (glyphLayer) { try { map.removeLayer(glyphLayer); } catch (_) {} }
+        }
+      } catch (_) {}
+    }
+
+    // Basemap selection: Climate mode varies per layer.
+    try { _applyStrategicBasemap(); } catch (_) {}
 
     // Map needs a resize nudge when toggling profile/map visibility.
     if (m !== 'settings') {
@@ -1011,6 +1261,9 @@
     }
   }
   try { window.setMode = setMode; } catch (_) {}
+
+  // Ensure climate control exists (hidden in Tour mode).
+  try { _ensureClimateBoxControl(); _syncClimateBoxUI(); } catch (_) {}
 
   // -------------------- Climatic Map (Strategic) --------------------
   const STRATEGIC_DEFAULT_YEAR = 2025;
@@ -1087,12 +1340,14 @@
 
   // Apple-like palettes
   const PAL_TEMP = [
-    { t: 0.00, c: { r: 15, g: 45, b: 120 } },
-    { t: 0.18, c: { r: 70, g: 130, b: 220 } },
-    { t: 0.38, c: { r: 60, g: 185, b: 140 } },
-    { t: 0.55, c: { r: 240, g: 225, b: 90 } },
-    { t: 0.72, c: { r: 245, g: 160, b: 70 } },
-    { t: 1.00, c: { r: 210, g: 50, b: 45 } },
+    // Normalized palette aligned with tempColor(): map -20..40 °C → 0..1
+    { t: 0.00,   c: { r: 150, g: 60,  b: 190 } }, // -20 violet
+    { t: 0.1667, c: { r: 0,   g: 91,  b: 255 } }, // -10 blue
+    { t: 0.5833, c: { r: 40,  g: 160, b: 80 } },  // 15 green
+    { t: 0.75,   c: { r: 240, g: 220, b: 80 } },  // 25 yellow
+    { t: 0.8333, c: { r: 245, g: 155, b: 60 } },  // 30 orange
+    { t: 0.9167, c: { r: 215, g: 60,  b: 45 } },  // 35 red
+    { t: 1.00,   c: { r: 139, g: 0,   b: 0 } },   // 40 darkred
   ];
   const PAL_RAIN = [
     { t: 0.00, c: { r: 120, g: 200, b: 255 } },
@@ -1158,6 +1413,10 @@
     }
     if (ticksEl) {
       ticksEl.innerHTML = '';
+      // Reset any per-layer overrides (e.g. temperature tick marks stacked layout).
+      try { ticksEl.style.display = ''; } catch (_) {}
+      try { ticksEl.style.gap = ''; } catch (_) {}
+      try { ticksEl.style.flexDirection = ''; } catch (_) {}
       const labs = Array.isArray(tickLabels) ? tickLabels : [];
       for (const t of labs) {
         const s = document.createElement('span');
@@ -1204,6 +1463,10 @@
 
     if (ticksEl) {
       ticksEl.innerHTML = '';
+      // Reset any per-layer overrides (e.g. temperature tick marks stacked layout).
+      try { ticksEl.style.display = ''; } catch (_) {}
+      try { ticksEl.style.gap = ''; } catch (_) {}
+      try { ticksEl.style.flexDirection = ''; } catch (_) {}
       const labs = Array.isArray(tickLabels) ? tickLabels : [];
       for (const t of labs) {
         const s = document.createElement('span');
@@ -1279,20 +1542,61 @@
     el.classList.remove('hidden');
 
     if (layer === 'temperature_ride') {
-      _setLegendSteps(
+      // Show color scale only between -10..40°C.
+      _setLegend(
         'Temperature (ride hours, °C)',
         [
-          { color: 'rgba(20,60,160,0.95)' },
-          { color: 'rgba(0,190,210,0.95)' },
-          { color: 'rgba(40,160,80,0.95)' },
-          { color: 'rgba(240,220,80,0.95)' },
-          { color: 'rgba(245,155,60,0.95)' },
-          { color: 'rgba(215,60,45,0.95)' },
-          { color: 'rgba(150,60,190,0.95)' },
+          { t: 0.00, c: { r: 0,   g: 91,  b: 255 } }, // -10 blue
+          { t: 0.50, c: { r: 40,  g: 160, b: 80 } },  // 15 green
+          { t: 0.70, c: { r: 240, g: 220, b: 80 } },  // 25 yellow
+          { t: 0.80, c: { r: 245, g: 155, b: 60 } },  // 30 orange
+          { t: 0.90, c: { r: 215, g: 60,  b: 45 } },  // 35 red
+          { t: 1.00, c: { r: 139, g: 0,   b: 0 } },   // 40 darkred
         ],
-        ['<5', '10', '15', '20', '25', '30', '≥30'],
+        ['-10', '0', '10', '20', '30', '40'],
         null
       );
+
+      // Add small tick marks between the color bar and labels.
+      try {
+        const ticksEl = el.querySelector('#wmStrategicLegendTicks');
+        if (ticksEl) {
+          const labs = ['-10', '0', '10', '20', '30', '40'];
+          ticksEl.innerHTML = '';
+
+          // Stack: tick marks row + labels row (CSS for .ticks is flex by default).
+          try { ticksEl.style.display = 'block'; } catch (_) {}
+          try { ticksEl.style.gap = '0px'; } catch (_) {}
+
+          const marks = document.createElement('div');
+          marks.style.display = 'flex';
+          marks.style.justifyContent = 'space-between';
+          marks.style.alignItems = 'flex-end';
+          marks.style.height = '7px';
+          marks.style.marginTop = '2px';
+          for (let i = 0; i < labs.length; i++) {
+            const mk = document.createElement('span');
+            mk.style.display = 'inline-block';
+            mk.style.width = '1px';
+            mk.style.height = '5px';
+            mk.style.background = 'rgba(0,0,0,0.35)';
+            marks.appendChild(mk);
+          }
+
+          const labels = document.createElement('div');
+          labels.style.display = 'flex';
+          labels.style.justifyContent = 'space-between';
+          labels.style.marginTop = '2px';
+          for (const t of labs) {
+            const s = document.createElement('span');
+            s.textContent = String(t);
+            labels.appendChild(s);
+          }
+
+          ticksEl.appendChild(marks);
+          ticksEl.appendChild(labels);
+        }
+      } catch (_) {}
       _setLegendTooltips(
         'Ride-hours temperature (median of 10/12/14/16 local time).',
         'Color encodes temperature (°C).',
@@ -1341,18 +1645,26 @@
         ['<-2', '0', '2', '4', '≥4'],
         null
       );
+      const cold = Number(SETTINGS.tempCold || 5);
+      const hot = Number(SETTINGS.tempHot || 30);
+      const rainHigh = Number(SETTINGS.rainHigh || 10);
+      const wAbs = Number(SETTINGS.windHeadComfort || 4);
       _setLegendTooltips(
         'Bikepacking comfort index = TempScore + RainScore + WindScore.',
-        'Color encodes comfort (higher is better).',
+        `Thresholds: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind < ${wAbs} m/s (absolute).`,
         'ISO bands: ≥4 deep green, 2..4 green, 0..2 yellow, -2..0 orange, < -2 red.'
       );
       return;
     }
     if (layer === 'comfort_tent') {
-      _setLegend('Comfort (tent)', PAL_COMFORT, ['0', '0.5', '1.0'], null);
+      const rainTypStyled = styleVal(rainTyp, Number(rainTyp) >= R_HIGH);
+      const cold = Number(SETTINGS.tempCold || 5);
+      const hot = Number(SETTINGS.tempHot || 30);
+      const rainHigh = Number(SETTINGS.rainHigh || 10);
+      const wAbs = Number(SETTINGS.windHeadComfort || 4);
       _setLegendTooltips(
         'Comfort score combines temperature, rain and wind for tent hours.',
-        'Color encodes comfort score (0..1).',
+        `Thresholds: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind < ${wAbs} m/s (absolute).`,
         'Tick labels are score anchors (0..1).'
       );
       return;
@@ -1410,6 +1722,7 @@
     }
     _syncStrategicQuickLayer();
     _updateStrategicLegend();
+    try { _applyStrategicBasemap(); } catch (_) {}
     _renderStrategic();
   }
 
@@ -1758,9 +2071,1800 @@
     return new Layer();
   }
 
+  // -------------------- Tour Bands (Tactical visualization) --------------------
+  // Continuous bands along the GPX route:
+  // - Right side: temperature band + uncertainty envelope (p25..p75)
+  // - Left side: effective wind component (headwind↔tailwind)
+  // - Sparse rain markers when rain is likely
+  let TOUR_BANDS_LAYER = null;
+  let TOUR_BANDS_ENABLED = false;
+  let TOUR_BANDS_PROFILE = null;
+  let TOUR_BANDS_POINTS = null;
+  let TOUR_BANDS_REDRAW_QUEUED = false;
+
+  // Hover/tooltip helpers (Tour Planning)
+  let TOUR_HOVER_POINTS_SORTED = null;
+  let TOUR_HOVER_POINTS_DIRTY = true;
+  let TOUR_HOVER_MM_PX = null;
+
+  function _mmToPx(mm) {
+    const m = Number(mm);
+    if (!Number.isFinite(m) || m <= 0) return 0;
+    try {
+      if (TOUR_HOVER_MM_PX && Number.isFinite(TOUR_HOVER_MM_PX.pxPerMm) && TOUR_HOVER_MM_PX.pxPerMm > 0) {
+        return TOUR_HOVER_MM_PX.pxPerMm * m;
+      }
+    } catch (_) {}
+    try {
+      const el = document.createElement('div');
+      el.style.position = 'absolute';
+      el.style.left = '-10000px';
+      el.style.top = '-10000px';
+      el.style.width = '100mm';
+      el.style.height = '1px';
+      el.style.visibility = 'hidden';
+      document.body.appendChild(el);
+      const w = el.getBoundingClientRect().width;
+      el.remove();
+      const pxPerMm = (w && Number.isFinite(w) && w > 0) ? (w / 100.0) : (96 / 25.4);
+      TOUR_HOVER_MM_PX = { pxPerMm: pxPerMm };
+      return pxPerMm * m;
+    } catch (_) {
+      const pxPerMm = 96 / 25.4;
+      TOUR_HOVER_MM_PX = { pxPerMm: pxPerMm };
+      return pxPerMm * m;
+    }
+  }
+
+  function _tourHoverPointsSorted() {
+    if (!TOUR_HOVER_POINTS_DIRTY && TOUR_HOVER_POINTS_SORTED) return TOUR_HOVER_POINTS_SORTED;
+    try {
+      const pts = Array.isArray(OVERLAY_POINTS) ? OVERLAY_POINTS : [];
+      const s = pts.slice().filter(p => p && Number.isFinite(Number(p.dist)));
+      s.sort((a, b) => Number(a.dist) - Number(b.dist));
+      TOUR_HOVER_POINTS_SORTED = s;
+      TOUR_HOVER_POINTS_DIRTY = false;
+      return TOUR_HOVER_POINTS_SORTED;
+    } catch (_) {
+      TOUR_HOVER_POINTS_SORTED = [];
+      TOUR_HOVER_POINTS_DIRTY = false;
+      return TOUR_HOVER_POINTS_SORTED;
+    }
+  }
+
+  function _tourSampleAtDist(dkm) {
+    const x = Number(dkm);
+    if (!Number.isFinite(x)) return null;
+    const pts = _tourHoverPointsSorted();
+    if (!pts || pts.length === 0) return null;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const lerpNum = (a, b, t) => (Number.isFinite(Number(a)) && Number.isFinite(Number(b)))
+      ? lerp(Number(a), Number(b), t)
+      : (Number.isFinite(Number(a)) ? Number(a) : (Number.isFinite(Number(b)) ? Number(b) : null));
+    if (pts.length === 1) {
+      const p = pts[0];
+      return {
+        dist: x,
+        temperature: Number.isFinite(Number(p.temperature)) ? Number(p.temperature) : null,
+        temp_hist_p25: Number.isFinite(Number(p.temp_hist_p25)) ? Number(p.temp_hist_p25) : null,
+        temp_hist_p75: Number.isFinite(Number(p.temp_hist_p75)) ? Number(p.temp_hist_p75) : null,
+        temp_day_p25: Number.isFinite(Number(p.temp_day_p25)) ? Number(p.temp_day_p25) : null,
+        temp_day_p75: Number.isFinite(Number(p.temp_day_p75)) ? Number(p.temp_day_p75) : null,
+        windSpeed: Number.isFinite(Number(p.windSpeed)) ? Number(p.windSpeed) : null,
+        windDir: Number.isFinite(Number(p.windDir)) ? Number(p.windDir) : null,
+        rainProb: Number.isFinite(Number(p.rainProb)) ? Number(p.rainProb) : null,
+        rainTypical: Number.isFinite(Number(p.rainTypical)) ? Number(p.rainTypical) : (Number.isFinite(Number(p.precipMm)) ? Number(p.precipMm) : null),
+        rain_hist_p25_mm: Number.isFinite(Number(p.rain_hist_p25_mm)) ? Number(p.rain_hist_p25_mm) : null,
+        rain_hist_p75_mm: Number.isFinite(Number(p.rain_hist_p75_mm)) ? Number(p.rain_hist_p75_mm) : null,
+        rain_hist_p90_mm: Number.isFinite(Number(p.rain_hist_p90_mm)) ? Number(p.rain_hist_p90_mm) : null,
+        yearsStart: Number.isFinite(Number(p.yearsStart)) ? Number(p.yearsStart) : null,
+        yearsEnd: Number.isFinite(Number(p.yearsEnd)) ? Number(p.yearsEnd) : null,
+        matchDays: Number.isFinite(Number(p.matchDays)) ? Number(p.matchDays) : null,
+      };
+    }
+    let lo = 0, hi = pts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (Number(pts[mid].dist) <= x) lo = mid; else hi = mid - 1;
+    }
+    const i0 = lo;
+    const i1 = Math.min(pts.length - 1, i0 + 1);
+    const p0 = pts[i0];
+    const p1 = pts[i1];
+    const d0 = Number(p0.dist);
+    const d1 = Number(p1.dist);
+    if (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) {
+      return {
+        dist: x,
+        temperature: Number.isFinite(Number(p0.temperature)) ? Number(p0.temperature) : null,
+        temp_hist_p25: Number.isFinite(Number(p0.temp_hist_p25)) ? Number(p0.temp_hist_p25) : null,
+        temp_hist_p75: Number.isFinite(Number(p0.temp_hist_p75)) ? Number(p0.temp_hist_p75) : null,
+        temp_day_p25: Number.isFinite(Number(p0.temp_day_p25)) ? Number(p0.temp_day_p25) : null,
+        temp_day_p75: Number.isFinite(Number(p0.temp_day_p75)) ? Number(p0.temp_day_p75) : null,
+        windSpeed: Number.isFinite(Number(p0.windSpeed)) ? Number(p0.windSpeed) : null,
+        windDir: Number.isFinite(Number(p0.windDir)) ? Number(p0.windDir) : null,
+        rainProb: Number.isFinite(Number(p0.rainProb)) ? Number(p0.rainProb) : null,
+        rainTypical: Number.isFinite(Number(p0.rainTypical)) ? Number(p0.rainTypical) : (Number.isFinite(Number(p0.precipMm)) ? Number(p0.precipMm) : null),
+        rain_hist_p25_mm: Number.isFinite(Number(p0.rain_hist_p25_mm)) ? Number(p0.rain_hist_p25_mm) : null,
+        rain_hist_p75_mm: Number.isFinite(Number(p0.rain_hist_p75_mm)) ? Number(p0.rain_hist_p75_mm) : null,
+        rain_hist_p90_mm: Number.isFinite(Number(p0.rain_hist_p90_mm)) ? Number(p0.rain_hist_p90_mm) : null,
+        yearsStart: Number.isFinite(Number(p0.yearsStart)) ? Number(p0.yearsStart) : null,
+        yearsEnd: Number.isFinite(Number(p0.yearsEnd)) ? Number(p0.yearsEnd) : null,
+        matchDays: Number.isFinite(Number(p0.matchDays)) ? Number(p0.matchDays) : null,
+      };
+    }
+    const t = clamp((x - d0) / (d1 - d0), 0, 1);
+    return {
+      dist: x,
+      temperature: lerpNum(p0.temperature, p1.temperature, t),
+      temp_hist_p25: lerpNum(p0.temp_hist_p25, p1.temp_hist_p25, t),
+      temp_hist_p75: lerpNum(p0.temp_hist_p75, p1.temp_hist_p75, t),
+      temp_day_p25: lerpNum(p0.temp_day_p25, p1.temp_day_p25, t),
+      temp_day_p75: lerpNum(p0.temp_day_p75, p1.temp_day_p75, t),
+      windSpeed: lerpNum(p0.windSpeed, p1.windSpeed, t),
+      windDir: lerpNum(p0.windDir, p1.windDir, t),
+      rainProb: lerpNum(p0.rainProb, p1.rainProb, t),
+      rainTypical: lerpNum((p0.rainTypical ?? p0.precipMm), (p1.rainTypical ?? p1.precipMm), t),
+      rain_hist_p25_mm: lerpNum(p0.rain_hist_p25_mm, p1.rain_hist_p25_mm, t),
+      rain_hist_p75_mm: lerpNum(p0.rain_hist_p75_mm, p1.rain_hist_p75_mm, t),
+      rain_hist_p90_mm: lerpNum(p0.rain_hist_p90_mm, p1.rain_hist_p90_mm, t),
+      yearsStart: (p0.yearsStart ?? p1.yearsStart ?? null),
+      yearsEnd: (p0.yearsEnd ?? p1.yearsEnd ?? null),
+      matchDays: (p0.matchDays ?? p1.matchDays ?? null),
+    };
+  }
+
+  function _tourDayIndexAtDist(dkm) {
+    const d = Number(dkm);
+    if (!Number.isFinite(d)) return 0;
+    try {
+      const bounds = Array.isArray(LAST_PROFILE && LAST_PROFILE.day_boundaries) ? LAST_PROFILE.day_boundaries : [];
+      if (!bounds.length) return 0;
+      const marks = bounds.map(b => Number(b.distance_km || 0)).filter(v => Number.isFinite(v));
+      let dayIdx = marks.findIndex(m => d < m);
+      if (dayIdx === -1 || dayIdx < 0) dayIdx = marks.length;
+      return Math.max(0, dayIdx);
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function _tourDateStrForDayIdx(dayIdx) {
+    try {
+      const base = startDateInput && startDateInput.value ? new Date(startDateInput.value) : null;
+      if (!base) return '-';
+      const d = new Date(base);
+      d.setDate(d.getDate() + Number(dayIdx || 0));
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${dd}.${mm}`;
+    } catch (_) {
+      return '-';
+    }
+  }
+
+  function _tourEffectiveWind(sample, dkm) {
+    try {
+      if (!sample) return null;
+      const wspd = Number(sample.windSpeed);
+      const wdir = Number(sample.windDir);
+      if (!Number.isFinite(wspd) || !Number.isFinite(wdir)) return null;
+      const sd = Array.isArray(LAST_PROFILE && LAST_PROFILE.sampled_dist_km) ? LAST_PROFILE.sampled_dist_km : [];
+      const sh = Array.isArray(LAST_PROFILE && LAST_PROFILE.sampled_heading_deg) ? LAST_PROFILE.sampled_heading_deg : [];
+      if (!sd.length || sh.length !== sd.length) return null;
+      const xRoute = Number(dkm);
+      if (!Number.isFinite(xRoute)) return null;
+
+      // Distances in LAST_PROFILE.sampled_dist_km are in the profile sampling domain,
+      // while callers often pass route-km (based on ROUTE_CUM_DISTS). If these differ,
+      // we must scale to index the correct heading.
+      let x = xRoute;
+      try {
+        const profLen = Number(sd[sd.length - 1] || 0);
+        const routeLen = (Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length >= 2)
+          ? Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0)
+          : 0;
+        const scale2 = (Number.isFinite(routeLen) && Number.isFinite(profLen) && profLen > 0) ? (routeLen / profLen) : 1;
+        if (Number.isFinite(scale2) && scale2 > 0) x = xRoute / scale2;
+      } catch (_) {}
+      let lo = 0, hi = sd.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (Number(sd[mid]) < x) lo = mid + 1; else hi = mid;
+      }
+      const routeDir = Number(sh[Math.max(0, Math.min(sh.length - 1, lo))] || 0);
+      if (!Number.isFinite(routeDir)) return null;
+      // Convert wind "from" to "to" direction (+180°) before projection.
+      const wdirTo = ((wdir + 180.0) % 360.0);
+      const ang = (wdirTo - routeDir) * Math.PI / 180.0;
+      const comp = wspd * Math.cos(ang);
+      return Number.isFinite(comp) ? comp : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _tourProjectRouteRibbon(m) {
+    try {
+      if (!m || !LAST_PROFILE || !Array.isArray(LAST_PROFILE.sampled_points) || !Array.isArray(LAST_PROFILE.sampled_dist_km)) return null;
+      const coords = LAST_PROFILE.sampled_points;
+      const dists = LAST_PROFILE.sampled_dist_km;
+      if (coords.length < 2 || dists.length !== coords.length) return null;
+      const out = new Array(coords.length);
+      for (let i = 0; i < coords.length; i++) {
+        const c = coords[i];
+        if (!c) continue;
+        // Backend profile emits sampled_points as [lon, lat]
+        const lon = Array.isArray(c) ? Number(c[0]) : Number(c.lng);
+        const lat = Array.isArray(c) ? Number(c[1]) : Number(c.lat);
+        const p = m.latLngToContainerPoint([lat, lon]);
+        out[i] = { x: Number(p.x), y: Number(p.y), dist: Number(dists[i]) };
+      }
+      return out.filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.dist));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _dist2PointToSeg(px, py, ax, ay, bx, by) {
+    const vx = bx - ax;
+    const vy = by - ay;
+    const wx = px - ax;
+    const wy = py - ay;
+    const c2 = vx * vx + vy * vy;
+    if (!(c2 > 1e-6)) {
+      const dx = px - ax;
+      const dy = py - ay;
+      return { t: 0, x: ax, y: ay, d2: dx * dx + dy * dy };
+    }
+    let t = (wx * vx + wy * vy) / c2;
+    t = Math.max(0, Math.min(1, t));
+    const qx = ax + t * vx;
+    const qy = ay + t * vy;
+    const dx = px - qx;
+    const dy = py - qy;
+    return { t, x: qx, y: qy, d2: dx * dx + dy * dy };
+  }
+
+  function _nearestOnRibbon(x, y, ribbon, lastSegIdx, nearRadiusPx) {
+    const rib = ribbon;
+    if (!rib || rib.length < 2) return null;
+    const nSeg = rib.length - 1;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const center = clamp(Number(lastSegIdx || 0), 0, Math.max(0, nSeg - 1));
+    let best = null;
+    const scan = (i0, i1) => {
+      for (let i = i0; i <= i1; i++) {
+        const a = rib[i];
+        const b = rib[i + 1];
+        if (!a || !b) continue;
+        const r = _dist2PointToSeg(x, y, a.x, a.y, b.x, b.y);
+        if (!best || r.d2 < best.d2) {
+          const d0 = Number(a.dist);
+          const d1 = Number(b.dist);
+          const dist = (Number.isFinite(d0) && Number.isFinite(d1)) ? (d0 + r.t * (d1 - d0)) : d0;
+          best = { dist, d2: r.d2, segIdx: i, qx: r.x, qy: r.y };
+        }
+      }
+    };
+    scan(Math.max(0, center - 60), Math.min(nSeg - 1, center + 60));
+    // If the local scan yields a segment far away from the cursor,
+    // fall back to a full scan. This prevents rare misses when the user
+    // jumps to a distant part of the route (lastSegIdx becomes stale).
+    try {
+      const r = Number(nearRadiusPx);
+      if (best && Number.isFinite(r) && r > 0) {
+        const limit2 = (r * 3.0) * (r * 3.0); // 3x activation radius
+        if (Number(best.d2) > limit2) {
+          best = null;
+        }
+      }
+    } catch (_) {}
+    if (!best) scan(0, nSeg - 1);
+    return best;
+  }
+
+  function _offsetRibbonRight(ribbon, offsetPx) {
+    try {
+      const rib = ribbon;
+      const n = rib ? rib.length : 0;
+      if (n < 2) return null;
+      const off = Number(offsetPx);
+      if (!Number.isFinite(off)) return null;
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const p = rib[i];
+        const pPrev = rib[Math.max(0, i - 1)];
+        const pNext = rib[Math.min(n - 1, i + 1)];
+        const dx = Number(pNext.x) - Number(pPrev.x);
+        const dy = Number(pNext.y) - Number(pPrev.y);
+        const Ls = Math.hypot(dx, dy);
+        if (!(Ls > 1e-3)) {
+          out[i] = { x: Number(p.x), y: Number(p.y), dist: Number(p.dist) };
+          continue;
+        }
+        const nx = dy / Ls;
+        const ny = -dx / Ls;
+        out[i] = { x: Number(p.x) + nx * off, y: Number(p.y) + ny * off, dist: Number(p.dist) };
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _tourIsActive() {
+    try {
+      return (document.body && document.body.dataset && document.body.dataset.mode)
+        ? (document.body.dataset.mode === 'tour')
+        : false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _tourWantBands() {
+    try {
+      return _tourIsActive() && SETTINGS && (String(SETTINGS.weatherVisualizationMode || 'glyphs') === 'bands');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _tourWindComponentColor(compMs) {
+    const v = Number(compMs);
+    if (!Number.isFinite(v)) return 'rgba(120,120,120,0.55)';
+    const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+    // Faster ramp and higher opacity so the wind lane reads well on a white background.
+    const t = clamp(Math.abs(v) / 6.0, 0, 1);
+    const lerp = (a, b, u) => Math.round(a + (b - a) * u);
+    const base = [190, 190, 190];
+    const head = [255, 80, 65];
+    const tail = [55, 220, 120];
+    const target = (v < 0) ? head : tail;
+    const r = lerp(base[0], target[0], t);
+    const g = lerp(base[1], target[1], t);
+    const b = lerp(base[2], target[2], t);
+    const a = 0.92;
+    return `rgba(${r},${g},${b},${a})`;
+  }
+
+  function _makeTourBandsLayer() {
+    const Layer = L.Layer.extend({
+      onAdd: function(m) {
+        this._map = m;
+        // Pane above route vectors, below markers.
+        try {
+          if (!m.getPane('wmBandsPane')) {
+            m.createPane('wmBandsPane');
+            m.getPane('wmBandsPane').style.zIndex = '450';
+            try { m.getPane('wmBandsPane').classList.add('leaflet-zoom-animated'); } catch (_) {}
+          }
+        } catch (_) {}
+
+        this._container = L.DomUtil.create('div', 'wm-tour-bands');
+        this._container.style.position = 'absolute';
+        this._container.style.left = '0';
+        this._container.style.top = '0';
+        this._container.style.pointerEvents = 'none';
+
+        this._canvasBand = L.DomUtil.create('canvas', '', this._container);
+        this._canvasBand.style.position = 'absolute';
+        this._canvasBand.style.left = '0';
+        this._canvasBand.style.top = '0';
+        this._canvasBand.style.width = '100%';
+        this._canvasBand.style.height = '100%';
+        this._canvasBand.style.zIndex = '1';
+
+        this._canvasWind = L.DomUtil.create('canvas', '', this._container);
+        this._canvasWind.style.position = 'absolute';
+        this._canvasWind.style.left = '0';
+        this._canvasWind.style.top = '0';
+        this._canvasWind.style.width = '100%';
+        this._canvasWind.style.height = '100%';
+        // Wind must never cover the temperature band or rain symbols.
+        this._canvasWind.style.zIndex = '0';
+
+        // Legend: use a Leaflet control so it stays screen-fixed during drag.
+        this._legendControl = L.control({ position: 'topright' });
+        this._legendEl = null;
+        this._legendControl.onAdd = () => {
+          const el = L.DomUtil.create('div', 'wm-tour-bands-legend');
+          el.style.background = 'rgba(255,255,255,0.90)';
+          el.style.borderRadius = '10px';
+          el.style.padding = '10px';
+          el.style.fontSize = '11px';
+          el.style.lineHeight = '1.25';
+          el.style.color = '#111';
+          el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)';
+          el.style.pointerEvents = 'auto';
+          el.innerHTML = `
+            <div style="font-weight:600;margin-bottom:6px;">Legend</div>
+            <div style="margin-bottom:8px;">
+              <div style="font-weight:600;margin-bottom:3px;">Temperature</div>
+              <div style="width:160px;height:10px;border-radius:6px;background:linear-gradient(90deg,#963cbe 0%,#005bff 17%,#28a050 58%,#f0dc50 75%,#f59b3c 83%,#d73c2d 92%,#8b0000 100%);"></div>
+              <div style="display:flex;justify-content:space-between;margin-top:4px;opacity:0.85;">
+                <span>-10</span><span>0</span><span>20</span><span>40 °C</span>
+              </div>
+            </div>
+            <div style="margin-bottom:8px;">
+              <div style="font-weight:600;margin-bottom:3px;">Rain</div>
+              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <span style="display:inline-flex;gap:3px;align-items:center;width:44px;">
+                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
+                </span>
+                <span style="opacity:0.9;">1–3 mm</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <span style="display:inline-flex;gap:3px;align-items:center;width:44px;">
+                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
+                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
+                </span>
+                <span style="opacity:0.9;">3–8 mm</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <span style="display:inline-flex;gap:3px;align-items:center;width:44px;">
+                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
+                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
+                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
+                </span>
+                <span style="opacity:0.9;">&gt;8 mm</span>
+              </div>
+            </div>
+            <div>
+              <div style="font-weight:600;margin-bottom:3px;">Wind</div>
+              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <span style="display:inline-block;width:28px;height:6px;border-radius:4px;background:rgba(95,174,106,0.80);border:1px solid rgba(255,255,255,0.85);"></span>
+                <span style="opacity:0.9;">tailwind</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <span style="display:inline-block;width:28px;height:6px;border-radius:4px;background:rgba(200,106,106,0.80);border:1px solid rgba(255,255,255,0.85);"></span>
+                <span style="opacity:0.9;">headwind</span>
+              </div>
+              <div style="opacity:0.85;">Arrow shows direction</div>
+            </div>`;
+          try { L.DomEvent.disableClickPropagation(el); } catch (_) {}
+          try { L.DomEvent.disableScrollPropagation(el); } catch (_) {}
+          this._legendEl = el;
+          return el;
+        };
+        try { this._legendControl.addTo(m); } catch (_) {}
+
+        const pane = (m.getPane && m.getPane('wmBandsPane')) ? m.getPane('wmBandsPane') : m.getPanes().overlayPane;
+        pane.appendChild(this._container);
+
+        this._anim = null;
+        this._lastAnimTs = null;
+        this._windSites = [];
+        this._ribbon = null;
+        this._pointAtDist = null;
+        this._sampleAtDist = null;
+        this._bandWidthAtDist = null;
+        this._tangentAngleAtDist = null;
+        this._tooltip = null;
+        this._tipEl = null;
+        this._dbgEl = null;
+        this._lastTooltipTs = 0;
+        this._onMouseMove = null;
+        this._onMouseLeave = null;
+        this._lastHoverSegIdx = 0;
+        this._lastHoverSegIdxRoute = 0;
+        this._hoverRouteRibbon = null;
+        this._hoverBandRibbon = null;
+        this._hoverGeomValid = false;
+        this._lastDbgLogTs = 0;
+
+        m.on('moveend zoomend resize', this._reset, this);
+        // Tooltip support (hover near band).
+        const _mapRect = () => {
+          try {
+            const c = m && m.getContainer ? m.getContainer() : null;
+            return c ? c.getBoundingClientRect() : null;
+          } catch (_) {
+            return null;
+          }
+        };
+        const _tourDbgEnabled = () => {
+          try { return String(localStorage.getItem('wm_debug_tour_tooltip') || '') === '1'; } catch (_) { return false; }
+        };
+        const _ensureTourDbgEl = () => {
+          try {
+            if (this._dbgEl) return this._dbgEl;
+            if (!_tourDbgEnabled()) return null;
+            const el = document.createElement('div');
+            el.className = 'wm-tour-bands-debug';
+            el.style.position = 'fixed';
+            const r = _mapRect();
+            el.style.left = `${Math.round((r ? r.left : 0) + 8)}px`;
+            el.style.top = `${Math.round((r ? r.top : 0) + 8)}px`;
+            el.style.zIndex = '10001';
+            el.style.pointerEvents = 'none';
+            el.style.padding = '6px 8px';
+            el.style.borderRadius = '10px';
+            el.style.background = 'rgba(0,0,0,0.55)';
+            el.style.color = 'white';
+            el.style.font = '11px system-ui, -apple-system, sans-serif';
+            el.style.whiteSpace = 'pre';
+            el.style.display = 'none';
+            try { document.body.appendChild(el); } catch (_) {}
+            this._dbgEl = el;
+            return el;
+          } catch (_) {
+            return null;
+          }
+        };
+        const _ensureTipEl = () => {
+          if (this._tipEl) return this._tipEl;
+          this._tipEl = document.createElement('div');
+          this._tipEl.className = 'wm-tour-bands-tip';
+          this._tipEl.style.position = 'fixed';
+          this._tipEl.style.zIndex = '10000';
+          this._tipEl.style.pointerEvents = 'none';
+          this._tipEl.style.background = 'rgba(255,255,255,0.97)';
+          this._tipEl.style.border = '1px solid rgba(0,0,0,0.14)';
+          this._tipEl.style.borderRadius = '10px';
+          this._tipEl.style.padding = '8px 10px';
+          this._tipEl.style.font = '13px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
+          this._tipEl.style.fontWeight = '400';
+          this._tipEl.style.lineHeight = '1.28';
+          this._tipEl.style.color = '#111';
+          this._tipEl.style.boxShadow = '0 2px 10px rgba(0,0,0,0.16)';
+          this._tipEl.style.display = 'none';
+          this._tipEl.style.maxWidth = '260px';
+          // Smooth movement: position with transforms (GPU-friendly) and update at most once per frame.
+          this._tipEl.style.left = '0px';
+          this._tipEl.style.top = '0px';
+          this._tipEl.style.willChange = 'transform';
+          this._tipEl.style.transform = 'translate3d(0px, 0px, 0px)';
+          try { document.body.appendChild(this._tipEl); } catch (_) {}
+          return this._tipEl;
+        };
+
+        const _scheduleTipPos = (leftPx, topPx) => {
+          try {
+            this._tipNextLeft = Number(leftPx);
+            this._tipNextTop = Number(topPx);
+            if (this._tipPosRaf) return;
+            this._tipPosRaf = requestAnimationFrame(() => {
+              this._tipPosRaf = 0;
+              const el = this._tipEl;
+              if (!el) return;
+              const x2 = Number(this._tipNextLeft);
+              const y2 = Number(this._tipNextTop);
+              if (!Number.isFinite(x2) || !Number.isFinite(y2)) return;
+              el.style.transform = `translate3d(${x2}px, ${y2}px, 0px)`;
+            });
+          } catch (_) {}
+        };
+
+        this._onMouseMove = (e) => {
+          const dbg = _tourDbgEnabled();
+          const dbgEl = _ensureTourDbgEl();
+          let dbgText = '';
+          try {
+            if (dbgEl && dbg) {
+              const r = _mapRect();
+              if (r) {
+                dbgEl.style.left = `${Math.round(r.left + 8)}px`;
+                dbgEl.style.top = `${Math.round(r.top + 8)}px`;
+              }
+            }
+            // Tooltip should work in Tour Planning mode even when bands are off.
+            if (!_tourIsActive()) {
+              try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
+              try { m.getContainer().style.cursor = ''; } catch (_) {}
+              if (dbgEl && dbg) { dbgEl.style.display = 'block'; dbgEl.textContent = 'TOUR tooltip: not in tour mode'; }
+              return;
+            }
+            // Ensure we have some route geometry to hit-test.
+            const wantBandHover = _tourWantBands() && TOUR_BANDS_ENABLED;
+            if (!this._hoverGeomValid) {
+              try {
+                const rr = _tourProjectRouteRibbon(m);
+                this._hoverRouteRibbon = rr;
+                // Match draw() offset: TEMP_BAND_WIDTH_PX=8 => bandOffsetPx = 8*0.5 + 6 = 10
+                this._hoverBandRibbon = (wantBandHover && rr) ? _offsetRibbonRight(rr, 10) : null;
+                this._hoverGeomValid = true;
+              } catch (_) {
+                this._hoverRouteRibbon = null;
+                this._hoverBandRibbon = null;
+                this._hoverGeomValid = true;
+              }
+            }
+            const haveRoute = !!(this._hoverRouteRibbon && this._hoverRouteRibbon.length >= 2);
+            const haveBand = !!(wantBandHover && this._hoverBandRibbon && this._hoverBandRibbon.length >= 2);
+            if (!haveRoute && !haveBand) {
+              try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
+              try { m.getContainer().style.cursor = ''; } catch (_) {}
+              if (dbgEl && dbg) {
+                dbgEl.style.display = 'block';
+                dbgEl.textContent = 'TOUR tooltip: no route/band geometry yet';
+              }
+              return;
+            }
+            const cp = (e && e.containerPoint) ? e.containerPoint : null;
+            const x = cp ? Number(cp.x) : NaN;
+            const y = cp ? Number(cp.y) : NaN;
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+
+            let latlng = null;
+            try { latlng = (e && e.latlng) ? e.latlng : m.containerPointToLatLng(cp); } catch (_) {}
+
+            const thrPx = Math.max(8, Math.min(200, _mmToPx(10)));
+
+            if (dbgEl && dbg) {
+              dbgEl.style.display = 'block';
+              dbgText += `mousemove @ ${Math.round(x)},${Math.round(y)}\n`;
+            } else if (dbgEl) {
+              dbgEl.style.display = 'none';
+            }
+
+            // Hit-test against both the GPX route centerline and the temperature band.
+            const bestBand = haveBand ? _nearestOnRibbon(x, y, this._hoverBandRibbon, this._lastHoverSegIdx, thrPx) : null;
+            const bestRoute = haveRoute ? _nearestOnRibbon(x, y, this._hoverRouteRibbon, this._lastHoverSegIdxRoute, thrPx) : null;
+            let best = null;
+            let bestType = null;
+            if (bestBand && bestRoute) {
+              if (bestBand.d2 <= bestRoute.d2) { best = bestBand; bestType = 'band'; } else { best = bestRoute; bestType = 'route'; }
+            } else if (bestBand) {
+              best = bestBand; bestType = 'band';
+            } else if (bestRoute) {
+              best = bestRoute; bestType = 'route';
+            }
+            if (!best || !Number.isFinite(best.dist)) {
+              try { if (this._tooltip && this._tooltip._map) m.removeLayer(this._tooltip); } catch (_) {}
+              try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
+              if (dbgEl && dbg) { dbgEl.textContent = dbgText + 'no best segment'; }
+              return;
+            }
+            if (bestType === 'band') this._lastHoverSegIdx = Number.isFinite(best.segIdx) ? best.segIdx : this._lastHoverSegIdx;
+            if (bestType === 'route') this._lastHoverSegIdxRoute = Number.isFinite(best.segIdx) ? best.segIdx : this._lastHoverSegIdxRoute;
+
+            const dPx = Math.sqrt(Number(best.d2) || 0);
+            const dBandPx = bestBand ? Math.sqrt(Number(bestBand.d2) || 0) : null;
+            const dRoutePx = bestRoute ? Math.sqrt(Number(bestRoute.d2) || 0) : null;
+
+            if (dPx > thrPx) {
+              try { if (this._tooltip && this._tooltip._map) m.removeLayer(this._tooltip); } catch (_) {}
+              try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
+              try { m.getContainer().style.cursor = ''; } catch (_) {}
+              if (dbgEl && dbg) {
+                dbgEl.textContent = dbgText +
+                  `latlng=${latlng ? (latlng.lat.toFixed(5) + ',' + latlng.lng.toFixed(5)) : '-'}\n` +
+                  `dRoute=${dRoutePx===null?'-':Math.round(dRoutePx)}px dBand=${dBandPx===null?'-':Math.round(dBandPx)}px thr=${Math.round(thrPx)}px\n` +
+                  `outside activation (${bestType} d=${Math.round(dPx)}px)`;
+              }
+              return;
+            }
+
+            // Avoid the question-mark cursor; still show tooltip.
+            try { m.getContainer().style.cursor = 'pointer'; } catch (_) {}
+
+            const s = (this._sampleAtDist && typeof this._sampleAtDist === 'function')
+              ? (this._sampleAtDist(best.dist) || _tourSampleAtDist(best.dist))
+              : _tourSampleAtDist(best.dist);
+            // If sampling hasn't arrived yet for this distance, keep a small placeholder
+            // so the user can tell they're within activation range.
+            const haveSample = !!s;
+
+            const dayIdx = _tourDayIndexAtDist(best.dist);
+            const dateStr = _tourDateStrForDayIdx(dayIdx);
+
+            const t = haveSample ? Number(s.temperature) : NaN;
+            const histLo = haveSample ? Number(s.temp_hist_p25) : NaN;
+            const histHi = haveSample ? Number(s.temp_hist_p75) : NaN;
+            const dayLo = haveSample ? Number(s.temp_day_p25) : NaN;
+            const dayHi = haveSample ? Number(s.temp_day_p75) : NaN;
+            const typicalLo = (Number.isFinite(histLo) && Number.isFinite(histHi)) ? histLo : (Number.isFinite(dayLo) ? dayLo : null);
+            const typicalHi = (Number.isFinite(histLo) && Number.isFinite(histHi)) ? histHi : (Number.isFinite(dayHi) ? dayHi : null);
+            const iqr = (Number.isFinite(typicalLo) && Number.isFinite(typicalHi)) ? (typicalHi - typicalLo) : null;
+            const warmHint = (Number.isFinite(iqr) && iqr >= 7)
+              ? (Number(typicalHi) + 0.5 * Number(iqr))
+              : null;
+            const coldHint = (Number.isFinite(iqr) && iqr >= 7)
+              ? (Number(typicalLo) - 0.5 * Number(iqr))
+              : null;
+
+            const mm = haveSample ? Number(s.rainTypical) : NaN;
+            const rainP = haveSample ? Number(s.rainProb) : NaN;
+            const rainLo = haveSample ? Number(s.rain_hist_p25_mm) : NaN;
+            const rainHi = haveSample ? Number(s.rain_hist_p75_mm) : NaN;
+            const rainP90 = haveSample ? Number(s.rain_hist_p90_mm) : NaN;
+            const rainSpanLo = (Number.isFinite(rainLo) && Number.isFinite(rainHi)) ? rainLo : null;
+            const rainSpanHi = (Number.isFinite(rainLo) && Number.isFinite(rainHi)) ? rainHi : null;
+            const rainSomeYears = (Number.isFinite(rainP90) && Number.isFinite(rainSpanHi)) ? rainP90 : null;
+
+            const comp = haveSample ? _tourEffectiveWind(s, best.dist) : null;
+            const wspd = haveSample ? Number(s.windSpeed) : NaN;
+            const wdir = haveSample ? Number(s.windDir) : NaN;
+            const windTxt = (Number.isFinite(wspd) && Number.isFinite(wdir) && Number.isFinite(comp))
+              ? `${wspd.toFixed(1)} m/s @ ${Math.round(wdir)}° (${(comp >= 0) ? 'tailwind' : 'headwind'} ${Math.abs(comp).toFixed(1)} m/s)`
+              : (Number.isFinite(wspd) && Number.isFinite(wdir))
+                ? `${wspd.toFixed(1)} m/s @ ${Math.round(wdir)}°`
+                : (Number.isFinite(comp)
+                  ? `${(comp >= 0) ? 'tailwind' : 'headwind'} ${Math.abs(comp).toFixed(1)} m/s`
+                  : '—');
+
+            const yearsTxt = (Number.isFinite(Number(s.yearsStart)) && Number.isFinite(Number(s.yearsEnd)))
+              ? `${Math.round(Number(s.yearsStart))}–${Math.round(Number(s.yearsEnd))}`
+              : null;
+            const nTxt = Number.isFinite(Number(s.matchDays)) ? ` (n=${Math.round(Number(s.matchDays))})` : '';
+
+            const whichTxt = (bestType === 'band' && wantBandHover) ? 'temperature band' : 'route';
+            const htmlKey = `${Math.round(best.dist * 10) / 10}|${dayIdx}|${wantBandHover ? 'b' : 'r'}|${haveSample ? '1' : '0'}`;
+            const html = haveSample ? `
+              <div style="margin-bottom:2px;">Day ${dayIdx + 1} — ${dateStr}</div>
+              <div style="opacity:0.85;margin-bottom:4px;">${Math.round(best.dist)} km • ${whichTxt}</div>
+              <div>Temp: ${Number.isFinite(t) ? Math.round(t) : '—'}°C</div>
+              ${(Number.isFinite(typicalLo) && Number.isFinite(typicalHi))
+                ? `<div style="opacity:0.90;">Typical: ${Math.round(typicalLo)}–${Math.round(typicalHi)}°C</div>`
+                : ''}
+              ${(Number.isFinite(warmHint) && Number.isFinite(typicalHi) && (warmHint - typicalHi) >= 3)
+                ? `<div style="opacity:0.85;">Warm years: up to about ${Math.round(warmHint)}°C</div>`
+                : ''}
+              ${(Number.isFinite(coldHint) && Number.isFinite(typicalLo) && (typicalLo - coldHint) >= 3)
+                ? `<div style="opacity:0.85;">Cold years: down to about ${Math.round(coldHint)}°C</div>`
+                : ''}
+              <div>Wind: ${windTxt}</div>
+              <div>Rain: ${Number.isFinite(mm) ? `${mm.toFixed(1)} mm` : '—'}${Number.isFinite(rainP) ? ` (p=${Math.round(rainP * 100)}%)` : ''}</div>
+              ${(Number.isFinite(rainSpanLo) && Number.isFinite(rainSpanHi))
+                ? `<div style="opacity:0.90;">Typical: ${rainSpanLo.toFixed(1)}–${rainSpanHi.toFixed(1)} mm</div>`
+                : ''}
+              ${(Number.isFinite(rainSomeYears) && Number.isFinite(rainSpanHi) && (rainSomeYears - rainSpanHi) >= 1.5 && rainSomeYears >= 2.0)
+                ? `<div style="opacity:0.85;">Some years: up to about ${rainSomeYears.toFixed(1)} mm</div>`
+                : ''}
+              ${yearsTxt ? `<div style="opacity:0.75;margin-top:4px;">Years: ${yearsTxt}${nTxt}</div>` : ''}
+            ` : `
+              <div style="margin-bottom:2px;">Day ${dayIdx + 1} — ${dateStr}</div>
+              <div style="opacity:0.85;margin-bottom:4px;">${Math.round(best.dist)} km • ${whichTxt}</div>
+              <div style="opacity:0.85;">Loading weather…</div>
+            `;
+
+            const tipEl = _ensureTipEl();
+            if (tipEl._wmLastHtmlKey !== htmlKey || tipEl._wmLastHtml !== html) {
+              tipEl._wmLastHtmlKey = htmlKey;
+              tipEl._wmLastHtml = html;
+              tipEl.innerHTML = html;
+              // Cache size to reduce layout thrash during mousemove.
+              try {
+                this._tipW = tipEl.offsetWidth || this._tipW;
+                this._tipH = tipEl.offsetHeight || this._tipH;
+              } catch (_) {}
+            }
+            tipEl.style.display = 'block';
+
+            // Positioning: prefer above cursor; flip below if needed; clamp to map container.
+            const cont = m.getContainer();
+            const rect = cont ? cont.getBoundingClientRect() : null;
+            const cw = cont ? cont.clientWidth : 0;
+            const ch = cont ? cont.clientHeight : 0;
+            const pad = 8;
+            const baseLeft = (rect ? rect.left : 0) + x;
+            const baseTop = (rect ? rect.top : 0) + y;
+            let left = (baseLeft + 14);
+            let top = (baseTop - 12);
+            const tw = Number(this._tipW || tipEl.offsetWidth || 0);
+            const th = Number(this._tipH || tipEl.offsetHeight || 0);
+            // place above
+            top = (baseTop - 12 - th);
+            // flip below if clipped
+            if (ch && rect && (top < (rect.top + pad))) top = (baseTop + 18);
+            // clamp
+            if (cw && rect && (left + tw + pad) > (rect.left + cw)) left = Math.max(rect.left + pad, rect.left + cw - tw - pad);
+            if (cw && rect && left < (rect.left + pad)) left = rect.left + pad;
+            if (ch && rect && (top + th + pad) > (rect.top + ch)) top = Math.max(rect.top + pad, rect.top + ch - th - pad);
+            if (ch && rect && top < (rect.top + pad)) top = rect.top + pad;
+            _scheduleTipPos(left, top);
+
+            if (dbgEl && dbg) {
+              dbgEl.textContent = dbgText +
+                `latlng=${latlng ? (latlng.lat.toFixed(5) + ',' + latlng.lng.toFixed(5)) : '-'}\n` +
+                `dRoute=${dRoutePx===null?'-':Math.round(dRoutePx)}px dBand=${dBandPx===null?'-':Math.round(dBandPx)}px thr=${Math.round(thrPx)}px\n` +
+                `pick=${bestType} km=${best.dist.toFixed(1)} d=${Math.round(dPx)}px\n` +
+                `show tip @ ${Math.round(left)},${Math.round(top)}`;
+              try {
+                const now2 = Date.now();
+                if ((now2 - (this._lastDbgLogTs || 0)) > 600) {
+                  this._lastDbgLogTs = now2;
+                  console.log('[TOUR hover]', {
+                    x: Math.round(x), y: Math.round(y),
+                    lat: latlng ? Number(latlng.lat.toFixed(6)) : null,
+                    lon: latlng ? Number(latlng.lng.toFixed(6)) : null,
+                    dRoutePx: dRoutePx === null ? null : Math.round(dRoutePx),
+                    dBandPx: dBandPx === null ? null : Math.round(dBandPx),
+                    thrPx: Math.round(thrPx),
+                    pick: bestType,
+                    km: Number(best.dist.toFixed(2)),
+                  });
+                }
+              } catch (_) {}
+            }
+          } catch (err) {
+            if (dbg) {
+              try { console.error('TOUR tooltip mousemove failed', err); } catch (_) {}
+              try { if (dbgEl) { dbgEl.style.display = 'block'; dbgEl.textContent = (dbgText ? (dbgText + '\n') : '') + 'ERROR: ' + String(err && (err.message || err)); } } catch (_) {}
+            }
+          }
+        };
+        this._onMouseLeave = () => {
+          try { if (this._tooltip && this._tooltip._map) m.removeLayer(this._tooltip); } catch (_) {}
+          try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
+          try { m.getContainer().style.cursor = ''; } catch (_) {}
+        };
+        m.on('mousemove', this._onMouseMove);
+        try { m.getContainer().addEventListener('mouseleave', this._onMouseLeave); } catch (_) {}
+        this._reset();
+      },
+      onRemove: function(m) {
+        m.off('moveend zoomend resize', this._reset, this);
+        try { if (this._onMouseMove) m.off('mousemove', this._onMouseMove); } catch (_) {}
+        try { if (this._onMouseLeave) m.getContainer().removeEventListener('mouseleave', this._onMouseLeave); } catch (_) {}
+        try { if (this._tooltip && this._tooltip._map) m.removeLayer(this._tooltip); } catch (_) {}
+        try { if (this._tipEl) this._tipEl.remove(); } catch (_) {}
+        this._tipEl = null;
+        try { if (this._tipPosRaf) cancelAnimationFrame(this._tipPosRaf); } catch (_) {}
+        this._tipPosRaf = 0;
+        try { if (this._dbgEl) this._dbgEl.remove(); } catch (_) {}
+        this._dbgEl = null;
+        try { if (this._legendControl) m.removeControl(this._legendControl); } catch (_) {}
+        this._legendControl = null;
+        this._legendEl = null;
+        try { if (this._anim) cancelAnimationFrame(this._anim); } catch (_) {}
+        try { this._container && this._container.remove(); } catch (_) {}
+        this._map = null;
+      },
+      _reset: function() {
+        if (!this._map || !this._container) return;
+        const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+        L.DomUtil.setPosition(this._container, topLeft);
+        const size = this._map.getSize();
+        const dpr = (window.devicePixelRatio || 1);
+        this._container.style.width = `${size.x}px`;
+        this._container.style.height = `${size.y}px`;
+        this._canvasBand.width = Math.max(1, Math.floor(size.x * dpr));
+        this._canvasBand.height = Math.max(1, Math.floor(size.y * dpr));
+        this._canvasWind.width = Math.max(1, Math.floor(size.x * dpr));
+        this._canvasWind.height = Math.max(1, Math.floor(size.y * dpr));
+        // Invalidate hover geometry; it depends on pixel projection.
+        this._hoverGeomValid = false;
+        try { _scheduleTourBandsRedraw(); } catch (_) {}
+      },
+      clear: function() {
+        try { if (this._anim) cancelAnimationFrame(this._anim); } catch (_) {}
+        this._anim = null;
+        this._lastAnimTs = null;
+        this._windSites = [];
+        this._ribbon = null;
+        this._pointAtDist = null;
+        this._sampleAtDist = null;
+        this._bandWidthAtDist = null;
+        this._tangentAngleAtDist = null;
+        try { if (this._tooltip && this._tooltip._map && this._map) this._map.removeLayer(this._tooltip); } catch (_) {}
+        try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
+        try { if (this._legendEl) this._legendEl.style.display = 'none'; } catch (_) {}
+        const c1 = this._canvasBand.getContext('2d');
+        if (c1) {
+          c1.setTransform(1, 0, 0, 1, 0, 0);
+          c1.clearRect(0, 0, this._canvasBand.width, this._canvasBand.height);
+        }
+        const c2 = this._canvasWind.getContext('2d');
+        if (c2) {
+          c2.setTransform(1, 0, 0, 1, 0, 0);
+          c2.clearRect(0, 0, this._canvasWind.width, this._canvasWind.height);
+        }
+      },
+      draw: function(profile, points) {
+        if (!this._map) return;
+        const m = this._map;
+        const ctx = this._canvasBand.getContext('2d');
+        const windCtx = this._canvasWind.getContext('2d');
+        if (!ctx || !windCtx) return;
+
+        if (!TOUR_BANDS_ENABLED) {
+          try { this._container.style.display = 'none'; } catch (_) {}
+          this.clear();
+          return;
+        }
+        try { this._container.style.display = 'block'; } catch (_) {}
+        try { if (this._legendEl) this._legendEl.style.display = 'block'; } catch (_) {}
+
+        if (!profile || !Array.isArray(profile.sampled_points) || !Array.isArray(profile.sampled_dist_km)) {
+          this.clear();
+          return;
+        }
+        const coords = profile.sampled_points;
+        const dists = profile.sampled_dist_km;
+        if (coords.length < 2 || dists.length !== coords.length) {
+          this.clear();
+          return;
+        }
+        const pts = Array.isArray(points) ? points.slice() : [];
+        pts.sort((a, b) => Number(a.dist) - Number(b.dist));
+        if (!pts.length) {
+          this.clear();
+          return;
+        }
+
+        // Progressive rendering: only draw where we have station data.
+        const routeLenAll = Number(dists[dists.length - 1] || 0);
+        const ptsMinDist = Number(pts[0].dist);
+        const ptsMaxDist = Number(pts[pts.length - 1].dist);
+        const havePtsRange = Number.isFinite(ptsMinDist) && Number.isFinite(ptsMaxDist) && ptsMaxDist >= ptsMinDist;
+        const drawStartKm = havePtsRange ? Math.max(0, Math.min(routeLenAll, ptsMinDist)) : 0;
+        const drawEndKm = havePtsRange ? Math.max(0, Math.min(routeLenAll, ptsMaxDist)) : 0;
+
+        const z = Number(m.getZoom());
+        if (z < 5) {
+          this.clear();
+          return;
+        }
+
+        const dpr = (window.devicePixelRatio || 1);
+        const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+        const lerp = (a, b, t) => a + (b - a) * t;
+
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, this._canvasBand.width, this._canvasBand.height);
+        ctx.scale(dpr, dpr);
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+
+        windCtx.setTransform(1, 0, 0, 1, 0, 0);
+        windCtx.clearRect(0, 0, this._canvasWind.width, this._canvasWind.height);
+        windCtx.scale(dpr, dpr);
+
+        // Spec parameters
+        // Temperature band width: fixed (~2mm on typical displays) per latest UX request.
+        // Use a constant pixel width to remove variability from percentile spread.
+        const TEMP_BAND_WIDTH_PX = 8;
+        // Small, deterministic offset so the GPX route stays readable.
+        // Keep the near band edge ~6px away from the route.
+        const bandOffsetPx = (TEMP_BAND_WIDTH_PX * 0.5) + 6;
+        const stride = (z >= 12) ? 1 : ((z >= 9) ? 2 : 3);
+        // Less aggressive simplification at higher zoom to avoid geometric kinks.
+        const simplifyEps = clamp(10 - (z - 6) * 1.6, 1.5, 10);
+        const crSubdiv = (z >= 13) ? 4 : ((z >= 11) ? 5 : 7);
+
+        // Temperature palette: MUST match the profile overlay scale exactly.
+        const tempColorSpec = (t) => {
+          try { return tempColor(Number(t)); } catch (_) { return 'rgba(153,153,153,1)'; }
+        };
+
+        // RDP simplification
+        const rdpSimplify = (arr, eps) => {
+          if (!arr || arr.length < 3) return arr || [];
+          const e2 = Number(eps) * Number(eps);
+          const keep = new Array(arr.length).fill(false);
+          keep[0] = true;
+          keep[arr.length - 1] = true;
+          const dist2PointToSegment = (p, a, b) => {
+            const vx = b.x - a.x;
+            const vy = b.y - a.y;
+            const wx = p.x - a.x;
+            const wy = p.y - a.y;
+            const c1 = vx * wx + vy * wy;
+            if (c1 <= 0) {
+              const dx = p.x - a.x; const dy = p.y - a.y;
+              return dx*dx + dy*dy;
+            }
+            const c2 = vx * vx + vy * vy;
+            if (c2 <= c1) {
+              const dx = p.x - b.x; const dy = p.y - b.y;
+              return dx*dx + dy*dy;
+            }
+            const t = c1 / c2;
+            const px = a.x + t * vx;
+            const py = a.y + t * vy;
+            const dx = p.x - px;
+            const dy = p.y - py;
+            return dx*dx + dy*dy;
+          };
+          const stack = [[0, arr.length - 1]];
+          while (stack.length) {
+            const [i0, i1] = stack.pop();
+            let bestI = -1;
+            let bestD2 = -1;
+            const a = arr[i0];
+            const b = arr[i1];
+            for (let i = i0 + 1; i < i1; i++) {
+              const d2 = dist2PointToSegment(arr[i], a, b);
+              if (d2 > bestD2) { bestD2 = d2; bestI = i; }
+            }
+            if (bestI >= 0 && bestD2 > e2) {
+              keep[bestI] = true;
+              stack.push([i0, bestI]);
+              stack.push([bestI, i1]);
+            }
+          }
+          const out = [];
+          for (let i = 0; i < arr.length; i++) if (keep[i]) out.push(arr[i]);
+          return out;
+        };
+
+        // Catmull–Rom spline smoothing (geometry only; keep dist monotonic by linear interpolation).
+        const chaikinSmooth = (arr, iters) => {
+          let out = arr || [];
+          let k = Math.max(0, Math.floor(Number(iters) || 0));
+          while (k-- > 0 && out.length >= 3) {
+            const next = [out[0]];
+            for (let i = 0; i < out.length - 1; i++) {
+              const p = out[i];
+              const q = out[i + 1];
+              next.push(
+                {
+                  x: 0.75 * p.x + 0.25 * q.x,
+                  y: 0.75 * p.y + 0.25 * q.y,
+                  dist: 0.75 * Number(p.dist) + 0.25 * Number(q.dist),
+                },
+                {
+                  x: 0.25 * p.x + 0.75 * q.x,
+                  y: 0.25 * p.y + 0.75 * q.y,
+                  dist: 0.25 * Number(p.dist) + 0.75 * Number(q.dist),
+                }
+              );
+            }
+            next.push(out[out.length - 1]);
+            out = next;
+          }
+          return out;
+        };
+        const catmullRom = (arr, subdiv) => {
+          const n = arr ? arr.length : 0;
+          if (n < 4) return arr || [];
+          const out = [arr[0]];
+          const s = Math.max(1, Math.floor(Number(subdiv) || 1));
+          const crXY = (p0, p1, p2, p3, t) => {
+            const t2 = t * t;
+            const t3 = t2 * t;
+            const a0 = -0.5*t3 + t2 - 0.5*t;
+            const a1 =  1.5*t3 - 2.5*t2 + 1.0;
+            const a2 = -1.5*t3 + 2.0*t2 + 0.5*t;
+            const a3 =  0.5*t3 - 0.5*t2;
+            return {
+              x: a0*p0.x + a1*p1.x + a2*p2.x + a3*p3.x,
+              y: a0*p0.y + a1*p1.y + a2*p2.y + a3*p3.y,
+            };
+          };
+          for (let i = 0; i < n - 3; i++) {
+            const p0 = arr[i];
+            const p1 = arr[i + 1];
+            const p2 = arr[i + 2];
+            const p3 = arr[i + 3];
+            for (let j = 1; j <= s; j++) {
+              const t = j / (s + 1);
+              const q = crXY(p0, p1, p2, p3, t);
+              q.dist = Number(p1.dist) + t * (Number(p2.dist) - Number(p1.dist));
+              out.push(q);
+            }
+            out.push(p2);
+          }
+          out.push(arr[n - 1]);
+          return out;
+        };
+
+        const sampleAt = (dkm) => {
+          const x = Number(dkm);
+          if (!Number.isFinite(x) || pts.length === 0) return null;
+
+          // Do not extrapolate beyond what has been downloaded.
+          // This avoids an immediate full-length (but wrong) redraw early in SSE.
+          if (havePtsRange && (x < (drawStartKm - 1e-6) || x > (drawEndKm + 1e-6))) return null;
+
+          const asSample = (p, distOverride) => {
+            const dist = Number.isFinite(Number(distOverride)) ? Number(distOverride) : Number(p && p.dist);
+            const histP25 = (p && (p.temp_hist_p25 !== undefined)) ? Number(p.temp_hist_p25) : null;
+            const histP75 = (p && (p.temp_hist_p75 !== undefined)) ? Number(p.temp_hist_p75) : null;
+            const dayP25 = (p && (p.temp_day_p25 !== undefined)) ? Number(p.temp_day_p25) : null;
+            const dayP75 = (p && (p.temp_day_p75 !== undefined)) ? Number(p.temp_day_p75) : null;
+            const p25 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP25 : (Number.isFinite(histP25) ? histP25 : null);
+            const p75 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP75 : (Number.isFinite(histP75) ? histP75 : null);
+            return {
+              dist,
+              temperature: (p && (p.temperature !== undefined)) ? Number(p.temperature) : null,
+              temp_p25: p25,
+              temp_p75: p75,
+              temp_hist_p25: Number.isFinite(histP25) ? histP25 : null,
+              temp_hist_p75: Number.isFinite(histP75) ? histP75 : null,
+              temp_day_p25: Number.isFinite(dayP25) ? dayP25 : null,
+              temp_day_p75: Number.isFinite(dayP75) ? dayP75 : null,
+              windSpeed: (p && (p.windSpeed !== undefined)) ? Number(p.windSpeed) : null,
+              windDir: (p && (p.windDir !== undefined)) ? Number(p.windDir) : null,
+              rainProb: (p && (p.rainProb !== undefined)) ? Number(p.rainProb) : null,
+              rainTypical: (p && (p.rainTypical !== undefined)) ? Number(p.rainTypical) : ((p && (p.precipMm !== undefined)) ? Number(p.precipMm) : null),
+              rain_hist_p25_mm: (p && (p.rain_hist_p25_mm !== undefined)) ? Number(p.rain_hist_p25_mm) : null,
+              rain_hist_p75_mm: (p && (p.rain_hist_p75_mm !== undefined)) ? Number(p.rain_hist_p75_mm) : null,
+              rain_hist_p90_mm: (p && (p.rain_hist_p90_mm !== undefined)) ? Number(p.rain_hist_p90_mm) : null,
+              yearsStart: (p && (p.yearsStart !== undefined)) ? Number(p.yearsStart) : null,
+              yearsEnd: (p && (p.yearsEnd !== undefined)) ? Number(p.yearsEnd) : null,
+              matchDays: (p && (p.matchDays !== undefined)) ? Number(p.matchDays) : null,
+            };
+          };
+
+          if (pts.length === 1) return asSample(pts[0], x);
+          let lo = 0, hi = pts.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (Number(pts[mid].dist) <= x) lo = mid; else hi = mid - 1;
+          }
+          const i0 = lo;
+          const i1 = Math.min(pts.length - 1, i0 + 1);
+          const p0 = pts[i0];
+          const p1 = pts[i1];
+          const d0 = Number(p0.dist);
+          const d1 = Number(p1.dist);
+          if (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) return asSample(p0, x);
+          const t = clamp((x - d0) / (d1 - d0), 0, 1);
+          const lerpNum = (a, b) => (Number.isFinite(Number(a)) && Number.isFinite(Number(b)))
+            ? lerp(Number(a), Number(b), t)
+            : (Number.isFinite(Number(a)) ? Number(a) : (Number.isFinite(Number(b)) ? Number(b) : null));
+          // Keep both historical (multi-year) and ride-window spreads for the tooltip.
+          const histP25 = lerpNum(p0.temp_hist_p25, p1.temp_hist_p25);
+          const histP75 = lerpNum(p0.temp_hist_p75, p1.temp_hist_p75);
+          const dayP25 = lerpNum(p0.temp_day_p25, p1.temp_day_p25);
+          const dayP75 = lerpNum(p0.temp_day_p75, p1.temp_day_p75);
+          // Backwards-compatible fields used elsewhere: prefer daytime if available.
+          const p25 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP25 : histP25;
+          const p75 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP75 : histP75;
+          return {
+            dist: x,
+            temperature: lerpNum(p0.temperature, p1.temperature),
+            // Prefer ride-window (daytime) spread; fall back to historical spread.
+            temp_p25: p25,
+            temp_p75: p75,
+            // Explicit spreads for tooltip copy.
+            temp_hist_p25: histP25,
+            temp_hist_p75: histP75,
+            temp_day_p25: dayP25,
+            temp_day_p75: dayP75,
+            windSpeed: lerpNum(p0.windSpeed, p1.windSpeed),
+            windDir: lerpNum(p0.windDir, p1.windDir),
+            rainProb: lerpNum(p0.rainProb, p1.rainProb),
+            rainTypical: lerpNum((p0.rainTypical ?? p0.precipMm), (p1.rainTypical ?? p1.precipMm)),
+            rain_hist_p25_mm: lerpNum(p0.rain_hist_p25_mm, p1.rain_hist_p25_mm),
+            rain_hist_p75_mm: lerpNum(p0.rain_hist_p75_mm, p1.rain_hist_p75_mm),
+            rain_hist_p90_mm: lerpNum(p0.rain_hist_p90_mm, p1.rain_hist_p90_mm),
+            yearsStart: (p0.yearsStart ?? p1.yearsStart ?? null),
+            yearsEnd: (p0.yearsEnd ?? p1.yearsEnd ?? null),
+            matchDays: (p0.matchDays ?? p1.matchDays ?? null),
+          };
+        };
+
+        const routeHeadingAt = (dkm) => {
+          const sh = Array.isArray(profile.sampled_heading_deg) ? profile.sampled_heading_deg : null;
+          if (!sh || sh.length !== dists.length) return null;
+          const x = Number(dkm);
+          if (!Number.isFinite(x)) return null;
+          let lo = 0, hi = dists.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (Number(dists[mid]) < x) lo = mid + 1; else hi = mid;
+          }
+          const idx = clamp(lo, 0, sh.length - 1);
+          const h = Number(sh[idx]);
+          return Number.isFinite(h) ? h : null;
+        };
+
+        const windComponentAt = (sample, routeHeadingDeg) => {
+          if (!sample) return null;
+          const wspd = Number(sample.windSpeed);
+          const wdir = Number(sample.windDir);
+          const rh = Number(routeHeadingDeg);
+          if (!Number.isFinite(wspd) || !Number.isFinite(wdir) || !Number.isFinite(rh)) return null;
+          const wto = (wdir + 180.0) % 360.0;
+          const ang = (wto - rh) * Math.PI / 180.0;
+          return wspd * Math.cos(ang);
+        };
+
+        const llAtIdx = (i) => {
+          const c = coords[i];
+          if (!c || c.length < 2) return null;
+          const lon = Number(c[0]);
+          const lat = Number(c[1]);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+          return [lat, lon];
+        };
+
+        // Build display polyline and dedupe by distance.
+        const display = [];
+        let lastD = -1e99;
+        for (let i = 0; i < coords.length; i += stride) {
+          const dk = Number(dists[i]);
+          if (!Number.isFinite(dk) || dk <= lastD) continue;
+          const ll = llAtIdx(i);
+          if (!ll) continue;
+          const p = m.latLngToContainerPoint(ll);
+          if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+          display.push({ x: p.x, y: p.y, dist: dk });
+          lastD = dk;
+        }
+        if (display.length < 2) {
+          this.clear();
+          return;
+        }
+
+        // Smooth route pipeline (spec): RDP simplify -> Catmull-Rom -> resample (~1 km)
+        let ribbon = rdpSimplify(display, simplifyEps);
+        if (ribbon.length >= 4) ribbon = catmullRom(ribbon, crSubdiv);
+        const resampleByDist = (arr, stepKm) => {
+          try {
+            const step = Math.max(0.25, Number(stepKm) || 1.0);
+            if (!arr || arr.length < 2) return arr || [];
+            const dEnd = Number(arr[arr.length - 1].dist);
+            if (!Number.isFinite(dEnd) || dEnd <= 0) return arr;
+            const out = [];
+            let i = 0;
+            const lerpPt = (a, b, u) => ({
+              x: Number(a.x) + (Number(b.x) - Number(a.x)) * u,
+              y: Number(a.y) + (Number(b.y) - Number(a.y)) * u,
+            });
+            for (let d = 0; d <= dEnd; d += step) {
+              while (i < arr.length - 2 && Number(arr[i + 1].dist) < d) i++;
+              const a = arr[i];
+              const b = arr[Math.min(arr.length - 1, i + 1)];
+              const d0 = Number(a.dist);
+              const d1 = Number(b.dist);
+              if (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) {
+                out.push({ x: Number(a.x), y: Number(a.y), dist: d });
+                continue;
+              }
+              const u = clamp((d - d0) / (d1 - d0), 0, 1);
+              const p = lerpPt(a, b, u);
+              out.push({ x: p.x, y: p.y, dist: d });
+            }
+            // Ensure last point exactly at end distance.
+            if (out.length && out[out.length - 1].dist < dEnd) {
+              const last = arr[arr.length - 1];
+              out.push({ x: Number(last.x), y: Number(last.y), dist: dEnd });
+            }
+            return out;
+          } catch (_) {
+            return arr || [];
+          }
+        };
+        // Denser resampling reduces visible linear facets and helps normals vary smoothly.
+        ribbon = resampleByDist(ribbon, 0.5);
+        if (ribbon.length < 2) {
+          this.clear();
+          return;
+        }
+
+        // Keep a non-offset copy for hover hit-testing against the GPX route itself.
+        const routeRibbon = ribbon;
+
+        // Offset the band to one side (right of local travel direction) so the route line remains readable.
+        const offsetRibbon = (() => {
+          const n = ribbon.length;
+          const out = new Array(n);
+          for (let i = 0; i < n; i++) {
+            const p = ribbon[i];
+            const pPrev = ribbon[Math.max(0, i - 1)];
+            const pNext = ribbon[Math.min(n - 1, i + 1)];
+            const dx = Number(pNext.x) - Number(pPrev.x);
+            const dy = Number(pNext.y) - Number(pPrev.y);
+            const Ls = Math.hypot(dx, dy);
+            if (!(Ls > 1e-3)) {
+              out[i] = { x: Number(p.x), y: Number(p.y), dist: Number(p.dist) };
+              continue;
+            }
+            // Right normal in screen coords
+            const nx = dy / Ls;
+            const ny = -dx / Ls;
+            out[i] = { x: Number(p.x) + nx * bandOffsetPx, y: Number(p.y) + ny * bandOffsetPx, dist: Number(p.dist) };
+          }
+          return out;
+        })();
+        ribbon = offsetRibbon;
+
+        // Expose ribbons + sampling helpers for tooltips.
+        this._routeRibbon = routeRibbon;
+        this._ribbon = ribbon;
+        // Also refresh hover caches.
+        this._hoverRouteRibbon = this._routeRibbon;
+        this._hoverBandRibbon = this._ribbon;
+        this._hoverGeomValid = true;
+
+        const pointAtDist = (dk) => {
+          const x = Number(dk);
+          if (!Number.isFinite(x)) return null;
+          if (ribbon.length === 1) return ribbon[0];
+          let lo = 0, hi = ribbon.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (Number(ribbon[mid].dist) <= x) lo = mid; else hi = mid - 1;
+          }
+          const i0 = lo;
+          const i1 = Math.min(ribbon.length - 1, i0 + 1);
+          const p0 = ribbon[i0];
+          const p1 = ribbon[i1];
+          const d0 = Number(p0.dist);
+          const d1 = Number(p1.dist);
+          if (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) return p0;
+          const u = clamp((x - d0) / (d1 - d0), 0, 1);
+          return { x: p0.x + (p1.x - p0.x) * u, y: p0.y + (p1.y - p0.y) * u, dist: x };
+        };
+
+        this._pointAtDist = pointAtDist;
+        this._sampleAtDist = sampleAt;
+
+        const bandWidthAt = (_s) => TEMP_BAND_WIDTH_PX;
+
+        this._bandWidthAtDist = (dk) => {
+          const s = sampleAt(dk);
+          return bandWidthAt(s);
+        };
+
+        const tangentAngleAtDist = (dk) => {
+          const d = Number(dk);
+          if (!Number.isFinite(d)) return 0;
+          const delta = 4.0;
+          const a = pointAtDist(d - delta);
+          const b = pointAtDist(d + delta);
+          if (!a || !b) return 0;
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          if (!(Math.hypot(dx, dy) > 1e-3)) return 0;
+          return Math.atan2(dy, dx);
+        };
+        this._tangentAngleAtDist = tangentAngleAtDist;
+
+        // Render temperature band as a thick stroked line (stroke algorithm with thickness).
+        for (let i = 0; i < ribbon.length - 1; i++) {
+          const a = ribbon[i];
+          const b = ribbon[i + 1];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const segLen = Math.hypot(dx, dy);
+          if (!(segLen > 0.25)) continue;
+          const d0 = Number(a.dist);
+          const d1 = Number(b.dist);
+          const s0 = sampleAt(d0);
+          const s1 = sampleAt(d1);
+          const t0 = s0 ? Number(s0.temperature) : null;
+          const t1 = s1 ? Number(s1.temperature) : null;
+          if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+          const w0 = bandWidthAt(s0);
+          const w1 = bandWidthAt(s1);
+          const wAvg = 0.5 * (w0 + w1);
+
+          const c0 = tempColorSpec(t0);
+          const c1 = tempColorSpec(t1);
+          const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+          grad.addColorStop(0, c0);
+          grad.addColorStop(1, c1);
+
+          ctx.globalAlpha = 1.0;
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = wAvg;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+
+        // Precip markers: only on category transitions (spec), plus a light re-marker
+        // in long sustained rainy stretches to slightly increase symbol density.
+        const rainCat = (mm) => {
+          const x = Number(mm);
+          if (!Number.isFinite(x) || x <= 1) return 0;
+          if (x <= 3) return 1;
+          if (x <= 8) return 2;
+          if (x <= 15) return 3;
+          return 4;
+        };
+        try {
+          const rainEvents = [];
+          let prev = null;
+          let lastAddedAt = -1e99;
+          const extraSpacingKm = 90; // slightly denser, still calm
+          for (const p of pts) {
+            const dk = Number(p.dist);
+            if (!Number.isFinite(dk)) continue;
+            const sMid = sampleAt(dk);
+            const mm = sMid ? Number(sMid.rainTypical) : null;
+            const cat = rainCat(mm);
+            if (prev === null) { prev = cat; continue; }
+            if (cat !== prev) {
+              if (cat > 0) {
+                rainEvents.push({ dist: dk, cat });
+                lastAddedAt = dk;
+              }
+              prev = cat;
+              continue;
+            }
+            // Slight density increase: in long constant rainy stretches, add occasional markers.
+            if (cat > 0 && (dk - lastAddedAt) >= extraSpacingKm) {
+              rainEvents.push({ dist: dk, cat });
+              lastAddedAt = dk;
+            }
+          }
+
+          const rr = (x, y, w, h, r) => {
+            const rad = Math.max(0, Math.min(Math.min(w, h) / 2, Number(r) || 0));
+            ctx.beginPath();
+            ctx.moveTo(x + rad, y);
+            ctx.lineTo(x + w - rad, y);
+            ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
+            ctx.lineTo(x + w, y + h - rad);
+            ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+            ctx.lineTo(x + rad, y + h);
+            ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
+            ctx.lineTo(x, y + rad);
+            ctx.quadraticCurveTo(x, y, x + rad, y);
+            ctx.closePath();
+          };
+
+          ctx.fillStyle = 'rgba(35, 120, 210, 0.88)';
+          for (const ev of rainEvents) {
+            const p = pointAtDist(ev.dist);
+            if (!p) continue;
+            const w = bandWidthAt(sampleAt(ev.dist));
+            const ang = tangentAngleAtDist(ev.dist);
+            const nx = Math.sin(ang);
+            const ny = -Math.cos(ang);
+            const x0 = p.x + nx * (0.5 * w + 12);
+            const y0 = p.y + ny * (0.5 * w + 12);
+            const count = (ev.cat <= 1) ? 1 : (ev.cat === 2) ? 2 : 3; // ||| for >= heavy
+            const sep = 6;
+            const len = 18;
+            const barW = 4;
+            const rad = 2.2;
+            for (let k = 0; k < count; k++) {
+              const xo = x0 + (k - (count - 1) / 2) * sep;
+              rr(xo - barW / 2, y0 - len / 2, barW, len, rad);
+              ctx.fill();
+            }
+          }
+        } catch (_) {}
+
+        // Temperature labels every ~160 km; avoid overlaps.
+        try {
+          const routeLen = Number.isFinite(drawEndKm) && drawEndKm > 0 ? drawEndKm : Number(dists[dists.length - 1] || 0);
+          const boxes = [];
+          const overlaps = (a, b) => !(a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2);
+          const fontPx = 11;
+          ctx.font = `600 ${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const stepLabel = 160;
+          for (let dk = stepLabel; dk < routeLen; dk += stepLabel) {
+            const sMid = sampleAt(dk);
+            if (!sMid) continue;
+            const t = Number(sMid.temperature);
+            const loT = Number(sMid.temp_p25);
+            const hiT = Number(sMid.temp_p75);
+            if (!Number.isFinite(t)) continue;
+            const p = pointAtDist(dk);
+            if (!p) continue;
+            const w = bandWidthAt(sMid);
+            const x = p.x;
+            const y = p.y + (0.5 * w + 18);
+            const line1 = `${Math.round(t)}°C`;
+            const line2 = (Number.isFinite(loT) && Number.isFinite(hiT)) ? `${Math.round(loT)} / ${Math.round(hiT)}` : '';
+            const w1 = ctx.measureText(line1).width;
+            const w2 = line2 ? ctx.measureText(line2).width : 0;
+            const ww = Math.max(w1, w2);
+            const pad = 6;
+            const hh = line2 ? (fontPx*2 + 6) : (fontPx + 6);
+            const rect = { x1: x - ww/2 - pad, y1: y - hh/2, x2: x + ww/2 + pad, y2: y + hh/2 };
+            let ok = true;
+            for (const b of boxes) { if (overlaps(rect, b)) { ok = false; break; } }
+            if (!ok) continue;
+            boxes.push(rect);
+
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            const r = 7;
+            ctx.beginPath();
+            ctx.moveTo(rect.x1 + r, rect.y1);
+            ctx.lineTo(rect.x2 - r, rect.y1);
+            ctx.quadraticCurveTo(rect.x2, rect.y1, rect.x2, rect.y1 + r);
+            ctx.lineTo(rect.x2, rect.y2 - r);
+            ctx.quadraticCurveTo(rect.x2, rect.y2, rect.x2 - r, rect.y2);
+            ctx.lineTo(rect.x1 + r, rect.y2);
+            ctx.quadraticCurveTo(rect.x1, rect.y2, rect.x1, rect.y2 - r);
+            ctx.lineTo(rect.x1, rect.y1 + r);
+            ctx.quadraticCurveTo(rect.x1, rect.y1, rect.x1 + r, rect.y1);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = '#111';
+            ctx.fillText(line1, x, y - (line2 ? fontPx*0.55 : 0));
+            if (line2) {
+              ctx.font = `500 ${fontPx-1}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+              ctx.fillText(line2, x, y + fontPx*0.55);
+              ctx.font = `600 ${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+            }
+          }
+        } catch (_) {}
+
+        // Wind bands (spec): subtle, deterministic, parallel outside the temperature band (no animation).
+        try {
+          const windRouteLen = Number.isFinite(drawEndKm) && drawEndKm > 0 ? drawEndKm : Number(dists[dists.length - 1] || 0);
+          const blendKm = 5.0;
+          const minSegKm = 10.0;
+          const maxSegKm = 60.0;
+
+          const windSoftGreen = [95, 174, 106]; // #5fae6a
+          const windSoftRed = [200, 106, 106];  // #c86a6a
+
+          const windValueAt = (() => {
+            const stepKm = 1.0;
+            const samples = [];
+            for (let dk = 0; dk <= windRouteLen; dk += stepKm) {
+              const sMid = sampleAt(dk);
+              const hMid = routeHeadingAt(dk);
+              const comp = windComponentAt(sMid, hMid);
+              const v = Number.isFinite(comp) ? Number(comp) : 0;
+              samples.push({ d: dk, v });
+            }
+
+            const kindOf = (v) => {
+              const x = Number(v);
+              if (!Number.isFinite(x) || Math.abs(x) < 1.0) return 0;
+              return (x > 0) ? 1 : -1;
+            };
+
+            // Initial segmentation by sign and similarity.
+            const segs0 = [];
+            let cur = null;
+            const pushCur = () => {
+              if (!cur) return;
+              const len = Math.max(0, cur.end - cur.start);
+              const val = (cur.n > 0) ? (cur.sum / cur.n) : 0;
+              segs0.push({ start: cur.start, end: cur.end, kind: cur.kind, val, len });
+              cur = null;
+            };
+            for (const s of samples) {
+              const d = Number(s.d);
+              const vRaw = Number(s.v);
+              const k = kindOf(vRaw);
+              const v = (k === 0) ? 0 : vRaw;
+              if (!cur) {
+                cur = { start: d, end: d, kind: k, sum: v, n: (k === 0) ? 0 : 1 };
+                continue;
+              }
+              const mean = (cur.n > 0) ? (cur.sum / cur.n) : 0;
+              const similar = (k === cur.kind) && (k === 0 || Math.abs(v - mean) <= 1.2);
+              const wouldLen = d - cur.start;
+              if (similar && wouldLen <= maxSegKm) {
+                cur.end = d;
+                if (k !== 0) { cur.sum += v; cur.n += 1; }
+              } else {
+                pushCur();
+                cur = { start: d, end: d, kind: k, sum: v, n: (k === 0) ? 0 : 1 };
+              }
+            }
+            pushCur();
+
+            // Normalize ends (make last segment reach route end).
+            if (segs0.length) segs0[segs0.length - 1].end = windRouteLen;
+
+            // Split segments longer than max.
+            const segs1 = [];
+            for (const s of segs0) {
+              const L = Math.max(0, Number(s.end) - Number(s.start));
+              if (!(L > maxSegKm) || s.kind === 0) {
+                segs1.push({ ...s, len: L });
+                continue;
+              }
+              const n = Math.ceil(L / maxSegKm);
+              for (let i = 0; i < n; i++) {
+                const a = Number(s.start) + (i * L) / n;
+                const b = Number(s.start) + ((i + 1) * L) / n;
+                segs1.push({ start: a, end: b, kind: s.kind, val: s.val, len: b - a });
+              }
+            }
+
+            // Drop too-short non-neutral segments (calm visualization).
+            const segs = segs1.map(s => {
+              const L = Math.max(0, Number(s.end) - Number(s.start));
+              if (s.kind !== 0 && L < minSegKm) return { start: s.start, end: s.end, kind: 0, val: 0, len: L };
+              return { ...s, len: L };
+            });
+
+            const valueAtDist = (dIn) => {
+              const d = clamp(Number(dIn), 0, windRouteLen);
+              let idx = 0;
+              while (idx < segs.length && !(segs[idx].start <= d && d <= segs[idx].end)) idx++;
+              idx = clamp(idx, 0, Math.max(0, segs.length - 1));
+              const s = segs[idx] || { start: 0, end: windRouteLen, kind: 0, val: 0 };
+              const prev = (idx > 0) ? segs[idx - 1] : null;
+              const next = (idx < segs.length - 1) ? segs[idx + 1] : null;
+              let v = Number(s.val) || 0;
+
+              const b = blendKm;
+              if (prev && (d - Number(s.start)) < b) {
+                const u = clamp((d - Number(s.start)) / b, 0, 1);
+                const v0 = Number(prev.val) || 0;
+                v = lerp(v0, v, u);
+              }
+              if (next && (Number(s.end) - d) < b) {
+                const u = clamp((Number(s.end) - d) / b, 0, 1);
+                const v1 = Number(next.val) || 0;
+                v = lerp(v1, v, u);
+              }
+              return v;
+            };
+            valueAtDist._segs = segs;
+            return valueAtDist;
+          })();
+
+          windCtx.lineCap = 'round';
+          windCtx.lineJoin = 'round';
+
+          const drawWindStroke = (ax, ay, bx, by, wPx, rgb) => {
+            const w = clamp(Number(wPx) || 2.5, 2, 4);
+            const r = rgb[0], g = rgb[1], b = rgb[2];
+
+            // Outline (1px)
+            windCtx.globalAlpha = 0.85;
+            windCtx.strokeStyle = 'rgba(255,255,255,0.75)';
+            windCtx.lineWidth = w + 2;
+            windCtx.beginPath();
+            windCtx.moveTo(ax, ay);
+            windCtx.lineTo(bx, by);
+            windCtx.stroke();
+
+            // Feathered edges: outer (0.3), mid (0.55), center (0.8)
+            windCtx.strokeStyle = `rgb(${r},${g},${b})`;
+            windCtx.globalAlpha = 0.30;
+            windCtx.lineWidth = w + 4;
+            windCtx.beginPath();
+            windCtx.moveTo(ax, ay);
+            windCtx.lineTo(bx, by);
+            windCtx.stroke();
+
+            windCtx.globalAlpha = 0.55;
+            windCtx.lineWidth = w + 2;
+            windCtx.beginPath();
+            windCtx.moveTo(ax, ay);
+            windCtx.lineTo(bx, by);
+            windCtx.stroke();
+
+            windCtx.globalAlpha = 0.80;
+            windCtx.lineWidth = w;
+            windCtx.beginPath();
+            windCtx.moveTo(ax, ay);
+            windCtx.lineTo(bx, by);
+            windCtx.stroke();
+
+            windCtx.globalAlpha = 1;
+          };
+
+          // Draw wind band as a parallel polyline outside the temperature band.
+          for (let i = 0; i < ribbon.length - 1; i++) {
+            const a = ribbon[i];
+            const b = ribbon[i + 1];
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const segLen = Math.hypot(dx, dy);
+            if (!(segLen > 0.25)) continue;
+            const leftX = -dy / segLen;
+            const leftY = dx / segLen;
+            const outX = -leftX;
+            const outY = -leftY;
+
+            const d0 = Number(a.dist);
+            const d1 = Number(b.dist);
+            const dMid = 0.5 * (d0 + d1);
+            const vMid = windValueAt(dMid);
+            if (!Number.isFinite(vMid) || Math.abs(vMid) < 1.0) continue;
+            const abs = Math.abs(vMid);
+
+            const w0 = bandWidthAt(sampleAt(d0));
+            const w1 = bandWidthAt(sampleAt(d1));
+            const off0 = 0.5 * w0 + 6;
+            const off1 = 0.5 * w1 + 6;
+            const ax = a.x + outX * off0;
+            const ay = a.y + outY * off0;
+            const bx = b.x + outX * off1;
+            const by = b.y + outY * off1;
+
+            const widthPx = clamp(2 + (abs / 8.0) * 2, 2, 4);
+            const rgb = (vMid >= 0) ? windSoftGreen : windSoftRed;
+            drawWindStroke(ax, ay, bx, by, widthPx, rgb);
+          }
+
+          // Chevron arrow: one per segment, centered.
+          try {
+            const segs = windValueAt._segs || [];
+            const arrowSize = 7;
+            for (const s of segs) {
+              if (!s || s.kind === 0) continue;
+              const L = Math.max(0, Number(s.end) - Number(s.start));
+              if (L < minSegKm) continue;
+              const mid = 0.5 * (Number(s.start) + Number(s.end));
+              const v = Number(s.val);
+              if (!Number.isFinite(v) || Math.abs(v) < 1.0) continue;
+              const ang = tangentAngleAtDist(mid) + ((v < 0) ? Math.PI : 0);
+              const p = pointAtDist(mid);
+              if (!p) continue;
+              const w = bandWidthAt(sampleAt(mid));
+              const off = 0.5 * w + 6;
+              const nx = Math.sin(tangentAngleAtDist(mid));
+              const ny = -Math.cos(tangentAngleAtDist(mid));
+              const cx = p.x + nx * off;
+              const cy = p.y + ny * off;
+
+              const rgb = (v >= 0) ? windSoftGreen : windSoftRed;
+              windCtx.save();
+              windCtx.translate(cx, cy);
+              windCtx.rotate(ang);
+              windCtx.globalAlpha = 0.90;
+              windCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+              windCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+              windCtx.lineWidth = 1.2;
+              windCtx.beginPath();
+              windCtx.moveTo(arrowSize * 0.55, 0);
+              windCtx.lineTo(-arrowSize * 0.45, -arrowSize * 0.38);
+              windCtx.lineTo(-arrowSize * 0.45, +arrowSize * 0.38);
+              windCtx.closePath();
+              windCtx.fill();
+              windCtx.stroke();
+              windCtx.globalAlpha = 1;
+              windCtx.restore();
+            }
+          } catch (_) {}
+        } catch (_) {}
+
+        // No wind animation in tactical spec.
+        try { if (this._anim) cancelAnimationFrame(this._anim); } catch (_) {}
+        this._anim = null;
+      },
+    });
+    return new Layer();
+  }
+
+  // Debug helper (console): TOUR bands hover tooltip.
+  try {
+    window.wmTourTooltipDebug = {
+      enable: () => { try { localStorage.setItem('wm_debug_tour_tooltip', '1'); } catch (_) {} },
+      disable: () => { try { localStorage.removeItem('wm_debug_tour_tooltip'); } catch (_) {} },
+    };
+  } catch (_) {}
+
+  function _ensureTourBandsLayer() {
+    if (TOUR_BANDS_LAYER) return TOUR_BANDS_LAYER;
+    TOUR_BANDS_LAYER = _makeTourBandsLayer();
+    try { TOUR_BANDS_LAYER.addTo(map); } catch (_) {}
+    return TOUR_BANDS_LAYER;
+  }
+
+  function _scheduleTourBandsRedraw() {
+    if (TOUR_BANDS_REDRAW_QUEUED) return;
+    TOUR_BANDS_REDRAW_QUEUED = true;
+    requestAnimationFrame(() => {
+      TOUR_BANDS_REDRAW_QUEUED = false;
+      try {
+        if (!TOUR_BANDS_LAYER) return;
+        TOUR_BANDS_LAYER.draw(TOUR_BANDS_PROFILE, TOUR_BANDS_POINTS);
+      } catch (_) {}
+    });
+  }
+
+  function _setTourBandsEnabled(enabled) {
+    TOUR_BANDS_ENABLED = !!enabled;
+    // Tactical map must not show strategic climate overlays.
+    try { if (_tourIsActive()) strategicSetActive && strategicSetActive(false); } catch (_) {}
+    _ensureTourBandsLayer();
+    _scheduleTourBandsRedraw();
+  }
+
+  function _setTourBandsData(profile, points) {
+    TOUR_BANDS_PROFILE = profile || null;
+    TOUR_BANDS_POINTS = points || null;
+    TOUR_HOVER_POINTS_DIRTY = true;
+    _ensureTourBandsLayer();
+    _scheduleTourBandsRedraw();
+  }
+
   // --- Land mask for Strategic overlays (used when includeSea=false) ---
   let STRATEGIC_LAND = null; // GeoJSON FeatureCollection
   let STRATEGIC_LAND_LOADING = false;
+  // Higher-res shoreline source (used when includeSea=true)
+  let STRATEGIC_SHORE_LAND = null; // GeoJSON FeatureCollection
+  let STRATEGIC_SHORE_LOADING = false;
 
   function _geoFeatureBbox(feature) {
     try {
@@ -1813,6 +3917,27 @@
       console.warn('Land mask load failed', e);
     } finally {
       STRATEGIC_LAND_LOADING = false;
+      try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
+    }
+  }
+
+  async function _ensureStrategicShoreMaskLoaded() {
+    if (STRATEGIC_SHORE_LAND || STRATEGIC_SHORE_LOADING) return;
+    STRATEGIC_SHORE_LOADING = true;
+    try {
+      const r = await fetch('/ne_50m_land.geojson');
+      const j = await r.json();
+      if (j && j.type === 'FeatureCollection' && Array.isArray(j.features)) {
+        // Precompute bboxes for quick culling.
+        for (const f of j.features) {
+          try { f.__bbox = _geoFeatureBbox(f); } catch (_) {}
+        }
+        STRATEGIC_SHORE_LAND = j;
+      }
+    } catch (e) {
+      console.warn('Shore mask load failed', e);
+    } finally {
+      STRATEGIC_SHORE_LOADING = false;
       try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
     }
   }
@@ -1883,6 +4008,81 @@
     return true;
   }
 
+  function _strokeStrategicShoreline(ctx) {
+    // Draw a subtle coastline line when includeSea=true (so land/sea boundary is readable).
+    if (!ctx) return;
+    if (!(SETTINGS && SETTINGS.includeSea)) return;
+    const src = (STRATEGIC_SHORE_LAND && STRATEGIC_SHORE_LAND.features) ? STRATEGIC_SHORE_LAND : STRATEGIC_LAND;
+    if (!src || !src.features) {
+      // Prefer loading the higher-res shoreline source; fall back to 110m if needed.
+      _ensureStrategicShoreMaskLoaded();
+      _ensureStrategicLandMaskLoaded();
+      return;
+    }
+
+    let view = null;
+    try {
+      const b = map.getBounds();
+      view = {
+        minLat: b.getSouth() - 1.0,
+        maxLat: b.getNorth() + 1.0,
+        minLon: b.getWest() - 1.0,
+        maxLon: b.getEast() + 1.0,
+      };
+    } catch (_) {}
+
+    const drawRing = (ring) => {
+      if (!Array.isArray(ring) || ring.length < 2) return;
+      let started = false;
+      for (const pt of ring) {
+        if (!pt || pt.length < 2) continue;
+        const lon = Number(pt[0]);
+        const lat = Number(pt[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const q = map.latLngToContainerPoint([lat, lon]);
+        if (!started) { ctx.moveTo(q.x, q.y); started = true; }
+        else ctx.lineTo(q.x, q.y);
+      }
+      if (started) ctx.closePath();
+    };
+
+    const geom = (g) => {
+      if (!g || !g.type || !g.coordinates) return;
+      if (g.type === 'Polygon') {
+        for (const ring of g.coordinates) drawRing(ring);
+        return;
+      }
+      if (g.type === 'MultiPolygon') {
+        for (const poly of g.coordinates) {
+          for (const ring of poly) drawRing(ring);
+        }
+      }
+    };
+
+    ctx.save();
+    try {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      // Emphasized shore line for includeSea=true.
+      ctx.strokeStyle = 'rgba(70,70,70,0.70)';
+      const z = (map && typeof map.getZoom === 'function') ? Number(map.getZoom()) : 7;
+      ctx.lineWidth = (z >= 9) ? 3.0 : ((z >= 7) ? 2.6 : 2.2);
+    } catch (_) {}
+
+    ctx.beginPath();
+    for (const f of src.features) {
+      if (!f) continue;
+      if (view) {
+        const bb = f.__bbox;
+        if (bb && !_bboxIntersects(bb, view)) continue;
+      }
+      geom(f.geometry);
+    }
+    try { ctx.stroke(); } catch (_) {}
+    ctx.restore();
+  }
+
   // --- Strategic cursor readout (tooltip) ---
   let STRATEGIC_CURSOR_EL = null;
 
@@ -1891,10 +4091,11 @@
     try {
       const el = document.createElement('div');
       el.id = 'wmStrategicCursorReadout';
-      el.style.position = 'absolute';
+      el.style.position = 'fixed';
       el.style.left = '0px';
       el.style.top = '0px';
-      el.style.zIndex = '1700';
+      // Keep above Leaflet panes/controls.
+      el.style.zIndex = '9999';
       el.style.display = 'none';
       el.style.pointerEvents = 'none';
       el.style.whiteSpace = 'pre';
@@ -1910,9 +4111,7 @@
       el.style.backdropFilter = 'blur(2px)';
       el.style.boxShadow = '0 2px 10px rgba(0,0,0,0.08)';
 
-      const c = map && map.getContainer ? map.getContainer() : null;
-      if (!c) return null;
-      c.appendChild(el);
+      try { document.body.appendChild(el); } catch (_) { return null; }
       STRATEGIC_CURSOR_EL = el;
       return el;
     } catch (_) {
@@ -2266,14 +4465,16 @@
     if (layer === 'temperature_ride') {
       const t = Number(s.temp_day_median);
       if (!Number.isFinite(t)) return null;
-      // Stronger mid-range contrast: map 10..25C into wider palette space.
-      const tMin = -5;
-      const tMax = 35;
-      let u = (t - tMin) / (tMax - tMin);
-      // Nonlinear boost around mid
-      u = Math.pow(_clamp01(u), 0.85);
-      const c = _paletteSample(PAL_TEMP, u);
-      return { ...c, a: 0.78 };
+      // Use global tempColor() palette (shared across app).
+      try {
+        const m = String(tempColor(t) || 'rgba(0,0,0,1)').match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+        if (!m) return null;
+        const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
+        if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+        return { r, g, b, a: 0.78 };
+      } catch (_) {
+        return null;
+      }
     }
     if (layer === 'rain_ride') {
       const r = Math.max(0, Number(s.precipitation_mm));
@@ -3042,15 +5243,24 @@
         // Fill tiles directly (prevents gaps near coasts); isolines still use grid when available.
 
         // Non-overlapping band fill (transparent so basemap remains readable)
-        const thr = [5, 10, 15, 20, 25, 30];
+        const thr = [-10, 0, 10, 20, 30, 40];
+        const _rgbFromTemp = (t) => {
+          try {
+            const m = String(tempColor(Number(t)) || '').match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+            if (!m) return { r: 150, g: 150, b: 150 };
+            return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+          } catch (_) {
+            return { r: 150, g: 150, b: 150 };
+          }
+        };
         const cols = [
-          { r: 20,  g: 60,  b: 160 }, // <5°C deep blue
-          { r: 0,   g: 190, b: 210 }, // 5–10 cyan
-          { r: 40,  g: 160, b: 80  }, // 10–15 green
-          { r: 240, g: 220, b: 80  }, // 15–20 yellow
-          { r: 245, g: 155, b: 60  }, // 20–25 orange
-          { r: 215, g: 60,  b: 45  }, // 25–30 red
-          { r: 150, g: 60,  b: 190 }, // >=30 violet
+          _rgbFromTemp(-20), // < -10
+          _rgbFromTemp(-5),  // -10..0
+          _rgbFromTemp(5),   // 0..10
+          _rgbFromTemp(15),  // 10..20
+          _rgbFromTemp(25),  // 20..30
+          _rgbFromTemp(35),  // 30..40
+          _rgbFromTemp(45),  // >=40
         ];
         _drawBandedTileFill(ctx, resp.points, meta, valueKey, thr, cols, 0.22);
 
@@ -3058,6 +5268,7 @@
         const isoThr = [5,10,15,20,25,30];
         // No labels; keep lines subtle.
         if (grid) _drawIsolines(ctx, grid, isoThr, 'rgba(60,60,60,0.60)', 1, null);
+        _strokeStrategicShoreline(ctx);
         if (clipped) ctx.restore();
         return;
       }
@@ -3080,6 +5291,7 @@
 
         // Iso-lines at the same band thresholds.
         if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        _strokeStrategicShoreline(ctx);
         if (clipped) ctx.restore();
         return;
       }
@@ -3107,6 +5319,7 @@
         ];
         _drawBandedTileFill(ctx, pts, meta, valueKey, thr, cols, 0.22);
         if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        _strokeStrategicShoreline(ctx);
         if (clipped) ctx.restore();
         return;
       }
@@ -3160,6 +5373,11 @@
   }
 
   function strategicSetActive(active) {
+    // Tactical tour map must never show strategic overlays.
+    try {
+      if (_tourIsActive() && Boolean(active)) active = false;
+    } catch (_) {}
+
     const on = Boolean(active);
     if (STRATEGIC_STATE.active === on) return;
     STRATEGIC_STATE.active = on;
@@ -3196,22 +5414,57 @@
       // Cursor readout
       _ensureStrategicCursorReadout();
       try {
-        if (STRATEGIC_STATE._cursorMoveHandler) map.off('mousemove', STRATEGIC_STATE._cursorMoveHandler);
+        const c = map.getContainer();
+        if (c && STRATEGIC_STATE._cursorMoveHandler) c.removeEventListener('mousemove', STRATEGIC_STATE._cursorMoveHandler, true);
       } catch (_) {}
-      STRATEGIC_STATE._cursorMoveHandler = (e) => {
+      // Use a DOM mousemove listener (capture) for robustness; Leaflet mouse events
+      // can be blocked by overlay elements depending on z-index/pointer-events.
+      STRATEGIC_STATE._cursorMoveHandler = (ev) => {
         if (!STRATEGIC_STATE.active) return;
         const el = _ensureStrategicCursorReadout();
         if (!el) return;
-        const ll = e && e.latlng ? e.latlng : null;
-        const pt = e && e.containerPoint ? e.containerPoint : (ll ? map.latLngToContainerPoint(ll) : null);
+        let dbg = false;
+        try { dbg = (String(localStorage.getItem('wm_debug_strategic_tooltip') || '') === '1'); } catch (_) { dbg = false; }
+        let ll = null;
+        let pt = null;
+        try {
+          ll = map.mouseEventToLatLng ? map.mouseEventToLatLng(ev) : null;
+          pt = map.mouseEventToContainerPoint ? map.mouseEventToContainerPoint(ev) : (ll ? map.latLngToContainerPoint(ll) : null);
+        } catch (_) {
+          ll = null;
+          pt = null;
+        }
         if (!ll || !pt) {
-          _hideStrategicCursorReadout();
+          if (!dbg) _hideStrategicCursorReadout();
           return;
         }
 
         const s = _strategicSampleAt(ll.lat, ll.lng);
         if (!s) {
-          _hideStrategicCursorReadout();
+          if (!dbg) {
+            _hideStrategicCursorReadout();
+            return;
+          }
+          el.textContent = `No sample\nLat: ${_fmtNum(ll.lat, 3)}\nLon: ${_fmtNum(ll.lng, 3)}`;
+          el.style.display = 'block';
+          // Clamp inside map container.
+          const cont = map.getContainer();
+          const rect = cont ? cont.getBoundingClientRect() : null;
+          const cw = cont ? cont.clientWidth : 0;
+          const ch = cont ? cont.clientHeight : 0;
+          const pad = 8;
+          const baseLeft = Math.round((rect ? rect.left : 0) + pt.x);
+          const baseTop = Math.round((rect ? rect.top : 0) + pt.y);
+          let left = Math.round(baseLeft + 14);
+          let top = Math.round(baseTop + 14);
+          el.style.left = `${left}px`;
+          el.style.top = `${top}px`;
+          const tw = el.offsetWidth || 0;
+          const th = el.offsetHeight || 0;
+          if (cw && rect && (left + tw + pad) > (rect.left + cw)) left = Math.max(rect.left + pad, rect.left + cw - tw - pad);
+          if (ch && rect && (top + th + pad) > (rect.top + ch)) top = Math.max(rect.top + pad, rect.top + ch - th - pad);
+          el.style.left = `${left}px`;
+          el.style.top = `${top}px`;
           return;
         }
 
@@ -3237,10 +5490,31 @@
         ];
         el.textContent = lines.join('\n');
         el.style.display = 'block';
-        el.style.left = `${Math.round(pt.x + 14)}px`;
-        el.style.top = `${Math.round(pt.y + 14)}px`;
+
+        // Clamp inside map container.
+        const cont = map.getContainer();
+        const rect = cont ? cont.getBoundingClientRect() : null;
+        const cw = cont ? cont.clientWidth : 0;
+        const ch = cont ? cont.clientHeight : 0;
+        const pad = 8;
+        const baseLeft = Math.round((rect ? rect.left : 0) + pt.x);
+        const baseTop = Math.round((rect ? rect.top : 0) + pt.y);
+        let left = Math.round(baseLeft + 14);
+        let top = Math.round(baseTop + 14);
+        // Set once so offsetWidth/Height are measurable.
+        el.style.left = `${left}px`;
+        el.style.top = `${top}px`;
+        const tw = el.offsetWidth || 0;
+        const th = el.offsetHeight || 0;
+        if (cw && rect && (left + tw + pad) > (rect.left + cw)) left = Math.max(rect.left + pad, rect.left + cw - tw - pad);
+        if (ch && rect && (top + th + pad) > (rect.top + ch)) top = Math.max(rect.top + pad, rect.top + ch - th - pad);
+        el.style.left = `${left}px`;
+        el.style.top = `${top}px`;
       };
-      map.on('mousemove', STRATEGIC_STATE._cursorMoveHandler);
+      try {
+        const c = map.getContainer();
+        if (c) c.addEventListener('mousemove', STRATEGIC_STATE._cursorMoveHandler, true);
+      } catch (_) {}
 
       try {
         const c = map.getContainer();
@@ -3273,7 +5547,8 @@
       STRATEGIC_STATE._tileMap = null;
 
       try {
-        if (STRATEGIC_STATE._cursorMoveHandler) map.off('mousemove', STRATEGIC_STATE._cursorMoveHandler);
+        const c = map.getContainer();
+        if (c && STRATEGIC_STATE._cursorMoveHandler) c.removeEventListener('mousemove', STRATEGIC_STATE._cursorMoveHandler, true);
       } catch (_) {}
       STRATEGIC_STATE._cursorMoveHandler = null;
       try {
@@ -3295,6 +5570,14 @@
       _syncStrategicQuickLayer();
     }
   }
+
+  // Debug helper (console): strategic cursor readout reliability.
+  try {
+    window.wmStrategicTooltipDebug = {
+      enable: () => { try { localStorage.setItem('wm_debug_strategic_tooltip', '1'); } catch (_) {} try { strategicSetActive(true); } catch (_) {} },
+      disable: () => { try { localStorage.removeItem('wm_debug_strategic_tooltip'); } catch (_) {} },
+    };
+  } catch (_) {}
 
   try {
     window.addEventListener('resize', () => {
@@ -3394,6 +5677,7 @@
     if (setWindHeadComfort) setWindHeadComfort.value = s.windHeadComfort;
     if (setWindTailComfort) setWindTailComfort.value = s.windTailComfort;
     if (setGlyphType) setGlyphType.value = s.glyphType || (s.useClassicWeatherIcons ? 'classic' : 'svg');
+    if (setWeatherVisualizationMode) setWeatherVisualizationMode.value = String(s.weatherVisualizationMode || 'glyphs');
 
     if (setStrategicYear) setStrategicYear.value = String(s.strategicYear || 2025);
     if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
@@ -3440,6 +5724,10 @@
     if (!Number.isFinite(base.windTailComfort)) base.windTailComfort = 10;
     base.glyphType = (setGlyphType && setGlyphType.value) ? setGlyphType.value : 'classic';
     base.useClassicWeatherIcons = (setGlyphType && setGlyphType.value) ? (setGlyphType.value === 'classic') : true;
+    base.weatherVisualizationMode = (setWeatherVisualizationMode && setWeatherVisualizationMode.value)
+      ? String(setWeatherVisualizationMode.value)
+      : 'glyphs';
+    if (base.weatherVisualizationMode !== 'glyphs' && base.weatherVisualizationMode !== 'bands') base.weatherVisualizationMode = 'glyphs';
 
     base.strategicYear = Number(setStrategicYear && setStrategicYear.value) || 2025;
     base.includeSea = Boolean(setIncludeSea && setIncludeSea.checked);
@@ -3461,6 +5749,10 @@
     try { REVERSED = Boolean(SETTINGS.reverse); } catch (_) {}
     try { _setOverlayMode(String(SETTINGS.overlayMode || OVERLAY_MODE), { skipPersist: true }); } catch (_) {}
     try { applySettingsToForm(SETTINGS); } catch (_) {}
+
+    // Tour bands are purely client-side; toggle immediately.
+    try { _setTourBandsEnabled(_tourWantBands()); } catch (_) {}
+    try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
 
     // Strategic overlay reacts to includeSea/interpolation/etc.
     try {
@@ -3518,7 +5810,15 @@
     // Increase bottom padding to leave room for x-axis labels
     // Compute dynamic top padding so pins + glyph previews fit without clipping,
     // but minimize whitespace when no pins/glyphs are present (e.g., during priming).
-    const hasPins = Array.isArray(OVERLAY_POINTS) && OVERLAY_POINTS.length > 0;
+    const wantBands = _tourWantBands();
+
+    try {
+      if (profileOverlaySelect && !wantBands && profilePanel && profileOverlaySelect.parentElement === profilePanel) {
+        profileOverlaySelect.style.top = '8px';
+        profileOverlaySelect.style.right = '22px';
+      }
+    } catch (_) {}
+    const hasPins = (!wantBands) && Array.isArray(OVERLAY_POINTS) && OVERLAY_POINTS.length > 0;
     const minTop = 6;
     let neededTop = minTop;
     if (hasPins) {
@@ -3534,9 +5834,18 @@
         neededTop = PIN_H + PREVIEW_SIZE + PREVIEW_MARGIN;
       }
     }
+    // Bands mode: reserve space for the horizontal tactical band strip above the chart.
+    if (wantBands) {
+      // Reserve enough room for the strip + temperature tags and keep it readable.
+      // Also leave some whitespace below the strip so UI overlays (selector) don't clash.
+      const bandStripH = 36;
+      const bandStripPad = 40;
+      neededTop = Math.max(neededTop, bandStripH + bandStripPad);
+    }
     // Increase bottom padding slightly to ensure x-axis ticks and labels are fully visible
     // Increase right padding to ensure right-side ticks/labels/color bars aren't clipped
-    return { padTop: Math.max(minTop, neededTop), padBot: 22, padL: 18, padR: 18 };
+    const padBot = wantBands ? 34 : 22;
+    return { padTop: Math.max(minTop, neededTop), padBot, padL: 18, padR: 18 };
   }
 
   function resizeProfileCanvas() {
@@ -3573,9 +5882,13 @@
           mapEl.style.height = `${Math.max(220, window.innerHeight - (hh + tsdbH))}px`;
         }
       }
-      // Align tooltip and overlay selector just above the profile panel
+      // Align tooltip just above the profile panel (legacy floating tooltip only)
       const bottomGap = hh + tsdbH + 16; // slight spacing above profile
-      if (profileTooltip) profileTooltip.style.bottom = `${bottomGap}px`;
+      try {
+        if (profileTooltip && profilePanel && profileTooltip.parentElement === profilePanel) {
+          profileTooltip.style.bottom = `${bottomGap}px`;
+        }
+      } catch (_) {}
       // Resize canvases and redraw
       resizeProfileCanvas();
       if (LAST_PROFILE) drawProfile(LAST_PROFILE);
@@ -3650,6 +5963,397 @@
       return padL + innerW * u;
     };
     const yAt = (e) => padTop + innerH - Math.round(innerH * ((e - emin) / Math.max(1, emax - emin)));
+
+    const wantBands = _tourWantBands();
+
+    // In bands mode, draw a horizontal tactical band strip above the profile.
+    if (wantBands) {
+      try {
+        if (DEBUG_PROFILE_STEP) console.log(`%c[STEP ${++DEBUG_STEP_COUNTER}] Draw tactical bands strip (profile)`, 'color: blue; font-weight: bold');
+        await waitForSpacebar(DEBUG_STEP_COUNTER, 'Draw tactical bands strip (profile)');
+
+        const pts0 = (Array.isArray(OVERLAY_POINTS) ? OVERLAY_POINTS : []).filter(p => Number.isFinite(Number(p && p.dist)));
+        pts0.sort((a, b) => Number(a.dist) - Number(b.dist));
+        const havePts = pts0.length >= 2;
+        const loadedEnd = pts0.length ? Number(pts0[pts0.length - 1].dist) : 0;
+
+        // Place the strip inside the reserved top padding, centered vertically.
+        // Keep some margin from the panel divider and the chart area.
+        const stripMargin = 8;
+        const availH = Math.max(18, padTop - 2 * stripMargin);
+        const stripH = Math.max(26, Math.min(40, Math.round(availH)));
+        let stripY = Math.round((padTop - stripH) / 2);
+        stripY = Math.max(stripMargin, Math.min(Math.max(stripMargin, padTop - stripH - stripMargin), stripY));
+
+        // Keep the profile overlay selector below the strip (only when selector is mounted inside profile panel).
+        try {
+          if (profileOverlaySelect && profilePanel && profileOverlaySelect.parentElement === profilePanel) {
+            const selH = 24;
+            let selTop = Math.round(stripY + stripH + 10);
+            // Prefer below the strip; if that would overlap, drop into chart area.
+            selTop = Math.max(selTop, Math.round(padTop + 8));
+            const maxTop = Math.max(8, Math.round(H - padBot - selH - 6));
+            selTop = Math.max(8, Math.min(maxTop, selTop));
+            profileOverlaySelect.style.top = `${selTop}px`;
+          }
+        } catch (_) {}
+        const x0 = padL;
+        const x1 = padL + innerW;
+
+        // Frame
+        profileCtx.save();
+        profileCtx.fillStyle = 'rgba(255,255,255,0.92)';
+        profileCtx.strokeStyle = 'rgba(0,0,0,0.14)';
+        profileCtx.lineWidth = 1;
+        profileCtx.beginPath();
+        profileCtx.rect(x0, stripY, x1 - x0, stripH);
+        profileCtx.fill();
+        profileCtx.stroke();
+        profileCtx.clip();
+
+        const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+        const lerp = (a, b, t) => a + (b - a) * t;
+        const lerpNum = (a, b, t) => (Number.isFinite(Number(a)) && Number.isFinite(Number(b)))
+          ? lerp(Number(a), Number(b), t)
+          : (Number.isFinite(Number(a)) ? Number(a) : (Number.isFinite(Number(b)) ? Number(b) : null));
+
+        const sampleAt = (dkm) => {
+          const x = Number(dkm);
+          if (!Number.isFinite(x) || pts0.length === 0) return null;
+          const dMin = Number(pts0[0].dist);
+          const dMax = Number(pts0[pts0.length - 1].dist);
+          if (Number.isFinite(dMin) && Number.isFinite(dMax)) {
+            if (x < dMin - 1e-6 || x > dMax + 1e-6) return null;
+          }
+          if (pts0.length === 1) return pts0[0];
+          let lo = 0, hi = pts0.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (Number(pts0[mid].dist) <= x) lo = mid; else hi = mid - 1;
+          }
+          const i0 = lo;
+          const i1 = Math.min(pts0.length - 1, i0 + 1);
+          const p0 = pts0[i0];
+          const p1 = pts0[i1];
+          const d0 = Number(p0.dist);
+          const d1 = Number(p1.dist);
+          const t = (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) ? 0 : clamp((x - d0) / (d1 - d0), 0, 1);
+          const dayP25 = lerpNum(p0.temp_day_p25, p1.temp_day_p25, t);
+          const dayP75 = lerpNum(p0.temp_day_p75, p1.temp_day_p75, t);
+          const histP25 = lerpNum(p0.temp_hist_p25, p1.temp_hist_p25, t);
+          const histP75 = lerpNum(p0.temp_hist_p75, p1.temp_hist_p75, t);
+          const p25 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP25 : histP25;
+          const p75 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP75 : histP75;
+          return {
+            dist: x,
+            temperature: lerpNum(p0.temperature, p1.temperature, t),
+            temp_p25: p25,
+            temp_p75: p75,
+            windSpeed: lerpNum(p0.windSpeed, p1.windSpeed, t),
+            windDir: lerpNum(p0.windDir, p1.windDir, t),
+            rainTypical: lerpNum((p0.rainTypical ?? p0.precipMm), (p1.rainTypical ?? p1.precipMm), t),
+          };
+        };
+        // Route heading at distance (km). Uses the profile-sampled headings, mapped into the
+        // route distance domain via the profile→route scale used for the x-axis.
+        const routeHeadingAt = (routeKm) => {
+          try {
+            const sh = Array.isArray(profile.sampled_heading_deg) ? profile.sampled_heading_deg : null;
+            if (!sh || sh.length !== dist.length) return null;
+            const rk = Number(routeKm);
+            if (!Number.isFinite(rk) || !Number.isFinite(scale) || scale <= 0) return null;
+            const pk = rk / scale; // route-km -> profile-km
+            let lo = 0, hi = dist.length - 1;
+            while (lo < hi) {
+              const mid = (lo + hi) >> 1;
+              if (Number(dist[mid]) < pk) lo = mid + 1; else hi = mid;
+            }
+            const idx = Math.max(0, Math.min(sh.length - 1, lo));
+            const h = Number(sh[idx]);
+            return Number.isFinite(h) ? h : null;
+          } catch (_) {
+            return null;
+          }
+        };
+
+        // Layout within strip:
+        // - top: wind mini-band lane (thin)
+        // - gap
+        // - temperature band lane (major)
+        const windLinePx = (() => {
+          // About 3mm looks clearly visible in the profile strip; bump by +30% as requested.
+          const px = _mmToPx(3.0) * 1.3;
+          return Math.max(4, Math.min(12, Math.round(px || 0)));
+        })();
+        const windGapPx = Math.max(2, Math.min(10, Math.round(_mmToPx(0.7) || 0)));
+        const windLaneH = Math.max(6, Math.min(stripH - 6, Math.round(windLinePx + windGapPx + 2)));
+        const tempY = stripY + windLaneH;
+        const tempH = Math.max(1, stripH - windLaneH);
+
+        // Temperature band (same palette as map + overlay)
+        if (havePts) {
+          for (let i = 0; i < pts0.length - 1; i++) {
+            const a = pts0[i];
+            const b = pts0[i + 1];
+            const dA = Number(a.dist);
+            const dB = Number(b.dist);
+            if (!Number.isFinite(dA) || !Number.isFinite(dB) || dB <= dA) continue;
+            const tA = Number(a.temperature);
+            const tB = Number(b.temperature);
+            if (!Number.isFinite(tA) || !Number.isFinite(tB)) continue;
+            const xa = xAt(dA);
+            const xb = xAt(dB);
+            if (!(xb > xa + 0.5)) continue;
+            const grad = profileCtx.createLinearGradient(xa, 0, xb, 0);
+            grad.addColorStop(0, tempColor(tA));
+            grad.addColorStop(1, tempColor(tB));
+            profileCtx.fillStyle = grad;
+            profileCtx.fillRect(xa, tempY, xb - xa, tempH);
+          }
+        }
+
+        // Wind mini-band (Tour spec semantics):
+        // - compute effective wind vs route heading (routeHeadingAt)
+        // - segment by sign/similarity
+        // - draw only significant segments (|v| >= 1 m/s, length >= minSegKm)
+        // - one direction triangle per segment
+        try {
+          const windRouteLen = Math.max(0, Number.isFinite(loadedEnd) ? loadedEnd : 0);
+          if (windRouteLen > 1 && typeof routeHeadingAt === 'function') {
+            const yWind = stripY + windGapPx + Math.max(1, windLinePx / 2);
+            const stepKm = 1.0;
+            const minSegKm = 10.0;
+            const maxSegKm = 60.0;
+
+            const windCompAt = (dk) => {
+              const s = sampleAt(dk);
+              if (!s) return 0;
+              const wspd = Number(s.windSpeed);
+              const wdir = Number(s.windDir);
+              const h = routeHeadingAt(dk);
+              if (!Number.isFinite(wspd) || !Number.isFinite(wdir) || !Number.isFinite(h)) return 0;
+              const wdirTo = ((wdir + 180.0) % 360.0);
+              const ang = (wdirTo - h) * Math.PI / 180.0;
+              const comp = wspd * Math.cos(ang);
+              return Number.isFinite(comp) ? comp : 0;
+            };
+
+            const samples = [];
+            for (let dk = 0; dk <= windRouteLen + 1e-6; dk += stepKm) {
+              samples.push({ d: dk, v: windCompAt(dk) });
+            }
+
+            const kindOf = (v) => {
+              const x = Number(v);
+              if (!Number.isFinite(x) || Math.abs(x) < 1.0) return 0;
+              return (x > 0) ? 1 : -1;
+            };
+
+            const segs0 = [];
+            let cur = null;
+            const pushCur = () => {
+              if (!cur) return;
+              const len = Math.max(0, cur.end - cur.start);
+              const val = (cur.n > 0) ? (cur.sum / cur.n) : 0;
+              segs0.push({ start: cur.start, end: cur.end, kind: cur.kind, val, len });
+              cur = null;
+            };
+
+            for (const s of samples) {
+              const d = Number(s.d);
+              const vRaw = Number(s.v);
+              const k = kindOf(vRaw);
+              const v = (k === 0) ? 0 : vRaw;
+              if (!cur) {
+                cur = { start: d, end: d, kind: k, sum: v, n: (k === 0) ? 0 : 1 };
+                continue;
+              }
+              const mean = (cur.n > 0) ? (cur.sum / cur.n) : 0;
+              const similar = (k === cur.kind) && (k === 0 || Math.abs(v - mean) <= 1.2);
+              const wouldLen = d - cur.start;
+              if (similar && wouldLen <= maxSegKm) {
+                cur.end = d;
+                if (k !== 0) { cur.sum += v; cur.n += 1; }
+              } else {
+                pushCur();
+                cur = { start: d, end: d, kind: k, sum: v, n: (k === 0) ? 0 : 1 };
+              }
+            }
+            pushCur();
+            if (segs0.length) segs0[segs0.length - 1].end = windRouteLen;
+
+            const segs1 = [];
+            for (const s of segs0) {
+              const L = Math.max(0, Number(s.end) - Number(s.start));
+              if (!(L > maxSegKm) || s.kind === 0) {
+                segs1.push({ ...s, len: L });
+                continue;
+              }
+              const n = Math.ceil(L / maxSegKm);
+              for (let i = 0; i < n; i++) {
+                const a = Number(s.start) + (i * L) / n;
+                const b = Number(s.start) + ((i + 1) * L) / n;
+                segs1.push({ start: a, end: b, kind: s.kind, val: s.val, len: b - a });
+              }
+            }
+
+            const segs = segs1.map(s => {
+              const L = Math.max(0, Number(s.end) - Number(s.start));
+              if (s.kind !== 0 && L < minSegKm) return { start: s.start, end: s.end, kind: 0, val: 0, len: L };
+              return { ...s, len: L };
+            });
+
+            profileCtx.lineCap = 'round';
+            profileCtx.lineJoin = 'round';
+            profileCtx.lineWidth = windLinePx;
+
+            for (const s of segs) {
+              if (!s || s.kind === 0) continue;
+              const L = Math.max(0, Number(s.end) - Number(s.start));
+              if (L < minSegKm) continue;
+              const v = Number(s.val);
+              if (!Number.isFinite(v) || Math.abs(v) < 1.0) continue;
+              const xa = xAt(Number(s.start));
+              const xb = xAt(Number(s.end));
+              if (!(xb > xa + 2)) continue;
+              profileCtx.strokeStyle = _tourWindComponentColor(v);
+              profileCtx.beginPath();
+              profileCtx.moveTo(xa, yWind);
+              profileCtx.lineTo(xb, yWind);
+              profileCtx.stroke();
+
+              // Direction triangle (one per segment) with subtle grey outline.
+              try {
+                const mid = 0.5 * (Number(s.start) + Number(s.end));
+                const xMid = xAt(mid);
+                const triW = Math.max(6, Math.min(14, Math.round(windLinePx * 1.2)));
+                const triH = Math.max(5, Math.min(12, Math.round(windLinePx * 0.95)));
+                const dir = (v >= 0) ? 1 : -1;
+
+                profileCtx.save();
+                profileCtx.globalAlpha = 0.96;
+                profileCtx.fillStyle = 'rgba(255,255,255,0.96)';
+                profileCtx.strokeStyle = 'rgba(0,0,0,0.35)';
+                profileCtx.lineWidth = 1;
+                profileCtx.beginPath();
+                profileCtx.moveTo(xMid + dir * (triW / 2), yWind);
+                profileCtx.lineTo(xMid - dir * (triW / 2), yWind - triH / 2);
+                profileCtx.lineTo(xMid - dir * (triW / 2), yWind + triH / 2);
+                profileCtx.closePath();
+                profileCtx.fill();
+                profileCtx.stroke();
+                profileCtx.restore();
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+
+        // Rain markers (small rounded bars near bottom edge)
+        try {
+          const rainCat = (mm) => {
+            const x = Number(mm);
+            if (!Number.isFinite(x) || x <= 1) return 0;
+            if (x <= 3) return 1;
+            if (x <= 8) return 2;
+            if (x <= 15) return 3;
+            return 4;
+          };
+          const rr = (x, y, w, h, r) => {
+            const rad = Math.max(0, Math.min(Math.min(w, h) / 2, Number(r) || 0));
+            profileCtx.beginPath();
+            profileCtx.moveTo(x + rad, y);
+            profileCtx.lineTo(x + w - rad, y);
+            profileCtx.quadraticCurveTo(x + w, y, x + w, y + rad);
+            profileCtx.lineTo(x + w, y + h - rad);
+            profileCtx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+            profileCtx.lineTo(x + rad, y + h);
+            profileCtx.quadraticCurveTo(x, y + h, x, y + h - rad);
+            profileCtx.lineTo(x, y + rad);
+            profileCtx.quadraticCurveTo(x, y, x + rad, y);
+            profileCtx.closePath();
+          };
+          profileCtx.fillStyle = 'rgba(35, 120, 210, 0.88)';
+          for (const p of pts0) {
+            const dk = Number(p.dist);
+            if (!Number.isFinite(dk) || dk > loadedEnd + 1e-6) continue;
+            const sMid = sampleAt(dk);
+            const mm = sMid ? Number(sMid.rainTypical) : NaN;
+            const cat = rainCat(mm);
+            if (cat <= 0) continue;
+            const x = xAt(dk);
+            const count = (cat <= 1) ? 1 : (cat === 2) ? 2 : 3;
+            const sep = 5;
+            const len = 10;
+            const barW = 3;
+            const rad = 1.8;
+            const y0 = stripY + stripH - 4;
+            for (let k = 0; k < count; k++) {
+              const xo = x + (k - (count - 1) / 2) * sep;
+              rr(xo - barW / 2, y0 - len / 2, barW, len, rad);
+              profileCtx.fill();
+            }
+          }
+        } catch (_) {}
+
+        // Temperature tags every ~160 km (same copy style as map)
+        try {
+          const stepLabel = 160;
+          const fontPx = 10;
+          const boxes = [];
+          const overlaps = (a, b) => !(a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2);
+          profileCtx.font = `600 ${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+          profileCtx.textAlign = 'center';
+          profileCtx.textBaseline = 'middle';
+          for (let dk = stepLabel; dk < Math.max(0, loadedEnd - 1e-6); dk += stepLabel) {
+            const s = sampleAt(dk);
+            if (!s) continue;
+            const t = Number(s.temperature);
+            const loT = Number(s.temp_p25);
+            const hiT = Number(s.temp_p75);
+            if (!Number.isFinite(t)) continue;
+            const x = xAt(dk);
+            const y = tempY + tempH / 2;
+            const line1 = `${Math.round(t)}°C`;
+            const line2 = (Number.isFinite(loT) && Number.isFinite(hiT)) ? `${Math.round(loT)} / ${Math.round(hiT)}` : '';
+            const w1 = profileCtx.measureText(line1).width;
+            const w2 = line2 ? profileCtx.measureText(line2).width : 0;
+            const ww = Math.max(w1, w2);
+            const pad = 6;
+            const hh = line2 ? (fontPx * 2 + 6) : (fontPx + 6);
+            const rect = { x1: x - ww/2 - pad, y1: y - hh/2, x2: x + ww/2 + pad, y2: y + hh/2 };
+            let ok = true;
+            for (const b of boxes) { if (overlaps(rect, b)) { ok = false; break; } }
+            if (!ok) continue;
+            boxes.push(rect);
+            const r = 7;
+            profileCtx.fillStyle = 'rgba(255,255,255,0.85)';
+            profileCtx.beginPath();
+            profileCtx.moveTo(rect.x1 + r, rect.y1);
+            profileCtx.lineTo(rect.x2 - r, rect.y1);
+            profileCtx.quadraticCurveTo(rect.x2, rect.y1, rect.x2, rect.y1 + r);
+            profileCtx.lineTo(rect.x2, rect.y2 - r);
+            profileCtx.quadraticCurveTo(rect.x2, rect.y2, rect.x2 - r, rect.y2);
+            profileCtx.lineTo(rect.x1 + r, rect.y2);
+            profileCtx.quadraticCurveTo(rect.x1, rect.y2, rect.x1, rect.y2 - r);
+            profileCtx.lineTo(rect.x1, rect.y1 + r);
+            profileCtx.quadraticCurveTo(rect.x1, rect.y1, rect.x1 + r, rect.y1);
+            profileCtx.closePath();
+            profileCtx.fill();
+            profileCtx.fillStyle = '#111';
+            profileCtx.fillText(line1, x, y - (line2 ? fontPx*0.55 : 0));
+            if (line2) {
+              profileCtx.font = `500 ${fontPx - 1}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+              profileCtx.fillText(line2, x, y + fontPx*0.55);
+              profileCtx.font = `600 ${fontPx}px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+            }
+          }
+        } catch (_) {}
+
+        profileCtx.restore();
+      } catch (e) {
+        try { profileCtx.restore(); } catch (_) {}
+      }
+    }
     // Grid: horizontal lines (dynamic "nice" step ~5–6 ticks across elevation range)
     profileCtx.strokeStyle = '#ddd';
     profileCtx.lineWidth = 1;
@@ -3924,10 +6628,12 @@
       profileCtx.fillText(`${Math.round(d)} km`, x, axisY + 12 + tickLen);
     }
     // Draw glyph position pins onto the elevation profile ("stuck onto" the line)
-    if (DEBUG_PROFILE_STEP) console.log(`%c[STEP ${++DEBUG_STEP_COUNTER}] Draw glyph position pins`, 'color: blue; font-weight: bold');
-    await waitForSpacebar(DEBUG_STEP_COUNTER, 'Draw glyph position pins');
-    try {
-      if (Array.isArray(OVERLAY_POINTS) && OVERLAY_POINTS.length) {
+    // In bands mode we suppress pins (map + profile must match visualization setting).
+    if (!wantBands) {
+      if (DEBUG_PROFILE_STEP) console.log(`%c[STEP ${++DEBUG_STEP_COUNTER}] Draw glyph position pins`, 'color: blue; font-weight: bold');
+      await waitForSpacebar(DEBUG_STEP_COUNTER, 'Draw glyph position pins');
+      try {
+        if (Array.isArray(OVERLAY_POINTS) && OVERLAY_POINTS.length) {
         const pinH = 17; // needle height (2x reduced by ~30%)
         const r = 4;     // head radius (2x reduced by ~30%)
         // Helper: interpolate elevation at distance d
@@ -4092,8 +6798,9 @@
           profileCtx.stroke();
           // Remove extra colored pin head at stem tip (no hollow circle)
         }
-      }
-    } catch (e) { console.warn('draw pins error', e); }
+        }
+      } catch (e) { console.warn('draw pins error', e); }
+    }
     // Start/Finish pins at 0 km and route end (stuck onto elevation line)
     if (DEBUG_PROFILE_STEP) console.log(`%c[STEP ${++DEBUG_STEP_COUNTER}] Draw start/finish pins (green/red)`, 'color: blue; font-weight: bold');
     await waitForSpacebar(DEBUG_STEP_COUNTER, 'Draw start/finish pins');
@@ -4387,11 +7094,13 @@
         effWind = wspd * Math.cos(ang);
       }
     } catch(_) {}
-    const colLeft = [
+    const colA = [
       `Day ${dayIdx+1} — ${dateStr}`,
+      `Years: ${yearsStart===null||yearsEnd===null?'-':`${yearsStart}–${yearsEnd}`}${matchDays===null?'':` (n=${Math.round(matchDays)})`}`
+    ];
+    const colB = [
       `Distance: ${fmt(dkm,1)} km`,
       `Elevation: ${fmt(elev,0)} m`,
-      `Years: ${yearsStart===null||yearsEnd===null?'-':`${yearsStart}–${yearsEnd}`}${matchDays===null?'':` (n=${Math.round(matchDays)})`}`
     ];
     // Comfort thresholds
     const T_COLD = Number(SETTINGS.tempCold || 5);
@@ -4407,11 +7116,13 @@
       return base;
     }
     const tempMedStyled = styleVal(tMid, (Number(tMid) <= T_COLD || Number(tMid) >= T_HOT));
-    const colMid = [
-      `Temp median: ${tempMedStyled} °C`,
-      `Temp range: ${fmt(t25,1)}–${fmt(t75,1)} °C`
-    ];
     const rainTypStyled = styleVal(rainTyp, Number(rainTyp) >= R_HIGH);
+    const colC = [
+      `Temp median: ${tempMedStyled} °C`,
+      `Temp range: ${fmt(t25,1)}–${fmt(t75,1)} °C`,
+      `Rain probability: ${rainP===null?'-':rainP}%`,
+      `Typical rain: ${rainTypStyled} mm`,
+    ];
     // Effective wind: color by direction and threshold (tailwind green, headwind red)
     let effStyled = effWind===null?'-':fmt(effWind,1);
     if (effWind !== null && Number.isFinite(effWind)) {
@@ -4423,27 +7134,28 @@
         effStyled = `<span style="color:${isTail?'#2a7a2a':'#c0392b'};font-weight:700">${fmt(effWind,1)}</span>`;
       }
     }
-    const colRight = [
-      `Rain probability: ${rainP===null?'-':rainP}%`,
-      `Typical rain: ${rainTypStyled} mm`,
+    const colD = [
       `Wind: ${fmt(wspd,1)} m/s @ ${degToCardinal(wdir)}${wdir===null?'':` (${fmt(wdir,0)}°)`}`,
       `Effective wind: ${effStyled} m/s`
     ];
     if (profileTooltip) {
-      const colStyle = 'display:flex; flex-direction:column; gap:1px; min-width:100px; font-size:9px; line-height:1.3;';
-      const sepStyle = 'width:1px; background:#ddd; margin:0 6px;';
+      const colStyle = 'display:flex; flex-direction:column; gap:2px; min-width:108px; font-size:11px; line-height:1.25;';
+      const sepStyle = 'width:1px; background:#ddd; margin:0 9px;';
       profileTooltip.innerHTML = `
         <div style="display:flex; align-items:flex-start; justify-content:center;">
-          <div id="ptt-left" style="${colStyle} flex:1;">${colLeft.map(l => `<div>${l}</div>`).join('')}</div>
+          <div id="ptt-a" style="${colStyle} flex:1;">${colA.map(l => `<div>${l}</div>`).join('')}</div>
           <div style="${sepStyle}"></div>
-          <div id="ptt-mid" style="${colStyle} flex:1;">${colMid.map(l => `<div>${l}</div>`).join('')}</div>
+          <div id="ptt-b" style="${colStyle} flex:1;">${colB.map(l => `<div>${l}</div>`).join('')}</div>
           <div style="${sepStyle}"></div>
-          <div id="ptt-right" style="${colStyle} flex:1;">${colRight.map(l => `<div>${l}</div>`).join('')}</div>
+          <div id="ptt-c" style="${colStyle} flex:1;">${colC.map(l => `<div>${l}</div>`).join('')}</div>
+          <div style="${sepStyle}"></div>
+          <div id="ptt-d" style="${colStyle} flex:1;">${colD.map(l => `<div>${l}</div>`).join('')}</div>
         </div>`;
       profileTooltip.style.display = 'block';
-      // Auto-fit tooltip width to keep third column within 4 single-line items (avoid line wraps)
+      // Auto-fit tooltip width to keep columns mostly single-line (avoid wraps)
       try {
-        const widths = [480, 560, 640, 720];
+        const maxW = Math.max(520, Math.min(980, Math.round(window.innerWidth * 0.78)));
+        const widths = [520, 600, 700, 800, 900, 980].filter(w => w <= maxW);
         const getLines = (el) => {
           try {
             const rect = el.getBoundingClientRect();
@@ -4454,20 +7166,19 @@
         };
         setTimeout(() => {
           let applied = false;
+          if (!widths.length) widths.push(maxW);
           for (let w of widths) {
             profileTooltip.style.width = `${w}px`;
-            const rightCol = profileTooltip.querySelector('#ptt-right');
+            const cols = ['#ptt-a', '#ptt-b', '#ptt-c', '#ptt-d'].map(q => profileTooltip.querySelector(q)).filter(Boolean);
             let maxLines = 0;
-            if (rightCol && rightCol.children && rightCol.children.length) {
-              for (let i = 0; i < rightCol.children.length; i++) {
-                const child = rightCol.children[i];
-                maxLines = Math.max(maxLines, getLines(child));
+            for (const c of cols) {
+              for (let i = 0; i < (c.children ? c.children.length : 0); i++) {
+                maxLines = Math.max(maxLines, getLines(c.children[i]));
               }
             }
-            // Accept layout when no child wraps to multiple lines
             if (maxLines <= 1) { applied = true; break; }
           }
-          if (!applied) profileTooltip.style.width = `${widths[widths.length-1]}px`;
+          if (!applied) profileTooltip.style.width = `${Math.min(maxW, widths[widths.length-1])}px`;
         }, 0);
       } catch (_) {}
     }
@@ -4579,32 +7290,9 @@
     const pts = (OVERLAY_POINTS || []).slice().filter(p => Number.isFinite(p.dist)).sort((a, b) => a.dist - b.dist);
     if (!pts.length) return;
     if (OVERLAY_MODE === 'temperature') {
-      // Color ramp identical to glyphs
-      const anchors = [
-        // Palette B — Blue→Teal→Lime→Yellow→Orange→Crimson
-        { t: -20.0, c: [0x00, 0x5b, 0xff] },
-        { t: -10.0, c: [0x00, 0xb3, 0xcc] },
-        { t: 0.0,   c: [0x00, 0xd9, 0xa3] },
-        { t: 15.0,  c: [0x7d, 0xff, 0x00] },
-        { t: 20.0,  c: [0xff, 0xf2, 0x00] },
-        { t: 25.0,  c: [0xff, 0x99, 0x33] },
-        { t: 30.0,  c: [0xff, 0x33, 0x33] },
-        { t: 40.0,  c: [0xcc, 0x00, 0x00] },
-      ];
       function colorFromTemperature(t) {
-        const tt = Math.max(anchors[0].t, Math.min(anchors[anchors.length-1].t, Number(t)));
-        for (let i = 0; i < anchors.length - 1; i++) {
-          const a0 = anchors[i], a1 = anchors[i+1];
-          if (a0.t <= tt && tt <= a1.t) {
-            const u = (a1.t === a0.t) ? 1 : (tt - a0.t) / (a1.t - a0.t);
-            const r = Math.round(a0.c[0] + u * (a1.c[0] - a0.c[0]));
-            const g = Math.round(a0.c[1] + u * (a1.c[1] - a0.c[1]));
-            const b = Math.round(a0.c[2] + u * (a1.c[2] - a0.c[2]));
-            return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
-          }
-        }
-        const c = anchors[anchors.length-1].c;
-        return `#${c[0].toString(16).padStart(2,'0')}${c[1].toString(16).padStart(2,'0')}${c[2].toString(16).padStart(2,'0')}`;
+        // MUST match global palette used elsewhere.
+        return tempColor(Number(t));
       }
       // Map temperature to vertical range using data min/max across all relevant values
       function pointMedianT(p) {
@@ -4640,10 +7328,17 @@
       })();
       // Historical and Daytime variability rendering helpers
       function withAlpha(hex, alpha) {
-        const r = parseInt(hex.slice(1,3), 16);
-        const g = parseInt(hex.slice(3,5), 16);
-        const b = parseInt(hex.slice(5,7), 16);
-        return `rgba(${r}, ${g}, ${b}, ${Math.max(0, Math.min(1, Number(alpha)))})`;
+        const a = Math.max(0, Math.min(1, Number(alpha)));
+        const s = String(hex || '');
+        if (s[0] === '#' && s.length >= 7) {
+          const r = parseInt(s.slice(1,3), 16);
+          const g = parseInt(s.slice(3,5), 16);
+          const b = parseInt(s.slice(5,7), 16);
+          return `rgba(${r}, ${g}, ${b}, ${a})`;
+        }
+        const m = s.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+        if (m) return `rgba(${Number(m[1])}, ${Number(m[2])}, ${Number(m[3])}, ${a})`;
+        return `rgba(0, 0, 0, ${a})`;
       }
       function drawTemperatureBand(points, lowerKey, upperKey, opacity, colorHex) {
         const valid = points.filter(p => Number.isFinite(p[lowerKey]) && Number.isFinite(p[upperKey]) && Number.isFinite(p.dist));
@@ -4867,6 +7562,7 @@
       }
       if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
       OVERLAY_POINTS = [];
+      TOUR_HOVER_POINTS_DIRTY = true;
       const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${gpxParam}${revParam}`;
       let evtSourcePrime = new EventSource(urlPrime);
       window.__WM_PRIME_EVT_SOURCE__ = evtSourcePrime;
@@ -4931,7 +7627,11 @@
     }
     if (glyphLayerNew) { map.removeLayer(glyphLayerNew); }
     OVERLAY_POINTS = [];
+    TOUR_HOVER_POINTS_DIRTY = true;
     glyphLayerNew = L.layerGroup().addTo(map);
+    try { _setTourBandsEnabled(_tourWantBands()); } catch (_) {}
+    if (!weatherOnly) LAST_PROFILE = null;
+    try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
 
     // Subscribe to streaming map data
     evtSource.addEventListener('route', (ev) => {
@@ -5058,6 +7758,9 @@
           map.fitBounds(b, { padding: [20, 20] });
           if (progressBar) progressBar.style.width = total > 0 ? '0%' : '0%';
           OVERLAY_POINTS = [];
+          TOUR_HOVER_POINTS_DIRTY = true;
+          LAST_PROFILE = null;
+          try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
           const ysRaw = (payload.years_start !== undefined) ? payload.years_start : payload.yearsStart;
           const yeRaw = (payload.years_end !== undefined) ? payload.years_end : payload.yearsEnd;
           const toNum = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : NaN; };
@@ -5201,6 +7904,8 @@
         const b = boundsFromLineString(route.geometry.coordinates);
         map.fitBounds(b, { padding: [20, 20] });
         OVERLAY_POINTS = [];
+        TOUR_HOVER_POINTS_DIRTY = true;
+        try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
         // Robust years span: parse, validate, and fallback to SETTINGS if invalid
         const ysRaw = (payload.years_start !== undefined) ? payload.years_start : payload.yearsStart;
         const yeRaw = (payload.years_end !== undefined) ? payload.years_end : payload.yearsEnd;
@@ -5385,6 +8090,7 @@
         const f = payload.feature;
         const [lon, lat] = f.geometry.coordinates;
         const props = f.properties || {};
+        const wantBands = _tourWantBands();
 
         // Detect single-year span (used to decide whether to auto-upgrade to multi-year).
         try {
@@ -5404,78 +8110,80 @@
         noteWeatherProvenanceFromProps(props);
         // Weather phase begins with first station: reset to 0% and then advance by completed/total.
         if (PROGRESS_PHASE !== 'weather') beginWeatherProgress();
-        // Build map glyph according to settings
-        let icon = null;
-        if ((SETTINGS.glyphType === 'svg') || (!SETTINGS.glyphType && !SETTINGS.useClassicWeatherIcons)) {
-          const sizedSvg = resizeGlyphSVG(String(props.svg || ''), 51);
-          const html = `<div class=\"glyph-inner\" style=\"width:51px;height:51px;filter:saturate(0.70);opacity:0.92;overflow:hidden\">${sizedSvg}</div>`;
-          icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
-        } else if (SETTINGS.glyphType === 'cyclist') {
-          // Compose cyclist glyph into a 51x51 PNG
-          const tMed = (props.temp_day_median !== undefined) ? Number(props.temp_day_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : (props.temp_median || 0));
-          const t25 = (props.temp_day_p25 !== undefined) ? Number(props.temp_day_p25) : ((props.temp_p25 !== undefined) ? Number(props.temp_p25) : null);
-          const t75 = (props.temp_day_p75 !== undefined) ? Number(props.temp_day_p75) : ((props.temp_p75 !== undefined) ? Number(props.temp_p75) : null);
-          const prob = (props.rain_probability !== undefined) ? Number(props.rain_probability) : 0;
-          // Relative wind vs route heading (approximate: use station angle towards next route point if available)
-          let effRel = null;
-          try {
-            const sd = Array.isArray(LAST_PROFILE?.sampled_dist_km) ? LAST_PROFILE.sampled_dist_km : [];
-            const sh = Array.isArray(LAST_PROFILE?.sampled_heading_deg) ? LAST_PROFILE.sampled_heading_deg : [];
-            if (sd.length && sh.length === sd.length && Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length >= 2) {
-              const dkm = Number(props.distance_from_start_km || 0);
-              const profLen = Number(sd[sd.length - 1] || 0);
-              const routeLen = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0);
-              const scale2 = (Number.isFinite(routeLen) && Number.isFinite(profLen) && profLen > 0) ? (routeLen / profLen) : 1;
-              let lo=0, hi=sd.length-1;
-              while(lo<hi){ const mid=(lo+hi)>>1; if (sd[mid]*scale2<dkm) lo=mid+1; else hi=mid; }
-              const routeDir = Number(sh[lo]||0);
-              const wdirTo = ((Number(props.wind_dir_deg)||0) + 180.0) % 360.0;
-              const ang = (wdirTo - routeDir) * Math.PI/180.0;
-              effRel = Math.cos(ang);
-            }
-          } catch(_){ }
-          const key = [Math.round(tMed*10)/10, t25 ?? '-', t75 ?? '-', Math.round(prob*100)/100, Math.round((props.wind_dir_deg||0)*10)/10, Math.round((props.wind_speed_ms||0)*10)/10, Math.round((props.wind_var_deg||0)*10)/10, Math.round((effRel||0)*100)/100].join('|');
-          const cvs = getCyclistGlyphCanvas(key, { tMed, t25, t75, rainProb: prob, windDir: props.wind_dir_deg, windSpeed: props.wind_speed_ms, windVar: props.wind_var_deg, effRel });
-          const mapCvs = document.createElement('canvas');
-          mapCvs.width = 51; mapCvs.height = 51;
-          const ctx2 = mapCvs.getContext('2d');
-          const s = Math.min(mapCvs.width / cvs.width, mapCvs.height / cvs.height);
-          const w = Math.round(cvs.width * s);
-          const h = Math.round(cvs.height * s);
-          const x = Math.round((mapCvs.width - w) / 2);
-          const y = Math.round((mapCvs.height - h) / 2);
-          ctx2.drawImage(cvs, x, y, w, h);
-          const url = mapCvs.toDataURL('image/png');
-          const html = `<div class=\"glyph-inner\" style=\"width:51px;height:51px;filter:saturate(0.85);opacity:0.98;overflow:hidden\"><img src=\"${url}\" width=\"51\" height=\"51\"/></div>`;
-          icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
-        } else {
-          // Classic default: use server-provided SVG
-          const sizedSvg = resizeGlyphSVG(String(props.svg || ''), 51);
-          const html = `<div class=\"glyph-inner\" style=\"width:51px;height:51px;filter:saturate(0.70);opacity:0.92;overflow:hidden\">${sizedSvg}</div>`;
-          icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
+        if (!wantBands) {
+          // Build map glyph according to settings
+          let icon = null;
+          if ((SETTINGS.glyphType === 'svg') || (!SETTINGS.glyphType && !SETTINGS.useClassicWeatherIcons)) {
+            const sizedSvg = resizeGlyphSVG(String(props.svg || ''), 51);
+            const html = `<div class=\"glyph-inner\" style=\"width:51px;height:51px;filter:saturate(0.70);opacity:0.92;overflow:hidden\">${sizedSvg}</div>`;
+            icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
+          } else if (SETTINGS.glyphType === 'cyclist') {
+            // Compose cyclist glyph into a 51x51 PNG
+            const tMed = (props.temp_day_median !== undefined) ? Number(props.temp_day_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : (props.temp_median || 0));
+            const t25 = (props.temp_day_p25 !== undefined) ? Number(props.temp_day_p25) : ((props.temp_p25 !== undefined) ? Number(props.temp_p25) : null);
+            const t75 = (props.temp_day_p75 !== undefined) ? Number(props.temp_day_p75) : ((props.temp_p75 !== undefined) ? Number(props.temp_p75) : null);
+            const prob = (props.rain_probability !== undefined) ? Number(props.rain_probability) : 0;
+            // Relative wind vs route heading
+            let effRel = null;
+            try {
+              const sd = Array.isArray(LAST_PROFILE?.sampled_dist_km) ? LAST_PROFILE.sampled_dist_km : [];
+              const sh = Array.isArray(LAST_PROFILE?.sampled_heading_deg) ? LAST_PROFILE.sampled_heading_deg : [];
+              if (sd.length && sh.length === sd.length && Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length >= 2) {
+                const dkm = Number(props.distance_from_start_km || 0);
+                const profLen = Number(sd[sd.length - 1] || 0);
+                const routeLen = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0);
+                const scale2 = (Number.isFinite(routeLen) && Number.isFinite(profLen) && profLen > 0) ? (routeLen / profLen) : 1;
+                let lo=0, hi=sd.length-1;
+                while(lo<hi){ const mid=(lo+hi)>>1; if (sd[mid]*scale2<dkm) lo=mid+1; else hi=mid; }
+                const routeDir = Number(sh[lo]||0);
+                const wdirTo = ((Number(props.wind_dir_deg)||0) + 180.0) % 360.0;
+                const ang = (wdirTo - routeDir) * Math.PI/180.0;
+                effRel = Math.cos(ang);
+              }
+            } catch(_){ }
+            const key = [Math.round(tMed*10)/10, t25 ?? '-', t75 ?? '-', Math.round(prob*100)/100, Math.round((props.wind_dir_deg||0)*10)/10, Math.round((props.wind_speed_ms||0)*10)/10, Math.round((props.wind_var_deg||0)*10)/10, Math.round((effRel||0)*100)/100].join('|');
+            const cvs = getCyclistGlyphCanvas(key, { tMed, t25, t75, rainProb: prob, windDir: props.wind_dir_deg, windSpeed: props.wind_speed_ms, windVar: props.wind_var_deg, effRel });
+            const mapCvs = document.createElement('canvas');
+            mapCvs.width = 51; mapCvs.height = 51;
+            const ctx2 = mapCvs.getContext('2d');
+            const s = Math.min(mapCvs.width / cvs.width, mapCvs.height / cvs.height);
+            const w = Math.round(cvs.width * s);
+            const h = Math.round(cvs.height * s);
+            const x = Math.round((mapCvs.width - w) / 2);
+            const y = Math.round((mapCvs.height - h) / 2);
+            ctx2.drawImage(cvs, x, y, w, h);
+            const url = mapCvs.toDataURL('image/png');
+            const html = `<div class=\"glyph-inner\" style=\"width:51px;height:51px;filter:saturate(0.85);opacity:0.98;overflow:hidden\"><img src=\"${url}\" width=\"51\" height=\"51\"/></div>`;
+            icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
+          } else {
+            // Classic default: use server-provided SVG
+            const sizedSvg = resizeGlyphSVG(String(props.svg || ''), 51);
+            const html = `<div class=\"glyph-inner\" style=\"width:51px;height:51px;filter:saturate(0.70);opacity:0.92;overflow:hidden\">${sizedSvg}</div>`;
+            icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
+          }
+          const m = L.marker([lat, lon], { icon });
+          const kmh = msToKmh(props.wind_speed_ms);
+          const selected2 = startDateInput.value ? new Date(startDateInput.value) : new Date();
+          const mmdd2 = getMMDD(selected2);
+          const tipHtml = (
+            `<div class=\"wm-tip-content\">` +
+              `<div class=\"wm-tip-line\"><strong>Station:</strong> ${props.station_name || '-'}</div>` +
+              `<div class=\"wm-tip-line\"><strong>Day:</strong> ${props.tour_day_index!==undefined?(props.tour_day_index+1):'-'} of ${props.tour_total_days||'-'}</div>` +
+              `<div class=\"wm-tip-line\"><strong>Date:</strong> ${props.date || mmdd2}</div>` +
+              `<div class=\"wm-tip-line\"><strong>Years:</strong> ${(props._years_start!==undefined&&props._years_end!==undefined)?(`${props._years_start}–${props._years_end}`):'-'}${props._match_days===undefined?'':` (n=${Array.isArray(props._match_days)?props._match_days.length:props._match_days})`}</div>` +
+              `<div class=\"wm-tip-line\"><strong>Distance:</strong> ${fmt(props.distance_from_start_km,1)} km</div>` +
+              `<div class=\"wm-tip-line\"><strong>Tour temperature:</strong> ${fmt(props.temperature_c, 1)} °C</div>` +
+              `<div class=\"wm-tip-line\"><strong>Typical range:</strong> ${fmt(props.temp_p25, 1)}–${fmt(props.temp_p75, 1)} °C</div>` +
+              `<div class=\"wm-tip-line\"><strong>Rain probability:</strong> ${props.rain_probability!==undefined?Math.round(Number(props.rain_probability)*100):'-'}%</div>` +
+              `<div class=\"wm-tip-line\"><strong>Typical rain:</strong> ${fmt(props.rain_typical_mm, 1)} mm</div>` +
+              `<div class=\"wm-tip-line\"><strong>Wind:</strong> ${kmh===null?'-':fmt(kmh,1)} km/h (${fmt(props.wind_speed_ms,1)} m/s, Bft ${msToBeaufort(props.wind_speed_ms)}), dir ${degToCardinal(props.wind_dir_deg)} (${fmt(props.wind_dir_deg,0)}°), std ${fmt(props.wind_var_deg,0)}°</div>` +
+              `<div class=\"wm-tip-line\"><strong>Dist:</strong> ${fmt(props.min_distance_to_route_km, 1)} km</div>` +
+            `</div>`
+          );
+          const cls = props._wind_warning ? 'tooltip wm-tip wind-warning' : 'tooltip wm-tip';
+          m.bindTooltip(tipHtml, { className: cls, direction: 'auto', offset: L.point(40, -20) });
+          glyphLayerNew.addLayer(m);
         }
-        const m = L.marker([lat, lon], { icon });
-        const kmh = msToKmh(props.wind_speed_ms);
-        const selected2 = startDateInput.value ? new Date(startDateInput.value) : new Date();
-        const mmdd2 = getMMDD(selected2);
-        const tipHtml = (
-          `<div class=\"wm-tip-content\">` +
-            `<div class=\"wm-tip-line\"><strong>Station:</strong> ${props.station_name || '-'}</div>` +
-            `<div class=\"wm-tip-line\"><strong>Day:</strong> ${props.tour_day_index!==undefined?(props.tour_day_index+1):'-'} of ${props.tour_total_days||'-'}</div>` +
-            `<div class=\"wm-tip-line\"><strong>Date:</strong> ${props.date || mmdd2}</div>` +
-            `<div class=\"wm-tip-line\"><strong>Years:</strong> ${(props._years_start!==undefined&&props._years_end!==undefined)?(`${props._years_start}–${props._years_end}`):'-'}${props._match_days===undefined?'':` (n=${Array.isArray(props._match_days)?props._match_days.length:props._match_days})`}</div>` +
-            `<div class=\"wm-tip-line\"><strong>Distance:</strong> ${fmt(props.distance_from_start_km,1)} km</div>` +
-            `<div class=\"wm-tip-line\"><strong>Tour temperature:</strong> ${fmt(props.temperature_c, 1)} °C</div>` +
-            `<div class=\"wm-tip-line\"><strong>Typical range:</strong> ${fmt(props.temp_p25, 1)}–${fmt(props.temp_p75, 1)} °C</div>` +
-            `<div class=\"wm-tip-line\"><strong>Rain probability:</strong> ${props.rain_probability!==undefined?Math.round(Number(props.rain_probability)*100):'-'}%</div>` +
-            `<div class=\"wm-tip-line\"><strong>Typical rain:</strong> ${fmt(props.rain_typical_mm, 1)} mm</div>` +
-            `<div class=\"wm-tip-line\"><strong>Wind:</strong> ${kmh===null?'-':fmt(kmh,1)} km/h (${fmt(props.wind_speed_ms,1)} m/s, Bft ${msToBeaufort(props.wind_speed_ms)}), dir ${degToCardinal(props.wind_dir_deg)} (${fmt(props.wind_dir_deg,0)}°), std ${fmt(props.wind_var_deg,0)}°</div>` +
-            `<div class=\"wm-tip-line\"><strong>Dist:</strong> ${fmt(props.min_distance_to_route_km, 1)} km</div>` +
-          `</div>`
-        );
-        const cls = props._wind_warning ? 'tooltip wm-tip wind-warning' : 'tooltip wm-tip';
-        m.bindTooltip(tipHtml, { className: cls, direction: 'auto', offset: L.point(40, -20) });
-        glyphLayerNew.addLayer(m);
         // Aggregate per-tour-day stats for console diagnostics
         try {
           if (props.tour_day_index !== undefined && props.tour_day_index !== null) {
@@ -5520,6 +8228,9 @@
           precipMm: (props.precipitation_mm !== undefined) ? Number(props.precipitation_mm) : null,
           rainProb: (props.rain_probability !== undefined) ? Number(props.rain_probability) : null,
           rainTypical: (props.rain_typical_mm !== undefined) ? Number(props.rain_typical_mm) : null,
+          rain_hist_p25_mm: (props.rain_hist_p25_mm !== undefined) ? Number(props.rain_hist_p25_mm) : null,
+          rain_hist_p75_mm: (props.rain_hist_p75_mm !== undefined) ? Number(props.rain_hist_p75_mm) : null,
+          rain_hist_p90_mm: (props.rain_hist_p90_mm !== undefined) ? Number(props.rain_hist_p90_mm) : null,
           windSpeed: (props.wind_speed_ms !== undefined) ? Number(props.wind_speed_ms) : null,
           windDir: (props.wind_dir_deg !== undefined) ? Number(props.wind_dir_deg) : null,
           windVar: (props.wind_var_deg !== undefined) ? Number(props.wind_var_deg) : null,
@@ -5553,6 +8264,9 @@
         } catch(_){}
         // Redraw full profile (clears canvas) as stations stream in
         if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+        // Progressive tactical rendering: enable + redraw bands as points arrive.
+        try { if (wantBands) _setTourBandsEnabled(true); } catch (_) {}
+        try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
         const completed = Number(payload.completed || 0);
         const total = Number(payload.total || 0);
         const pct = total > 0 ? Math.min(100, Math.round(100 * completed / total)) : 0;
@@ -5972,6 +8686,9 @@
         if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
           try { _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
           try { _scheduleStrategicFetch(); } catch (_) {}
+          // Some strategic settings (e.g. includeSea land clipping) don't change the fetch key.
+          // Force a local redraw so the toggle has an immediate effect.
+          try { _renderStrategic(); } catch (_) {}
         }
         if (LAST_PROFILE) drawProfile(LAST_PROFILE);
       }
