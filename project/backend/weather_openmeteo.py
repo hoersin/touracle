@@ -261,12 +261,30 @@ def fetch_daily_weather(
     return fetch_daily_weather_same_day(lat, lon, month, day, years_window=years_window, start_year=start_year, end_year=end_year)
 
 # --- Hourly single-day helpers and fetcher ---
-def _cache_path_hourly_oneday(lat2: float, lon2: float, month: int, day: int) -> Path:
-    name = f"hourly_oneday_lat{lat2:.1f}_lon{lon2:.1f}_m{month:02d}_d{day:02d}.json"
+def _cache_path_hourly_oneday(
+    lat2: float,
+    lon2: float,
+    month: int,
+    day: int,
+    start_year: int,
+    end_year: int,
+) -> Path:
+    name = (
+        f"hourly_oneday_lat{lat2:.1f}_lon{lon2:.1f}"
+        f"_y{int(start_year)}-{int(end_year)}"
+        f"_m{month:02d}_d{day:02d}.json"
+    )
     return CACHE_DIR / name
 
-def _load_cache_hourly_oneday(lat2: float, lon2: float, month: int, day: int) -> Optional[dict]:
-    path = _cache_path_hourly_oneday(lat2, lon2, month, day)
+def _load_cache_hourly_oneday(
+    lat2: float,
+    lon2: float,
+    month: int,
+    day: int,
+    start_year: int,
+    end_year: int,
+) -> Optional[dict]:
+    path = _cache_path_hourly_oneday(lat2, lon2, month, day, start_year, end_year)
     if path.exists():
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -275,11 +293,27 @@ def _load_cache_hourly_oneday(lat2: float, lon2: float, month: int, day: int) ->
             return data
         except Exception:
             pass
-    log.info('[CACHE] miss (hourly oneday) lat=%.1f lon=%.1f m=%02d d=%02d', lat2, lon2, month, day)
+    log.info(
+        '[CACHE] miss (hourly oneday) lat=%.1f lon=%.1f y=%04d-%04d m=%02d d=%02d',
+        lat2,
+        lon2,
+        int(start_year),
+        int(end_year),
+        month,
+        day,
+    )
     return None
 
-def _save_cache_hourly_oneday(lat2: float, lon2: float, month: int, day: int, data: dict) -> None:
-    path = _cache_path_hourly_oneday(lat2, lon2, month, day)
+def _save_cache_hourly_oneday(
+    lat2: float,
+    lon2: float,
+    month: int,
+    day: int,
+    start_year: int,
+    end_year: int,
+    data: dict,
+) -> None:
+    path = _cache_path_hourly_oneday(lat2, lon2, month, day, start_year, end_year)
     try:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f)
@@ -320,22 +354,23 @@ def fetch_hourly_weather_same_day(
     """
     lat2 = round(lat, 1)
     lon2 = round(lon, 1)
-    cached = _load_cache_hourly_oneday(lat2, lon2, month, day)
+    today = date.today()
+    default_end = today.year - 1
+    if end_year is None:
+        end_year = default_end
+    else:
+        end_year = min(int(end_year), default_end)
+    if start_year is None:
+        start_year = int(end_year) - int(years_window) + 1
+    else:
+        start_year = int(start_year)
+    if int(end_year) < int(start_year):
+        return pd.DataFrame([])
+
+    cached = _load_cache_hourly_oneday(lat2, lon2, month, day, int(start_year), int(end_year))
     if cached is not None:
         data_all = cached
     else:
-        today = date.today()
-        default_end = today.year - 1
-        if end_year is None:
-            end_year = default_end
-        else:
-            end_year = min(int(end_year), default_end)
-        if start_year is None:
-            start_year = int(end_year) - int(years_window) + 1
-        else:
-            start_year = int(start_year)
-        if int(end_year) < int(start_year):
-            return pd.DataFrame([])
         rows = []
         for y in range(int(start_year), int(end_year) + 1):
             try:
@@ -360,7 +395,7 @@ def fetch_hourly_weather_same_day(
                         continue
         data_all = {'rows': rows}
         try:
-            _save_cache_hourly_oneday(lat2, lon2, month, day, data_all)
+            _save_cache_hourly_oneday(lat2, lon2, month, day, int(start_year), int(end_year), data_all)
         except Exception:
             pass
     df = pd.DataFrame(data_all.get('rows', []))

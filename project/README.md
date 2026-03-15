@@ -90,6 +90,17 @@ Note: committing `.exe` binaries directly into the git repo is usually discourag
 - `project/frontend/`: Leaflet UI (map, upload, weather display)
 - `project/data/`: Demo GPX route (milano_to_rome_demo.gpx)
 
+## Documentation
+
+More detailed documentation lives in `docs/`:
+
+- `docs/APP_DESCRIPTION.md` — product goals and scope
+- `docs/INSTALLATION_GUIDE.md` — install/run from a GitHub clone or ZIP
+- `docs/USER_MANUAL.md` — how to use Tour Planning + Climatic Map
+- `docs/ARCHITECTURE.md` — components and data flows
+- `docs/DATABASE_OFFLINE_TILE_STORE.md` — offline SQLite tile store schema and usage
+- `docs/DEVELOPMENT_TESTING.md` — development notes and running tests
+
 
 ## Notes
 

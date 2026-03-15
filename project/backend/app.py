@@ -81,6 +81,45 @@ def _stats_has_rain_percentiles(stats: Any) -> bool:
         )
     except Exception:
         return False
+
+
+def _stats_has_temperature_summary_fields(stats: Any) -> bool:
+    """Detect whether a cached stats dict includes the newer explicit temp summary fields."""
+    try:
+        if not isinstance(stats, dict):
+            return False
+        return (
+            ('temp_hist_median' in stats)
+            and ('temp_hist_min' in stats)
+            and ('temp_hist_max' in stats)
+            and ('temp_day_typical_min' in stats)
+            and ('temp_day_typical_max' in stats)
+        )
+    except Exception:
+        return False
+
+
+def _ensure_temperature_summary_fields(stats: Any) -> Any:
+    """Backfill explicit temperature summary fields from legacy fields when needed."""
+    try:
+        if not isinstance(stats, dict):
+            return stats
+        if 'temp_hist_median' not in stats:
+            if stats.get('temperature_c') is not None:
+                stats['temp_hist_median'] = stats.get('temperature_c')
+            elif stats.get('temp_day_median') is not None:
+                stats['temp_hist_median'] = stats.get('temp_day_median')
+        if 'temp_hist_min' not in stats and stats.get('temp_p25') is not None:
+            stats['temp_hist_min'] = stats.get('temp_p25')
+        if 'temp_hist_max' not in stats and stats.get('temp_p75') is not None:
+            stats['temp_hist_max'] = stats.get('temp_p75')
+        if 'temp_day_typical_min' not in stats and stats.get('temp_day_p25') is not None:
+            stats['temp_day_typical_min'] = stats.get('temp_day_p25')
+        if 'temp_day_typical_max' not in stats and stats.get('temp_day_p75') is not None:
+            stats['temp_day_typical_max'] = stats.get('temp_day_p75')
+        return stats
+    except Exception:
+        return stats
 UPLOAD_DIR = BASE_DIR / 'data'
 UPLOAD_DIR.mkdir(exist_ok=True)
 SESSION_FILE = DATA_DIR / 'session_state.json'
@@ -566,15 +605,22 @@ def api_map():
             try:
                 stats = __import__('json').load(open(stats_cache_path, 'r', encoding='utf-8'))
                 matches = int(stats.get('_match_days', 0))
-                log.info('[CACHE] hit %s', stats_cache_name)
+                if not _stats_has_temperature_summary_fields(stats):
+                    stats = {}
+                    matches = 0
+                    log.info('[CACHE] stale %s (missing temp summary fields) -> recompute', stats_cache_name)
+                else:
+                    stats = _ensure_temperature_summary_fields(stats)
+                    log.info('[CACHE] hit %s', stats_cache_name)
             except Exception:
                 stats = {}
                 matches = 0
-        else:
+        if not stats_cache_path.exists() or not stats:
             # Offline-first: try tile store before any online requests
             offline_stats = _get_offline_stats(rep_lat, rep_lon, month, day)
             if offline_stats is not None:
                 stats = dict(offline_stats)
+                stats = _ensure_temperature_summary_fields(stats)
                 matches = int(stats.get('_match_days', 0) or 0)
                 log.info('[OFFLINE] Representative hit tile=%s match_days=%d', stats.get('_tile_id'), matches)
             else:
@@ -614,6 +660,7 @@ def api_map():
                     stats['_temp_source'] = 'hourly_daytime'
                 except Exception as e:
                     log.warning('[WEATHER] Daytime temp unavailable: %s', e)
+                stats = _ensure_temperature_summary_fields(stats)
                 # Save stats to cache
                 try:
                     s = {**stats, '_match_days': matches}
@@ -671,12 +718,13 @@ def api_map():
                     try:
                         stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
                         matching = int(stats.get('_match_days', 0) or 0)
-                        if _stats_has_rain_percentiles(stats):
+                        if _stats_has_rain_percentiles(stats) and _stats_has_temperature_summary_fields(stats):
+                            stats = _ensure_temperature_summary_fields(stats)
                             cache_hit = True
                             log.info('[CACHE] hit %s', stats_name)
                         else:
                             cache_hit = False
-                            log.info('[CACHE] stale %s (missing rain percentiles) -> recompute', stats_name)
+                            log.info('[CACHE] stale %s (missing rain percentiles or temp summary fields) -> recompute', stats_name)
                     except Exception:
                         cache_hit = False
 
@@ -1699,12 +1747,18 @@ def api_map_stream():
                             stats = None
                             matches = 0
                             log.info('[CACHE][SSE] stale %s (missing rain percentiles) -> recompute', rep_stats_name)
+                        elif not _stats_has_temperature_summary_fields(stats):
+                            rep_cache_hit = False
+                            stats = None
+                            matches = 0
+                            log.info('[CACHE][SSE] stale %s (missing temp summary fields) -> recompute', rep_stats_name)
                         elif not _span_exact_match(stats):
                             rep_cache_hit = False
                             stats = None
                             matches = 0
                             log.info('[CACHE][SSE] stale %s (years span mismatch) -> recompute', rep_stats_name)
                         else:
+                            stats = _ensure_temperature_summary_fields(stats)
                             rep_cache_hit = True
                             log.info('[CACHE][SSE] hit %s', rep_stats_name)
                 except Exception:
@@ -1730,6 +1784,7 @@ def api_map_stream():
                 if (not rep_cache_hit) and (offline_stats is not None) and (not need_multi):
                     # Simple path: no multi-year requested; offline is good enough.
                     stats = dict(offline_stats)
+                    stats = _ensure_temperature_summary_fields(stats)
                     matches = int(stats.get('_match_days', 0) or 0)
                     log.info('[OFFLINE][SSE] Representative hit tile=%s match_days=%d', stats.get('_tile_id'), matches)
                     try:
@@ -1746,6 +1801,7 @@ def api_map_stream():
                 elif (offline_stats is not None) and has_multi_offline:
                     # Multi-year offline DB (rare): use it.
                     stats = dict(offline_stats)
+                    stats = _ensure_temperature_summary_fields(stats)
                     matches = int(stats.get('_match_days', 0) or 0)
                     log.info('[OFFLINE][SSE] Representative hit tile=%s match_days=%d (multi-year)', stats.get('_tile_id'), matches)
                     try:
@@ -1798,6 +1854,7 @@ def api_map_stream():
                     # Otherwise use dummy stats to avoid showing a different year than selected.
                     if offline_stats is not None:
                         stats = dict(offline_stats)
+                        stats = _ensure_temperature_summary_fields(stats)
                         matches = int(stats.get('_match_days', 0) or 0)
                         log.info('[OFFLINE][SSE] Representative fallback tile=%s match_days=%d', stats.get('_tile_id'), matches)
                     else:
@@ -1835,6 +1892,7 @@ def api_map_stream():
                         stats['_temp_source'] = 'hourly_daytime'
                     except Exception as e:
                         log.warning('[SSE] Daytime temp unavailable (rep): %s', e)
+                    stats = _ensure_temperature_summary_fields(stats)
                     try:
                         s = {**stats, '_match_days': matches}
                         import json as _json
@@ -2103,8 +2161,11 @@ def api_map_stream():
                             matching = int(stats.get('_match_days', 0) or 0)
                             if not _stats_has_rain_percentiles(stats):
                                 raise RuntimeError('stale cache (missing rain percentiles)')
+                            if not _stats_has_temperature_summary_fields(stats):
+                                raise RuntimeError('stale cache (missing temp summary fields)')
                             if not _span_exact_match(stats):
                                 raise RuntimeError('stale cache (years span mismatch)')
+                            stats = _ensure_temperature_summary_fields(stats)
                             try:
                                 provenance_counts['disk_cache'] += 1
                                 ys = stats.get('_years_start')
@@ -2158,6 +2219,7 @@ def api_map_stream():
 
                     if offline_stats is not None:
                         stats = dict(offline_stats)
+                        stats = _ensure_temperature_summary_fields(stats)
                         matching = int(stats.get('_match_days', 0) or 0)
                         offline_span = _years_span_from_stats(stats)
                         if (not want_multi_year) or offline_span >= 2:
@@ -2482,8 +2544,12 @@ def api_map_stream():
                             df_cache[dt_key] = dfh
                         if dfh is not None and len(dfh) >= 4:
                             dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
-                            # Add daytime percentile keys and median for overlay rendering
-                            for k in ('temp_day_p25', 'temp_day_p75', 'temp_day_median'):
+                            # Add explicit historical/daytime tooltip fields plus legacy profile fields.
+                            for k in (
+                                'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
+                                'temp_day_typical_min', 'temp_day_typical_max',
+                                'temp_day_p25', 'temp_day_p75', 'temp_day_median'
+                            ):
                                 if k in dt_stats:
                                     stats[k] = dt_stats[k]
                             if 'temp_hist_p25' in dt_stats and 'temp_hist_p75' in dt_stats:

@@ -308,6 +308,7 @@
   const profileTooltip = document.getElementById('profileTooltip');
   const profilePanel = document.getElementById('profilePanel');
   const tourSummaryBadges = document.getElementById('tourSummaryBadges');
+  const profileLegendHost = document.getElementById('profileLegendHost');
   const mapEl = document.getElementById('map');
   const overlayContainer = document.getElementById('overlayContainer');
   const resizeHandle = document.getElementById('profileResizeHandle');
@@ -323,7 +324,7 @@
   // Compute initial bottom UI height (0 unless Climate mode is active).
   try { setTimeout(() => { _updateStrategicTimelineCssVar(); }, 0); } catch (_) {}
 
-  // Profile panel overlay selector (Temperature / Precipitation / Wind)
+  // Profile panel overlay selector (Temperature / Rain / Wind)
   let profileOverlaySelect = null;
   try {
     const host = tourSummaryBadges || profilePanel;
@@ -334,14 +335,14 @@
       sel.style.cssText = tourSummaryBadges
         ? 'align-self:center; position:relative; background:rgba(255,255,255,0.95); border:1px solid #cfcfcf; border-radius:10px; padding:7px 12px; font-family:system-ui,-apple-system,sans-serif; font-size:13px; cursor:pointer; pointer-events:auto; box-shadow:0 2px 4px rgba(0,0,0,0.08);'
         : 'position:absolute; top:8px; right:22px; background:rgba(255,255,255,0.95); border:1px solid #cfcfcf; border-radius:10px; padding:7px 12px; font-family:system-ui,-apple-system,sans-serif; font-size:13px; z-index:1000; box-shadow:0 2px 4px rgba(0,0,0,0.08); cursor:pointer; pointer-events:auto;';
-      sel.innerHTML = '<option value="temperature">Temperature</option><option value="precipitation">Precipitation</option><option value="wind">Wind</option>';
-      // In the Tour Summary band, keep selector near the right side (before Share).
+      sel.innerHTML = '<option value="temperature">Temperature</option><option value="precipitation">Rain</option><option value="wind">Wind</option>';
+      // In the Tour Summary band, keep selector on the right (before Profile legend).
       if (tourSummaryBadges) {
         try { sel.style.marginLeft = '8px'; } catch (_) {}
         try {
-          const shareBtn = document.getElementById('share');
-          if (shareBtn && shareBtn.parentElement === tourSummaryBadges) {
-            tourSummaryBadges.insertBefore(sel, shareBtn);
+          const legendHost = document.getElementById('profileLegendHost');
+          if (legendHost && legendHost.parentElement === tourSummaryBadges) {
+            tourSummaryBadges.insertBefore(sel, legendHost);
           } else {
             tourSummaryBadges.appendChild(sel);
           }
@@ -358,6 +359,40 @@
   // Profile overlay mode (controlled via Preferences, mirrored in profile panel)
   let OVERLAY_MODE = (setOverlayMode && setOverlayMode.value) ? setOverlayMode.value : 'temperature';
 
+  function _updateProfileLegend() {
+    try {
+      if (!profileLegendHost) return;
+      const m = (OVERLAY_MODE === 'precipitation' || OVERLAY_MODE === 'wind' || OVERLAY_MODE === 'temperature') ? OVERLAY_MODE : 'temperature';
+      profileLegendHost.style.display = 'block';
+      if (m === 'temperature') {
+        profileLegendHost.innerHTML = `
+          <div class="title">Temperature</div>
+          <div class="bar" style="background: linear-gradient(90deg,#963cbe 0%,#005bff 17%,#28a050 58%,#f0dc50 75%,#f59b3c 83%,#d73c2d 92%,#8b0000 100%);"></div>
+          <div class="ticks"><span>-10</span><span>0</span><span>20</span><span>40 °C</span></div>
+          <div class="note">Solid line: median temperature. Dashed lines: typical daytime p25/p75. Shaded band: historical p25–p75 across years.</div>
+        `;
+      } else if (m === 'precipitation') {
+        profileLegendHost.innerHTML = `
+          <div class="title">Rain</div>
+          <div class="bar" style="background: linear-gradient(90deg, rgba(30,112,200,0.10) 0%, rgba(30,112,200,0.92) 100%);"></div>
+          <div class="ticks"><span>0</span><span>5</span><span>10</span><span>20 mm</span></div>
+          <div class="note">Bars: typical rain (mm). Light band: typical × probability (expected mm).</div>
+        `;
+      } else {
+        profileLegendHost.innerHTML = `
+          <div class="title">Wind (effective)</div>
+          <div class="bar steps">
+            <div class="seg" style="background: rgba(220,80,60,0.82);"></div>
+            <div class="seg" style="background: rgba(160,160,160,0.55);"></div>
+            <div class="seg" style="background: rgba(60,180,90,0.80);"></div>
+          </div>
+          <div class="ticks"><span>-8</span><span>0</span><span>+8 m/s</span></div>
+          <div class="note">Line: effective wind along the route (green tailwind, red headwind). Grey shadow band: tolerance from wind direction variability.</div>
+        `;
+      }
+    } catch (_) {}
+  }
+
   function _setOverlayMode(mode, opts) {
     const options = opts && typeof opts === 'object' ? opts : {};
     const m = (mode === 'temperature' || mode === 'precipitation' || mode === 'wind') ? mode : 'temperature';
@@ -369,7 +404,31 @@
     try { if (setOverlayMode) setOverlayMode.value = m; } catch (_) {}
     try { if (profileOverlaySelect) profileOverlaySelect.value = m; } catch (_) {}
     try { if (LAST_PROFILE) drawProfile(LAST_PROFILE); } catch (_) {}
+    try { _updateProfileLegend(); } catch (_) {}
   }
+
+  // Move Share into the map's top-left controls (next to Leaflet zoom).
+  (function mountShareToMapTopLeft(){
+    try {
+      if (!shareBtn) return;
+      const ctrl = L.control({ position: 'topleft' });
+      ctrl.onAdd = () => {
+        const wrap = L.DomUtil.create('div', 'leaflet-bar wm-share-control');
+        // Place it horizontally next to the built-in zoom control.
+        // Zoom control is offset by Leaflet margins (typically 10px top/left).
+        wrap.style.position = 'absolute';
+        wrap.style.left = '46px';
+        wrap.style.top = '10px';
+        wrap.style.margin = '0';
+        shareBtn.style.display = 'block';
+        wrap.appendChild(shareBtn);
+        try { L.DomEvent.disableClickPropagation(wrap); } catch (_) {}
+        try { L.DomEvent.disableScrollPropagation(wrap); } catch (_) {}
+        return wrap;
+      };
+      ctrl.addTo(map);
+    } catch (_) {}
+  })();
   let OVERLAY_POINTS = [];
   let TOUR_DAYS_AGGR = {};
   let evtSource = null;
@@ -2147,8 +2206,13 @@
       return {
         dist: x,
         temperature: Number.isFinite(Number(p.temperature)) ? Number(p.temperature) : null,
+        temp_hist_median: Number.isFinite(Number(p.temp_hist_median)) ? Number(p.temp_hist_median) : null,
+        temp_hist_min: Number.isFinite(Number(p.temp_hist_min)) ? Number(p.temp_hist_min) : null,
+        temp_hist_max: Number.isFinite(Number(p.temp_hist_max)) ? Number(p.temp_hist_max) : null,
         temp_hist_p25: Number.isFinite(Number(p.temp_hist_p25)) ? Number(p.temp_hist_p25) : null,
         temp_hist_p75: Number.isFinite(Number(p.temp_hist_p75)) ? Number(p.temp_hist_p75) : null,
+        temp_day_typical_min: Number.isFinite(Number(p.temp_day_typical_min)) ? Number(p.temp_day_typical_min) : null,
+        temp_day_typical_max: Number.isFinite(Number(p.temp_day_typical_max)) ? Number(p.temp_day_typical_max) : null,
         temp_day_p25: Number.isFinite(Number(p.temp_day_p25)) ? Number(p.temp_day_p25) : null,
         temp_day_p75: Number.isFinite(Number(p.temp_day_p75)) ? Number(p.temp_day_p75) : null,
         windSpeed: Number.isFinite(Number(p.windSpeed)) ? Number(p.windSpeed) : null,
@@ -2178,8 +2242,13 @@
       return {
         dist: x,
         temperature: Number.isFinite(Number(p0.temperature)) ? Number(p0.temperature) : null,
+        temp_hist_median: Number.isFinite(Number(p0.temp_hist_median)) ? Number(p0.temp_hist_median) : null,
+        temp_hist_min: Number.isFinite(Number(p0.temp_hist_min)) ? Number(p0.temp_hist_min) : null,
+        temp_hist_max: Number.isFinite(Number(p0.temp_hist_max)) ? Number(p0.temp_hist_max) : null,
         temp_hist_p25: Number.isFinite(Number(p0.temp_hist_p25)) ? Number(p0.temp_hist_p25) : null,
         temp_hist_p75: Number.isFinite(Number(p0.temp_hist_p75)) ? Number(p0.temp_hist_p75) : null,
+        temp_day_typical_min: Number.isFinite(Number(p0.temp_day_typical_min)) ? Number(p0.temp_day_typical_min) : null,
+        temp_day_typical_max: Number.isFinite(Number(p0.temp_day_typical_max)) ? Number(p0.temp_day_typical_max) : null,
         temp_day_p25: Number.isFinite(Number(p0.temp_day_p25)) ? Number(p0.temp_day_p25) : null,
         temp_day_p75: Number.isFinite(Number(p0.temp_day_p75)) ? Number(p0.temp_day_p75) : null,
         windSpeed: Number.isFinite(Number(p0.windSpeed)) ? Number(p0.windSpeed) : null,
@@ -2198,8 +2267,13 @@
     return {
       dist: x,
       temperature: lerpNum(p0.temperature, p1.temperature, t),
+      temp_hist_median: lerpNum(p0.temp_hist_median, p1.temp_hist_median, t),
+      temp_hist_min: lerpNum(p0.temp_hist_min, p1.temp_hist_min, t),
+      temp_hist_max: lerpNum(p0.temp_hist_max, p1.temp_hist_max, t),
       temp_hist_p25: lerpNum(p0.temp_hist_p25, p1.temp_hist_p25, t),
       temp_hist_p75: lerpNum(p0.temp_hist_p75, p1.temp_hist_p75, t),
+      temp_day_typical_min: lerpNum(p0.temp_day_typical_min, p1.temp_day_typical_min, t),
+      temp_day_typical_max: lerpNum(p0.temp_day_typical_max, p1.temp_day_typical_max, t),
       temp_day_p25: lerpNum(p0.temp_day_p25, p1.temp_day_p25, t),
       temp_day_p75: lerpNum(p0.temp_day_p75, p1.temp_day_p75, t),
       windSpeed: lerpNum(p0.windSpeed, p1.windSpeed, t),
@@ -3153,8 +3227,13 @@
 
           const asSample = (p, distOverride) => {
             const dist = Number.isFinite(Number(distOverride)) ? Number(distOverride) : Number(p && p.dist);
+            const histMedian = (p && (p.temp_hist_median !== undefined)) ? Number(p.temp_hist_median) : null;
+            const histMin = (p && (p.temp_hist_min !== undefined)) ? Number(p.temp_hist_min) : null;
+            const histMax = (p && (p.temp_hist_max !== undefined)) ? Number(p.temp_hist_max) : null;
             const histP25 = (p && (p.temp_hist_p25 !== undefined)) ? Number(p.temp_hist_p25) : null;
             const histP75 = (p && (p.temp_hist_p75 !== undefined)) ? Number(p.temp_hist_p75) : null;
+            const dayTypicalMin = (p && (p.temp_day_typical_min !== undefined)) ? Number(p.temp_day_typical_min) : null;
+            const dayTypicalMax = (p && (p.temp_day_typical_max !== undefined)) ? Number(p.temp_day_typical_max) : null;
             const dayP25 = (p && (p.temp_day_p25 !== undefined)) ? Number(p.temp_day_p25) : null;
             const dayP75 = (p && (p.temp_day_p75 !== undefined)) ? Number(p.temp_day_p75) : null;
             const p25 = (Number.isFinite(dayP25) && Number.isFinite(dayP75)) ? dayP25 : (Number.isFinite(histP25) ? histP25 : null);
@@ -3162,10 +3241,15 @@
             return {
               dist,
               temperature: (p && (p.temperature !== undefined)) ? Number(p.temperature) : null,
+              temp_hist_median: Number.isFinite(histMedian) ? histMedian : null,
+              temp_hist_min: Number.isFinite(histMin) ? histMin : null,
+              temp_hist_max: Number.isFinite(histMax) ? histMax : null,
               temp_p25: p25,
               temp_p75: p75,
               temp_hist_p25: Number.isFinite(histP25) ? histP25 : null,
               temp_hist_p75: Number.isFinite(histP75) ? histP75 : null,
+              temp_day_typical_min: Number.isFinite(dayTypicalMin) ? dayTypicalMin : null,
+              temp_day_typical_max: Number.isFinite(dayTypicalMax) ? dayTypicalMax : null,
               temp_day_p25: Number.isFinite(dayP25) ? dayP25 : null,
               temp_day_p75: Number.isFinite(dayP75) ? dayP75 : null,
               windSpeed: (p && (p.windSpeed !== undefined)) ? Number(p.windSpeed) : null,
@@ -3201,6 +3285,11 @@
           // Keep both historical (multi-year) and ride-window spreads for the tooltip.
           const histP25 = lerpNum(p0.temp_hist_p25, p1.temp_hist_p25);
           const histP75 = lerpNum(p0.temp_hist_p75, p1.temp_hist_p75);
+          const histMedian = lerpNum(p0.temp_hist_median, p1.temp_hist_median);
+          const histMin = lerpNum(p0.temp_hist_min, p1.temp_hist_min);
+          const histMax = lerpNum(p0.temp_hist_max, p1.temp_hist_max);
+          const dayTypicalMin = lerpNum(p0.temp_day_typical_min, p1.temp_day_typical_min);
+          const dayTypicalMax = lerpNum(p0.temp_day_typical_max, p1.temp_day_typical_max);
           const dayP25 = lerpNum(p0.temp_day_p25, p1.temp_day_p25);
           const dayP75 = lerpNum(p0.temp_day_p75, p1.temp_day_p75);
           // Backwards-compatible fields used elsewhere: prefer daytime if available.
@@ -3209,12 +3298,17 @@
           return {
             dist: x,
             temperature: lerpNum(p0.temperature, p1.temperature),
+            temp_hist_median: histMedian,
+            temp_hist_min: histMin,
+            temp_hist_max: histMax,
             // Prefer ride-window (daytime) spread; fall back to historical spread.
             temp_p25: p25,
             temp_p75: p75,
             // Explicit spreads for tooltip copy.
             temp_hist_p25: histP25,
             temp_hist_p75: histP75,
+            temp_day_typical_min: dayTypicalMin,
+            temp_day_typical_max: dayTypicalMax,
             temp_day_p25: dayP25,
             temp_day_p75: dayP75,
             windSpeed: lerpNum(p0.windSpeed, p1.windSpeed),
@@ -5749,6 +5843,7 @@
     try { REVERSED = Boolean(SETTINGS.reverse); } catch (_) {}
     try { _setOverlayMode(String(SETTINGS.overlayMode || OVERLAY_MODE), { skipPersist: true }); } catch (_) {}
     try { applySettingsToForm(SETTINGS); } catch (_) {}
+    try { _updateProfileLegend(); } catch (_) {}
 
     // Tour bands are purely client-side; toggle immediately.
     try { _setTourBandsEnabled(_tourWantBands()); } catch (_) {}
@@ -6548,29 +6643,6 @@
         }
         // Axis label at top-right
         profileCtx.fillText('Effective wind (m/s)', xScale - 4, padTop + 12);
-        // Legend
-        try {
-          const lx = xScale - 120;
-          const ly1 = padTop + 26;
-          const ly2 = padTop + 40;
-          profileCtx.lineWidth = 3;
-          profileCtx.strokeStyle = 'rgba(60,180,90,1)';
-          profileCtx.beginPath();
-          profileCtx.moveTo(lx, ly1);
-          profileCtx.lineTo(lx + 28, ly1);
-          profileCtx.stroke();
-          profileCtx.fillStyle = '#333';
-          profileCtx.font = '10px system-ui, -apple-system, sans-serif';
-          profileCtx.textAlign = 'left';
-          profileCtx.fillText('Tailwind', lx + 34, ly1 + 3);
-          profileCtx.strokeStyle = 'rgba(220,80,60,1)';
-          profileCtx.beginPath();
-          profileCtx.moveTo(lx, ly2);
-          profileCtx.lineTo(lx + 28, ly2);
-          profileCtx.stroke();
-          profileCtx.fillStyle = '#333';
-          profileCtx.fillText('Headwind', lx + 34, ly2 + 3);
-        } catch(_) {}
       }
     }
     // Day boundaries (vertical dashed lines) — grey
@@ -6902,11 +6974,18 @@
       }
       const latlng = L.latLng(lat, lon);
       if (!MAP_CURSOR_MARKER) {
-        MAP_CURSOR_MARKER = L.circleMarker(latlng, { radius: 6, color: '#555', fillColor: '#555', fillOpacity: 0.85, weight: 0 });
+        try {
+          if (!map.getPane('wmCursorPane')) {
+            map.createPane('wmCursorPane');
+            map.getPane('wmCursorPane').style.zIndex = '700';
+          }
+        } catch (_) {}
+        MAP_CURSOR_MARKER = L.circleMarker(latlng, { pane: 'wmCursorPane', radius: 6, color: '#555', fillColor: '#555', fillOpacity: 0.85, weight: 0 });
         MAP_CURSOR_MARKER.addTo(map);
       } else {
         MAP_CURSOR_MARKER.setLatLng(latlng);
       }
+      try { MAP_CURSOR_MARKER.bringToFront(); } catch (_) {}
     } catch (e) { console.error('updateMapCursorAtDistance error', e); }
   };
 
@@ -7055,19 +7134,11 @@
         dateStr = `${dd}.${mm}`;
       }
     } catch (_) {}
-    const tempMed = best ? (Number.isFinite(best.temp_day_median) ? Number(best.temp_day_median) : (Number.isFinite(best.temperature) ? Number(best.temperature) : null)) : null;
-    // If temp_med still null, approximate by midpoint of p25/p75
-    const tMid = (best && Number.isFinite(best.temp_day_p25) && Number.isFinite(best.temp_day_p75)) ? (Number(best.temp_day_p25)+Number(best.temp_day_p75))/2 : tempMed;
-    const t25 = (best && Number.isFinite(best.temp_day_p25))
-      ? Number(best.temp_day_p25)
-      : (best && Number.isFinite(best.temp_hist_p25))
-        ? Number(best.temp_hist_p25)
-        : null;
-    const t75 = (best && Number.isFinite(best.temp_day_p75))
-      ? Number(best.temp_day_p75)
-      : (best && Number.isFinite(best.temp_hist_p75))
-        ? Number(best.temp_hist_p75)
-        : null;
+    const tempHistMedian = best ? (Number.isFinite(best.temp_hist_median) ? Number(best.temp_hist_median) : (Number.isFinite(best.temperature) ? Number(best.temperature) : (Number.isFinite(best.temp_day_median) ? Number(best.temp_day_median) : null))) : null;
+    const histMin = (best && Number.isFinite(best.temp_hist_min)) ? Number(best.temp_hist_min) : null;
+    const histMax = (best && Number.isFinite(best.temp_hist_max)) ? Number(best.temp_hist_max) : null;
+    const dayTypicalMin = (best && Number.isFinite(best.temp_day_typical_min)) ? Number(best.temp_day_typical_min) : null;
+    const dayTypicalMax = (best && Number.isFinite(best.temp_day_typical_max)) ? Number(best.temp_day_typical_max) : null;
     const yearsStart = best && Number.isFinite(best.yearsStart) ? Number(best.yearsStart) : null;
     const yearsEnd = best && Number.isFinite(best.yearsEnd) ? Number(best.yearsEnd) : null;
     const matchDays = best && Number.isFinite(best.matchDays) ? Number(best.matchDays) : null;
@@ -7094,14 +7165,6 @@
         effWind = wspd * Math.cos(ang);
       }
     } catch(_) {}
-    const colA = [
-      `Day ${dayIdx+1} — ${dateStr}`,
-      `Years: ${yearsStart===null||yearsEnd===null?'-':`${yearsStart}–${yearsEnd}`}${matchDays===null?'':` (n=${Math.round(matchDays)})`}`
-    ];
-    const colB = [
-      `Distance: ${fmt(dkm,1)} km`,
-      `Elevation: ${fmt(elev,0)} m`,
-    ];
     // Comfort thresholds
     const T_COLD = Number(SETTINGS.tempCold || 5);
     const T_HOT = Number(SETTINGS.tempHot || 30);
@@ -7115,72 +7178,47 @@
       if (bad) return `<span style="color:#c0392b;font-weight:700">${base}</span>`;
       return base;
     }
-    const tempMedStyled = styleVal(tMid, (Number(tMid) <= T_COLD || Number(tMid) >= T_HOT));
+    const tempMedStyled = styleVal(tempHistMedian, (Number(tempHistMedian) <= T_COLD || Number(tempHistMedian) >= T_HOT));
     const rainTypStyled = styleVal(rainTyp, Number(rainTyp) >= R_HIGH);
-    const colC = [
-      `Temp median: ${tempMedStyled} °C`,
-      `Temp range: ${fmt(t25,1)}–${fmt(t75,1)} °C`,
-      `Rain probability: ${rainP===null?'-':rainP}%`,
-      `Typical rain: ${rainTypStyled} mm`,
-    ];
-    // Effective wind: color by direction and threshold (tailwind green, headwind red)
-    let effStyled = effWind===null?'-':fmt(effWind,1);
-    if (effWind !== null && Number.isFinite(effWind)) {
-      const absW = Math.abs(effWind);
-      const isTail = effWind > 0;
-      const limit = isTail ? W_TAIL : W_HEAD;
-      const warn = absW >= limit;
-      if (warn) {
-        effStyled = `<span style="color:${isTail?'#2a7a2a':'#c0392b'};font-weight:700">${fmt(effWind,1)}</span>`;
-      }
-    }
-    const colD = [
-      `Wind: ${fmt(wspd,1)} m/s @ ${degToCardinal(wdir)}${wdir===null?'':` (${fmt(wdir,0)}°)`}`,
-      `Effective wind: ${effStyled} m/s`
-    ];
     if (profileTooltip) {
-      const colStyle = 'display:flex; flex-direction:column; gap:2px; min-width:108px; font-size:11px; line-height:1.25;';
-      const sepStyle = 'width:1px; background:#ddd; margin:0 9px;';
+      // Effective wind: label by sign and highlight by comfort thresholds.
+      const effNum = (effWind !== null && Number.isFinite(effWind)) ? Number(effWind) : null;
+      const effLabel = (effNum !== null && effNum < 0) ? 'Headwind' : 'Tailwind';
+      let effStyled = (effNum === null) ? '-' : `${effNum >= 0 ? '+' : ''}${effNum.toFixed(1)}`;
+      if (effNum !== null) {
+        const absW = Math.abs(effNum);
+        const isTail = effNum > 0;
+        const limit = isTail ? W_TAIL : W_HEAD;
+        const warn = absW >= limit;
+        if (warn) {
+          effStyled = `<span style="color:${isTail?'#2a7a2a':'#c0392b'};font-weight:700">${effStyled}</span>`;
+        }
+      }
+      const yearsTxt = `${yearsStart===null||yearsEnd===null?'-':`${yearsStart}–${yearsEnd}`}${matchDays===null?'':` (n=${Math.round(matchDays)})`}`;
+      const windDirTxt = (wdir === null || wdir === undefined) ? '-' : `${fmt(wdir,0)}°`;
+      const windSpdTxt = (wspd === null || wspd === undefined) ? '-' : `${fmt(wspd,1)} m/s`;
       profileTooltip.innerHTML = `
-        <div style="display:flex; align-items:flex-start; justify-content:center;">
-          <div id="ptt-a" style="${colStyle} flex:1;">${colA.map(l => `<div>${l}</div>`).join('')}</div>
-          <div style="${sepStyle}"></div>
-          <div id="ptt-b" style="${colStyle} flex:1;">${colB.map(l => `<div>${l}</div>`).join('')}</div>
-          <div style="${sepStyle}"></div>
-          <div id="ptt-c" style="${colStyle} flex:1;">${colC.map(l => `<div>${l}</div>`).join('')}</div>
-          <div style="${sepStyle}"></div>
-          <div id="ptt-d" style="${colStyle} flex:1;">${colD.map(l => `<div>${l}</div>`).join('')}</div>
+        <div class="wm-ptt-grid">
+          <div class="wm-ptt-col">
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Day:</span> ${dayIdx+1} — ${dateStr}</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Years:</span> ${yearsTxt}</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Distance:</span> ${fmt(dkm,1)} km</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Elevation:</span> ${fmt(elev,0)} m</div>
+          </div>
+          <div class="wm-ptt-col">
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Typ. Temperature:</span> ${tempMedStyled} °C</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Typ. Range:</span> ${fmt(histMin,1)}–${fmt(histMax,1)} °C</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Typical Daytime Variation:</span> ${fmt(dayTypicalMin,1)}–${fmt(dayTypicalMax,1)} °C</div>
+          </div>
+          <div class="wm-ptt-col">
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Typ. Rain:</span> ${rainTypStyled} mm</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Rain Probability:</span> ${rainP===null?'-':rainP}%</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">Wind:</span> ${windDirTxt} ${windSpdTxt}</div>
+            <div class="wm-ptt-line"><span class="wm-ptt-k">${effLabel}:</span> ${effStyled} m/s</div>
+          </div>
         </div>`;
-      profileTooltip.style.display = 'block';
-      // Auto-fit tooltip width to keep columns mostly single-line (avoid wraps)
-      try {
-        const maxW = Math.max(520, Math.min(980, Math.round(window.innerWidth * 0.78)));
-        const widths = [520, 600, 700, 800, 900, 980].filter(w => w <= maxW);
-        const getLines = (el) => {
-          try {
-            const rect = el.getBoundingClientRect();
-            const lh = parseFloat(window.getComputedStyle(el).lineHeight || '0');
-            if (!rect || !rect.height || !lh) return 1;
-            return Math.ceil(rect.height / lh);
-          } catch { return 1; }
-        };
-        setTimeout(() => {
-          let applied = false;
-          if (!widths.length) widths.push(maxW);
-          for (let w of widths) {
-            profileTooltip.style.width = `${w}px`;
-            const cols = ['#ptt-a', '#ptt-b', '#ptt-c', '#ptt-d'].map(q => profileTooltip.querySelector(q)).filter(Boolean);
-            let maxLines = 0;
-            for (const c of cols) {
-              for (let i = 0; i < (c.children ? c.children.length : 0); i++) {
-                maxLines = Math.max(maxLines, getLines(c.children[i]));
-              }
-            }
-            if (maxLines <= 1) { applied = true; break; }
-          }
-          if (!applied) profileTooltip.style.width = `${Math.min(maxW, widths[widths.length-1])}px`;
-        }, 0);
-      } catch (_) {}
+      profileTooltip.style.visibility = 'visible';
+      profileTooltip.style.opacity = '1';
     }
     // Sync map marker using VDL-mapped distance (fractional interpolation along route)
     window.updateMapCursorAtDistance(dkm);
@@ -7998,7 +8036,10 @@
           }
         });
         profileCanvas.addEventListener('mouseleave', () => {
-          if (profileTooltip) profileTooltip.style.display = 'none';
+          if (profileTooltip) {
+            profileTooltip.style.visibility = 'hidden';
+            profileTooltip.style.opacity = '0';
+          }
           // Keep the cursor line visible per spec: do nothing
         });
       }
@@ -8119,7 +8160,7 @@
             icon = L.divIcon({ html, className: 'glyph-map', iconSize: [51, 51], iconAnchor: [26, 26] });
           } else if (SETTINGS.glyphType === 'cyclist') {
             // Compose cyclist glyph into a 51x51 PNG
-            const tMed = (props.temp_day_median !== undefined) ? Number(props.temp_day_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : (props.temp_median || 0));
+            const tMed = (props.temp_hist_median !== undefined) ? Number(props.temp_hist_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : ((props.temp_day_median !== undefined) ? Number(props.temp_day_median) : (props.temp_median || 0)));
             const t25 = (props.temp_day_p25 !== undefined) ? Number(props.temp_day_p25) : ((props.temp_p25 !== undefined) ? Number(props.temp_p25) : null);
             const t75 = (props.temp_day_p75 !== undefined) ? Number(props.temp_day_p75) : ((props.temp_p75 !== undefined) ? Number(props.temp_p75) : null);
             const prob = (props.rain_probability !== undefined) ? Number(props.rain_probability) : 0;
@@ -8172,8 +8213,9 @@
               `<div class=\"wm-tip-line\"><strong>Date:</strong> ${props.date || mmdd2}</div>` +
               `<div class=\"wm-tip-line\"><strong>Years:</strong> ${(props._years_start!==undefined&&props._years_end!==undefined)?(`${props._years_start}–${props._years_end}`):'-'}${props._match_days===undefined?'':` (n=${Array.isArray(props._match_days)?props._match_days.length:props._match_days})`}</div>` +
               `<div class=\"wm-tip-line\"><strong>Distance:</strong> ${fmt(props.distance_from_start_km,1)} km</div>` +
-              `<div class=\"wm-tip-line\"><strong>Tour temperature:</strong> ${fmt(props.temperature_c, 1)} °C</div>` +
-              `<div class=\"wm-tip-line\"><strong>Typical range:</strong> ${fmt(props.temp_p25, 1)}–${fmt(props.temp_p75, 1)} °C</div>` +
+              `<div class="wm-tip-line"><strong>Historical median:</strong> ${fmt((props.temp_hist_median !== undefined ? props.temp_hist_median : props.temperature_c), 1)} °C</div>` +
+              `<div class="wm-tip-line"><strong>Historical range:</strong> ${fmt((props.temp_hist_min !== undefined ? props.temp_hist_min : props.temp_p25), 1)}–${fmt((props.temp_hist_max !== undefined ? props.temp_hist_max : props.temp_p75), 1)} °C</div>` +
+              `<div class="wm-tip-line"><strong>Typical daytime variation:</strong> ${fmt(props.temp_day_typical_min, 1)}–${fmt(props.temp_day_typical_max, 1)} °C</div>` +
               `<div class=\"wm-tip-line\"><strong>Rain probability:</strong> ${props.rain_probability!==undefined?Math.round(Number(props.rain_probability)*100):'-'}%</div>` +
               `<div class=\"wm-tip-line\"><strong>Typical rain:</strong> ${fmt(props.rain_typical_mm, 1)} mm</div>` +
               `<div class=\"wm-tip-line\"><strong>Wind:</strong> ${kmh===null?'-':fmt(kmh,1)} km/h (${fmt(props.wind_speed_ms,1)} m/s, Bft ${msToBeaufort(props.wind_speed_ms)}), dir ${degToCardinal(props.wind_dir_deg)} (${fmt(props.wind_dir_deg,0)}°), std ${fmt(props.wind_var_deg,0)}°</div>` +
@@ -8224,7 +8266,7 @@
           id: (props.station_id !== undefined) ? String(props.station_id) : null,
           svg: (props.svg !== undefined) ? String(props.svg) : null,
           // Median used for color and solid line: prefer daytime median
-          temperature: (props.temp_day_median !== undefined) ? Number(props.temp_day_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : (props.temp_median || null)),
+          temperature: (props.temp_hist_median !== undefined) ? Number(props.temp_hist_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : ((props.temp_day_median !== undefined) ? Number(props.temp_day_median) : (props.temp_median || null))),
           precipMm: (props.precipitation_mm !== undefined) ? Number(props.precipitation_mm) : null,
           rainProb: (props.rain_probability !== undefined) ? Number(props.rain_probability) : null,
           rainTypical: (props.rain_typical_mm !== undefined) ? Number(props.rain_typical_mm) : null,
@@ -8236,8 +8278,13 @@
           windVar: (props.wind_var_deg !== undefined) ? Number(props.wind_var_deg) : null,
           // Temperature variability percentiles
           // Historical variability across years (daily daytime median percentiles)
+          temp_hist_median: (props.temp_hist_median !== undefined) ? Number(props.temp_hist_median) : ((props.temperature_c !== undefined) ? Number(props.temperature_c) : null),
+          temp_hist_min: (props.temp_hist_min !== undefined) ? Number(props.temp_hist_min) : null,
+          temp_hist_max: (props.temp_hist_max !== undefined) ? Number(props.temp_hist_max) : null,
           temp_hist_p25: (props.temp_hist_p25 !== undefined) ? Number(props.temp_hist_p25) : ((props.temp_p25 !== undefined) ? Number(props.temp_p25) : null),
           temp_hist_p75: (props.temp_hist_p75 !== undefined) ? Number(props.temp_hist_p75) : ((props.temp_p75 !== undefined) ? Number(props.temp_p75) : null),
+          temp_day_typical_min: (props.temp_day_typical_min !== undefined) ? Number(props.temp_day_typical_min) : null,
+          temp_day_typical_max: (props.temp_day_typical_max !== undefined) ? Number(props.temp_day_typical_max) : null,
           // Daytime variability within 10–16h (across all years)
           temp_day_p25: (props.temp_day_p25 !== undefined) ? Number(props.temp_day_p25) : null,
           temp_day_p75: (props.temp_day_p75 !== undefined) ? Number(props.temp_day_p75) : null,
@@ -8650,13 +8697,9 @@
 
   if (settingsSave) {
     settingsSave.addEventListener('click', () => {
-      const prev = SETTINGS;
-      const next = readSettingsFromForm(SETTINGS);
-      SETTINGS = next;
-      saveSettings(SETTINGS);
-      STEP_KM = SETTINGS.stepKm;
-      try { _setOverlayMode(String(SETTINGS.overlayMode || OVERLAY_MODE), { skipPersist: true }); } catch (_) {}
-      try { REVERSED = Boolean(SETTINGS.reverse); } catch (_) {}
+      const prev = SETTINGS ? { ...SETTINGS } : {};
+      try { applyPrefsFromFormAndPersist(); } catch (_) {}
+      const next = SETTINGS ? { ...SETTINGS } : {};
 
       const dataKeys = [
         'startDate',

@@ -3,6 +3,7 @@ import re
 import os
 import sys
 import pytest
+from pathlib import Path
 
 # Import the Flask app by adjusting sys.path for backend simple imports
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -15,8 +16,14 @@ app = backend_app.app
 @pytest.mark.parametrize("hist_start,hist_years", [(2016, 7), (2015, 10)])
 def test_route_event_includes_years_span(hist_start, hist_years):
     client = app.test_client()
+    gpx_path = Path(BASE_DIR) / 'data' / '2026-02-13_2781422668_von Montpellier nach Bayonne.gpx'
+    assert gpx_path.exists(), f"GPX missing: {gpx_path}"
     # Use dry_run to avoid heavy weather fetching
-    url = f"/api/map_stream?date=02-24&step_km=60&tour_planning=0&mode=single_day&total_days=7&start_date=2025-02-24&hist_years={hist_years}&hist_start={hist_start}&dry_run=1"
+    url = (
+        f"/api/map_stream?date=02-24&step_km=60&tour_planning=0&mode=single_day"
+        f"&total_days=7&start_date=2025-02-24&hist_years={hist_years}&hist_start={hist_start}"
+        f"&dry_run=1&gpx_path={gpx_path}"
+    )
     resp = client.get(url)
     assert resp.status_code == 200
     body = resp.data.decode('utf-8')

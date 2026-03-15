@@ -206,6 +206,26 @@
       line-height: 1.1;
     }
 
+    /* Share control (mounted next to Leaflet zoom): match Leaflet bar button sizing */
+    .wm-share-control { cursor: default; }
+    .wm-share-control button.wm-share-btn {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      margin: 0;
+      border: none;
+      background: #fff;
+      color: #000;
+      cursor: pointer;
+    }
+    .wm-share-control button.wm-share-btn:hover { background: #f4f4f4; }
+    .wm-share-control button.wm-share-btn:focus { outline: none; }
+    .wm-share-control button.wm-share-btn:focus-visible { outline: 2px solid rgba(0,0,0,0.25); outline-offset: 2px; }
+    .wm-share-control button.wm-share-btn svg { width: 14px; height: 14px; }
+
     /* Climate controls (bottom-right): Layer + Year + Legend */
     .wm-climate-box {
       background: rgba(255,255,255,0.92);
@@ -388,6 +408,34 @@
     #tourSummary select {
       font-family: inherit;
     }
+
+    /* Profile tooltip: fixed 3-column layout (no wrapping). */
+    #profileTooltip .wm-ptt-grid {
+      display: grid;
+      grid-template-columns: 220px 260px 240px;
+      column-gap: 16px;
+      align-items: start;
+      justify-content: center;
+      white-space: nowrap;
+    }
+    #profileTooltip .wm-ptt-col { display: flex; flex-direction: column; gap: 3px; }
+    #profileTooltip .wm-ptt-line { white-space: nowrap; }
+    #profileTooltip .wm-ptt-k { font-weight: 700; color: rgba(15, 23, 42, 0.95); }
+
+    /* Reuse map legend style inside the Tour Summary band. */
+    #tourSummaryBadges .wm-map-legend {
+      position: static;
+      left: auto;
+      bottom: auto;
+      z-index: auto;
+      min-width: 180px;
+      max-width: 240px;
+      padding: 7px 9px;
+      margin-left: 10px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.10);
+    }
+    #tourSummaryBadges .wm-map-legend .title { margin-bottom: 5px; }
+    #tourSummaryBadges .wm-map-legend .ticks { margin-top: 4px; }
     #profileCanvas { width: 100%; height: 100%; display: block; }
     /* Resize handle at top edge of profile canvas */
     #profileResizeHandle { 
@@ -644,24 +692,24 @@
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
                     <label for="setWeatherVisualizationMode">Tour visualization</label>
                     <select id="setWeatherVisualizationMode">
-                      <option value="glyphs">Glyphs</option>
+                      <option value="glyphs">Weather symbols</option>
                       <option value="bands">Bands</option>
                     </select>
 
                     <label for="setOverlayMode">Profile overlay</label>
                     <select id="setOverlayMode">
                       <option value="temperature">Temperature</option>
-                      <option value="precipitation">Precipitation</option>
+                      <option value="precipitation">Rain</option>
                       <option value="wind">Wind</option>
                     </select>
 
-                    <label for="setGlyphType">Glyph type</label>
+                    <label for="setGlyphType">Weather symbols type</label>
                     <select id="setGlyphType">
                       <option value="classic">Classic (icons + rosette)</option>
                       <option value="svg">Inline SVG preview</option>
                       <option value="cyclist">Cyclist (wind-first)</option>
                     </select>
-                    <label for="setStepKm">Glyph spacing (km)</label>
+                    <label for="setStepKm">Weather stations separation (km)</label>
                     <input type="number" id="setStepKm" min="5" max="200" step="5" />
                   </div>
                 </div>
@@ -760,9 +808,10 @@
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
       <div id="tourSummaryBadges" style="display:flex; align-items:center; gap:12px; padding:7px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box; min-height:58px;">
         <!-- Profile hover tooltip (moved into the Tour Summary white band to use space and avoid overlaying the map/profile) -->
-        <div id="profileTooltip" style="align-self:center; flex:0 1 auto; min-width:300px; max-width:56vw; max-height:calc(100% - 10px); overflow:auto; font-family:system-ui, -apple-system, sans-serif; font-size:11px; line-height:1.25; color:#222; background:rgba(255,255,255,0.86); border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:10px 9px; display:none; white-space:normal; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12)"></div>
+        <div id="profileTooltip" style="align-self:center; flex:0 0 clamp(520px, 42vw, 760px); width:clamp(520px, 42vw, 760px); max-height:calc(100% - 10px); overflow:auto; box-sizing:border-box; font-family:system-ui, -apple-system, sans-serif; font-size:11px; line-height:1.25; color:#222; background:rgba(255,255,255,0.86); border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:10px 9px; display:block; visibility:hidden; opacity:0; white-space:normal; pointer-events:none; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12); transition:opacity 80ms linear"></div>
         <div id="tourSummaryBadgesItems" style="display:flex; gap:18px; align-items:center; justify-content:center; flex-wrap:wrap; flex:1;"></div>
-        <button id="share" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; margin-left:12px; border:1px solid rgba(0,0,0,0.18); border-radius:8px; background:rgba(255,255,255,0.9); cursor:pointer;">
+        <div id="profileLegendHost" class="wm-map-legend" aria-label="Profile legend" style="display:none"></div>
+        <button id="share" class="wm-share-btn" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:none">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 16V3" />
             <path d="M8 7l4-4 4 4" />
@@ -1032,7 +1081,7 @@
       }
     })();
   </script>
-  <script src="/map.js?v=76"></script>
+  <script src="/map.js?v=77"></script>
   <script src="/frontend/profile_zoom.js?v=1"></script>
   <script>
     // Assisted test helpers: always available in Console

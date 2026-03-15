@@ -151,10 +151,10 @@ def compute_weather_statistics(df: pd.DataFrame, month: int, day: int) -> Tuple[
 def compute_daytime_temperature_statistics(df_hourly: pd.DataFrame, month: int, day: int) -> Tuple[Dict[str, Any], int]:
     """Compute daytime temperature statistics.
     - Select hours 10, 12, 14, 16 local time from historical hourly data for the target calendar day across years.
-    - For each historical date, compute the mean of the selected hours (skip dates with <2 values).
-    - Historical variability (between years): percentiles of these per-date means → temp_hist_p25, temp_hist_p75.
-    - Daytime variability (within a day across all years): percentiles of all selected-hour values combined → temp_day_p25, temp_day_p75.
-    Returns stats dict including backward-compatible keys temp_p25/temp_p75 mirroring historical percentiles.
+    - For each historical date, compute the mean, min, and max of the selected hours (skip dates with <2 values).
+    - Historical central tendency/range: median/min/max of the per-date means → temp_hist_median, temp_hist_min, temp_hist_max.
+    - Typical daytime variation: median of the per-date mins/maxs → temp_day_typical_min, temp_day_typical_max.
+    - Legacy percentile fields are still returned for existing profile visuals.
     """
     if df_hourly is None or df_hourly.empty:
         raise ValueError('No hourly data available')
@@ -168,13 +168,18 @@ def compute_daytime_temperature_statistics(df_hourly: pd.DataFrame, month: int, 
     dates = ts.dt.date
     target_hours = {10, 12, 14, 16}
     means = []
+    day_mins = []
+    day_maxs = []
     hour_vals = []
     by_date = pd.DataFrame({'date': dates, 'hour': hours, 'temp': temps})
     for d, g in by_date.groupby('date'):
         sel = g[g['hour'].isin(target_hours)]['temp'].dropna()
         if len(sel) >= 2:
-            m = float(sel.mean())
+            sel_vals = np.array(sel.values, dtype=float)
+            m = float(np.nanmean(sel_vals))
             means.append((d, m))
+            day_mins.append(float(np.nanmin(sel_vals)))
+            day_maxs.append(float(np.nanmax(sel_vals)))
             log.info('[WEATHER] Day %s daytime mean=%.2f', d, m)
         # Collect values for daytime variability across all years
         for v in sel.values:
@@ -188,9 +193,15 @@ def compute_daytime_temperature_statistics(df_hourly: pd.DataFrame, month: int, 
         raise ValueError('No valid daytime means computed')
     vals_means = np.array([m for _, m in means], dtype=float)
     med = float(np.nanmedian(vals_means))
+    hist_min = float(np.nanmin(vals_means))
+    hist_max = float(np.nanmax(vals_means))
     hist_p25 = float(np.nanpercentile(vals_means, 25))
     hist_p75 = float(np.nanpercentile(vals_means, 75))
     std = float(np.nanstd(vals_means))
+    vals_day_mins = np.array(day_mins, dtype=float)
+    vals_day_maxs = np.array(day_maxs, dtype=float)
+    typical_day_min = float(np.nanmedian(vals_day_mins)) if vals_day_mins.size else float('nan')
+    typical_day_max = float(np.nanmedian(vals_day_maxs)) if vals_day_maxs.size else float('nan')
     # Daytime variability percentiles across all selected hours in all years
     vals_hours = np.array(hour_vals, dtype=float)
     if vals_hours.size >= 1:
@@ -203,16 +214,24 @@ def compute_daytime_temperature_statistics(df_hourly: pd.DataFrame, month: int, 
     else:
         day_p25 = float('nan')
         day_p75 = float('nan')
-    log.info('[WEATHER] Daytime median temp: %.2f (hist IQR=%.2f..%.2f, std=%.2f; daytime median=%.2f IQR=%.2f..%.2f)', med, hist_p25, hist_p75, std, day_med, day_p25, day_p75)
+    log.info('[WEATHER] Daytime temp: hist median=%.2f hist range=%.2f..%.2f (IQR=%.2f..%.2f, std=%.2f); typical day=%.2f..%.2f; pooled daytime median=%.2f IQR=%.2f..%.2f)', med, hist_min, hist_max, hist_p25, hist_p75, std, typical_day_min, typical_day_max, day_med, day_p25, day_p75)
     stats = {
         'temperature_c': med,
         # Backward-compatible typical range (historical between-year variability)
         'temp_p25': hist_p25,
         'temp_p75': hist_p75,
         'temp_std': std,
-        # New keys for band rendering
+        # Explicit historical metrics for tooltip/UI copy.
+        'temp_hist_median': med,
+        'temp_hist_min': hist_min,
+        'temp_hist_max': hist_max,
+        # Existing historical percentile fields retained for profile band rendering.
         'temp_hist_p25': hist_p25,
         'temp_hist_p75': hist_p75,
+        # Typical daytime variation (median min/max across matched years).
+        'temp_day_typical_min': typical_day_min,
+        'temp_day_typical_max': typical_day_max,
+        # Legacy pooled-daytime percentile fields retained for profile dashed lines.
         'temp_day_p25': day_p25,
         'temp_day_p75': day_p75,
         'temp_day_median': day_med,
