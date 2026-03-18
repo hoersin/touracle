@@ -40,6 +40,11 @@ from weather_service import WeatherService, reset_api_disable as reset_service_a
 from weather import compute_daytime_temperature_statistics
 
 try:
+    from climate_aggregation import aggregate_climate as _aggregate_climate
+except Exception:  # pragma: no cover
+    _aggregate_climate = None  # type: ignore
+
+try:
     from offline_weather_store import OfflineWeatherStore
 except Exception:  # pragma: no cover
     OfflineWeatherStore = None  # type: ignore
@@ -192,7 +197,21 @@ def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
 
     with _OFFLINE_STORES_BY_YEAR_LOCK:
         if y in _OFFLINE_STORES_BY_YEAR:
-            return _OFFLINE_STORES_BY_YEAR[y]
+            st = _OFFLINE_STORES_BY_YEAR[y]
+            try:
+                cfg = getattr(st, 'cfg', None)
+                yrs = getattr(cfg, 'years', None) if cfg is not None else None
+                if yrs is not None:
+                    ys, ye = yrs
+                    if int(ye) <= int(ys) or not (int(ys) <= int(y) <= int(ye)):
+                        try:
+                            del _OFFLINE_STORES_BY_YEAR[y]
+                        except Exception:
+                            pass
+                        return _get_offline_store()
+            except Exception:
+                pass
+            return st
 
     # Build candidate path: project/cache/offline_weather_<year>.sqlite
     try:
@@ -201,6 +220,19 @@ def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
             if p.exists():
                 cfg = OfflineWeatherStore._load_config(p)  # type: ignore[attr-defined]
                 if cfg is not None:
+                    # Strategic/Climatic mode expects *climatology* (multi-year aggregation).
+                    # Some offline DBs are built for a single calendar year only; using those here
+                    # makes absolute precipitation values jump to that year's real weather.
+                    # Guard against that by only accepting year-specific DBs that span >1 year.
+                    try:
+                        if getattr(cfg, 'years', None) is not None:
+                            ys, ye = cfg.years  # type: ignore[misc]
+                            if int(ye) <= int(ys):
+                                return _get_offline_store()
+                            if not (int(ys) <= int(y) <= int(ye)):
+                                return _get_offline_store()
+                    except Exception:
+                        pass
                     store = OfflineWeatherStore(cfg)
                     with _OFFLINE_STORES_BY_YEAR_LOCK:
                         _OFFLINE_STORES_BY_YEAR[y] = store
@@ -234,6 +266,7 @@ def api_strategic_grid():
     Query params:
       - date: YYYY-MM-DD or MM-DD (required)
       - year: int (optional; default 2025)
+            - timescale: daily|week|two_week|month|quarter|year (optional; default daily)
       - lat_min, lat_max, lon_min, lon_max: viewport bounds (required)
     """
     if OfflineWeatherStore is None:
@@ -253,6 +286,17 @@ def api_strategic_grid():
         month, day = _parse_mmdd_or_date(date_raw)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+    # Climate aggregation timescale (defaults to daily / existing behavior)
+    try:
+        ts_raw = request.args.get('timescale')
+        if ts_raw is None:
+            ts_raw = request.args.get('climate_timescale')
+        timescale = str(ts_raw).strip() if ts_raw is not None else 'daily'
+        if not timescale:
+            timescale = 'daily'
+    except Exception:
+        timescale = 'daily'
 
     def _f(name: str) -> float:
         v = request.args.get(name)
@@ -293,16 +337,40 @@ def api_strategic_grid():
         tile_km = 50.0
         years = None
 
+    # Day-of-year center for caching/window logic (year-aware for leap years).
     try:
-        pts = store.get_climatology_grid(lat_min_q, lat_max_q, lon_min_q, lon_max_q, month, day)
-    except Exception as e:
-        return jsonify({"error": f"Query failed: {e}"}), 500
+        center_doy = 1 + (_dt.date(int(year), int(month), int(day)) - _dt.date(int(year), 1, 1)).days
+    except Exception:
+        center_doy = 1
+
+    # Existing behavior: daily climatology.
+    if str(timescale) == 'daily' or _aggregate_climate is None:
+        try:
+            pts = store.get_climatology_grid(lat_min_q, lat_max_q, lon_min_q, lon_max_q, month, day)
+        except Exception as e:
+            return jsonify({"error": f"Query failed: {e}"}), 500
+    else:
+        try:
+            pts = _aggregate_climate(
+                str(timescale),
+                int(center_doy),
+                int(year),
+                store=store,
+                lat_min=float(lat_min_q),
+                lat_max=float(lat_max_q),
+                lon_min=float(lon_min_q),
+                lon_max=float(lon_max_q),
+            )
+        except Exception as e:
+            return jsonify({"error": f"Aggregation failed: {e}"}), 500
 
     return jsonify(
         {
             "year": int(year),
             "month": int(month),
             "day": int(day),
+            "timescale": str(timescale),
+            "center_doy": int(center_doy),
             "tile_km": float(tile_km),
             "bbox": bbox,
             "years": {"start": int(years[0]), "end": int(years[1])} if years else None,

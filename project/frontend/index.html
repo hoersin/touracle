@@ -82,6 +82,12 @@
     }
     .wm-section > summary::-webkit-details-marker { display: none; }
     .wm-section-body { padding: 10px 12px 12px 12px; }
+    /* Make Tour Setup and Preferences typography consistent */
+    .wm-section-body { font-size: 12px; }
+    .wm-section-body button,
+    .wm-section-body input,
+    .wm-section-body select,
+    .wm-section-body label { font-family: inherit; font-size: inherit; }
 
     /* Preferences grouping */
     .wm-pref-group { padding-top: 10px; margin-top: 10px; border-top: 1px solid rgba(0,0,0,0.08); }
@@ -149,7 +155,7 @@
     .wm-map-legend {
       position: absolute;
       left: 12px;
-      bottom: 12px;
+      bottom: 8px;
       z-index: 1600;
       background: rgba(255,255,255,0.88);
       border: 1px solid rgba(0,0,0,0.14);
@@ -160,13 +166,40 @@
       color: #111827;
       backdrop-filter: blur(3px);
       box-shadow: 0 2px 10px rgba(0,0,0,0.10);
-      min-width: 180px;
-      max-width: 240px;
+      min-width: 240px;
+      max-width: 320px;
       pointer-events: auto;
       cursor: default;
     }
-    /* In Climate mode the legend lives inside the climate box (bottom-right). */
+    /* In Climate mode, lift legend above the fixed timeline */
+    body[data-mode="climate"] #map .wm-map-legend {
+      bottom: calc(8px + var(--wm-strategic-timeline-h, 0px));
+    }
     .wm-map-legend.hidden { display: none; }
+    .wm-map-legend .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 4px 0;
+    }
+    .wm-map-legend .lab {
+      width: 68px;
+      font-size: 12px;
+      color: rgba(51, 65, 85, 1);
+      font-weight: 700;
+      flex: 0 0 auto;
+    }
+    .wm-map-legend .sel {
+      flex: 1 1 auto;
+      border: 1px solid rgba(0,0,0,0.15);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: rgba(255,255,255,0.92);
+      font-size: 12px;
+      font-family: inherit;
+      color: #111827;
+      cursor: pointer;
+    }
     .wm-map-legend .title {
       font-size: 11px;
       font-weight: 800;
@@ -226,67 +259,7 @@
     .wm-share-control button.wm-share-btn:focus-visible { outline: 2px solid rgba(0,0,0,0.25); outline-offset: 2px; }
     .wm-share-control button.wm-share-btn svg { width: 14px; height: 14px; }
 
-    /* Climate controls (bottom-right): Layer + Year + Legend */
-    .wm-climate-box {
-      background: rgba(255,255,255,0.92);
-      border: 1px solid rgba(0,0,0,0.14);
-      border-radius: 10px;
-      padding: 8px 10px;
-      box-sizing: border-box;
-      font-family: system-ui, -apple-system, sans-serif;
-      color: #111827;
-      backdrop-filter: blur(3px);
-      box-shadow: 0 2px 10px rgba(0,0,0,0.10);
-      min-width: 240px;
-      max-width: 300px;
-      pointer-events: auto;
-      display: none;
-    }
-    body[data-mode="climate"] .wm-climate-box { display: block; }
-    /* Lift above fixed strategic timeline */
-    body[data-mode="climate"] .leaflet-bottom.leaflet-right .wm-climate-box {
-      margin-bottom: calc(12px + var(--wm-strategic-timeline-h, 0px));
-      margin-right: 12px;
-    }
-    .wm-climate-box .row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin: 4px 0;
-    }
-    .wm-climate-box .lab {
-      width: 52px;
-      font-size: 12px;
-      color: rgba(51, 65, 85, 1);
-      font-weight: 700;
-      flex: 0 0 auto;
-    }
-    .wm-climate-box .sel {
-      flex: 1 1 auto;
-      border: 1px solid rgba(0,0,0,0.15);
-      border-radius: 8px;
-      padding: 7px 10px;
-      background: rgba(255,255,255,0.92);
-      font-size: 12px;
-      font-family: inherit;
-      color: #111827;
-      cursor: pointer;
-    }
-    .wm-climate-box .legendHost { margin-top: 8px; }
-    /* Reuse legend markup, but make it blend into the climate box */
-    .wm-climate-box .wm-map-legend {
-      position: static;
-      left: auto;
-      bottom: auto;
-      min-width: 0;
-      max-width: none;
-      background: transparent;
-      border: none;
-      padding: 0;
-      box-shadow: none;
-      backdrop-filter: none;
-    }
-    .wm-climate-box .wm-map-legend .title { margin-bottom: 6px; }
+    /* Bottom-right climate selector box removed; controls live in the legend (lower-left). */
 
     /* Avoid duplicate/overlapping climate selectors */
     body[data-mode="climate"] #strategicControls { display: none; }
@@ -301,7 +274,7 @@
       display: none;
       pointer-events: auto;
     }
-    /* (Intentionally not shown in Climate mode; the climate box replaces it.) */
+    /* (Intentionally not shown in Climate mode; the legend provides layer selection.) */
     .wm-map-quicklayer select {
       border: 1px solid rgba(0,0,0,0.15);
       border-radius: 8px;
@@ -344,6 +317,13 @@
       padding: 7px 10px;
       cursor: pointer;
       font-size: 12px;
+    }
+    #strategicTimeline button.wm-step-btn {
+      padding: 7px 9px;
+      min-width: 34px;
+      text-align: center;
+      font-weight: 700;
+      line-height: 1;
     }
     #strategicTimeline .label {
       font-size: 12px;
@@ -485,7 +465,7 @@
       border: none;
       padding: 8px 16px;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       box-shadow: 0 2px 6px rgba(40, 167, 69, 0.3);
@@ -509,7 +489,7 @@
       border: none;
       padding: 8px 16px;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
@@ -628,6 +608,15 @@
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                 <span style="font-size:12px;color:#334155">Day:</span>
                 <span id="strategicDayLabel" style="font-size:12px;color:#0f172a;font-weight:700">—</span>
+                <label for="strategicTimescale" style="font-size:12px;color:#334155">Climate timescale:</label>
+                <select id="strategicTimescale">
+                  <option value="daily" selected>Daily</option>
+                  <option value="week">Weekly</option>
+                  <option value="two_week">2 Weeks</option>
+                  <option value="month">Monthly</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Yearly</option>
+                </select>
                 <label for="strategicLayer">Layer:</label>
                 <select id="strategicLayer">
                   <option value="temperature_ride">Temperature (Ride)</option>
@@ -721,6 +710,7 @@
                     <select id="setStrategicYear">
                       <option value="2025">2025</option>
                       <option value="2024">2024</option>
+                      <option value="2023">2023</option>
                     </select>
 
                     <label for="setIncludeSea">Include sea areas</label>
@@ -784,7 +774,9 @@
 
   <div id="strategicTimeline" aria-label="Strategic time slider">
     <div class="row">
+      <button id="strategicStepBack" type="button" class="wm-step-btn" aria-label="Previous step" title="Previous step">◀</button>
       <button id="strategicPlay" type="button">▶ Play Season</button>
+      <button id="strategicStepForward" type="button" class="wm-step-btn" aria-label="Next step" title="Next step">▶</button>
       <div class="wm-strategic-slidercol">
         <div class="label" id="strategicTimelineLabel">—</div>
         <input id="strategicDaySlider" type="range" min="1" max="365" step="0.1" value="1" />
@@ -1081,7 +1073,7 @@
       }
     })();
   </script>
-  <script src="/map.js?v=77"></script>
+  <script src="/map.js?v=81"></script>
   <script src="/frontend/profile_zoom.js?v=1"></script>
   <script>
     // Assisted test helpers: always available in Console

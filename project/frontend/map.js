@@ -44,11 +44,8 @@
     setTimeout(() => { _applyComfortWindUiForMode(); }, 0);
   } catch (_) {}
 
-  // -------------------- Climate controls (bottom-right): Layer + Year + Legend --------------------
+  // -------------------- Strategic legend helpers --------------------
   let STRATEGIC_LEGEND_HOST = null;
-  let CLIMATE_BOX_CONTROL = null;
-  let climateLayerSelect = null;
-  let climateYearSelect = null;
 
   function _populateYearOptionsFromPrefs(sel) {
     if (!sel) return;
@@ -104,99 +101,9 @@
     }
   }
 
-  function _ensureClimateBoxControl() {
-    if (CLIMATE_BOX_CONTROL) return CLIMATE_BOX_CONTROL;
-    CLIMATE_BOX_CONTROL = L.control({ position: 'bottomright' });
-    CLIMATE_BOX_CONTROL.onAdd = () => {
-      const wrap = L.DomUtil.create('div', 'wm-climate-box');
-      wrap.setAttribute('aria-label', 'Climatic map controls');
-
-      const rowLayer = document.createElement('div');
-      rowLayer.className = 'row';
-      const labLayer = document.createElement('div');
-      labLayer.className = 'lab';
-      labLayer.textContent = 'Layer';
-      const selLayer = document.createElement('select');
-      selLayer.className = 'sel';
-      _populateLayerOptions(selLayer);
-      rowLayer.appendChild(labLayer);
-      rowLayer.appendChild(selLayer);
-      wrap.appendChild(rowLayer);
-
-      const rowYear = document.createElement('div');
-      rowYear.className = 'row';
-      const labYear = document.createElement('div');
-      labYear.className = 'lab';
-      labYear.textContent = 'Year';
-      const selYear = document.createElement('select');
-      selYear.className = 'sel';
-      _populateYearOptionsFromPrefs(selYear);
-      rowYear.appendChild(labYear);
-      rowYear.appendChild(selYear);
-      wrap.appendChild(rowYear);
-
-      const legendHost = document.createElement('div');
-      legendHost.className = 'legendHost';
-      wrap.appendChild(legendHost);
-      STRATEGIC_LEGEND_HOST = legendHost;
-
-      climateLayerSelect = selLayer;
-      climateYearSelect = selYear;
-
-      try { L.DomEvent.disableClickPropagation(wrap); } catch (_) {}
-      try { L.DomEvent.disableScrollPropagation(wrap); } catch (_) {}
-
-      selLayer.addEventListener('change', () => {
-        const v = String(selLayer.value || 'temperature_ride');
-        try { _setStrategicLayer(v); } catch (_) {}
-        try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
-        try { _applyStrategicBasemap(); } catch (_) {}
-      });
-      selYear.addEventListener('change', () => {
-        const y = Number(selYear.value);
-        if (!Number.isFinite(y)) return;
-        try { SETTINGS.strategicYear = y; saveSettings(SETTINGS); } catch (_) {}
-        try { _strategicSetYear(y); } catch (_) {}
-        try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
-      });
-
-      // Attach legend markup into this box.
-      try {
-        const el = _ensureStrategicLegend();
-        if (el && el.parentNode !== legendHost) legendHost.appendChild(el);
-      } catch (_) {}
-
-      return wrap;
-    };
-    try { CLIMATE_BOX_CONTROL.addTo(map); } catch (_) {}
-    return CLIMATE_BOX_CONTROL;
-  }
-
-  function _syncClimateBoxUI() {
-    try { _ensureClimateBoxControl(); } catch (_) {}
-    if (!STRATEGIC_STATE) return;
-    try {
-      if (climateLayerSelect) {
-        if (strategicLayerSelect && strategicLayerSelect.options && climateLayerSelect.options.length !== strategicLayerSelect.options.length) {
-          _populateLayerOptions(climateLayerSelect);
-        }
-        climateLayerSelect.value = String(STRATEGIC_STATE.layer || 'temperature_ride');
-      }
-    } catch (_) {}
-    try {
-      if (climateYearSelect) {
-        if (setStrategicYear && setStrategicYear.options && climateYearSelect.options.length !== setStrategicYear.options.length) {
-          _populateYearOptionsFromPrefs(climateYearSelect);
-        }
-        const y = Number(STRATEGIC_STATE.year || (SETTINGS && SETTINGS.strategicYear) || 2025);
-        climateYearSelect.value = String(Number.isFinite(y) ? y : 2025);
-      }
-    } catch (_) {}
-    try {
-      const el = _ensureStrategicLegend();
-      if (el && STRATEGIC_LEGEND_HOST && el.parentNode !== STRATEGIC_LEGEND_HOST) STRATEGIC_LEGEND_HOST.appendChild(el);
-    } catch (_) {}
-  }
+  // Note: a prior iteration used a Leaflet control in the bottom-right for
+  // layer/year/timescale selectors. Those controls now live in the in-map
+  // legend (lower-left), so we intentionally do not mount any extra box.
 
   function _strategicWantsStandardBasemap() {
     const layer = STRATEGIC_STATE ? String(STRATEGIC_STATE.layer || '') : '';
@@ -287,11 +194,14 @@
   const strategicDayLabel = document.getElementById('strategicDayLabel');
   const strategicTimelineLabel = document.getElementById('strategicTimelineLabel');
   const strategicDaySlider = document.getElementById('strategicDaySlider');
+  const strategicStepBackBtn = document.getElementById('strategicStepBack');
   const strategicPlayBtn = document.getElementById('strategicPlay');
+  const strategicStepForwardBtn = document.getElementById('strategicStepForward');
   const strategicSpeed = document.getElementById('strategicSpeed'); // legacy (removed from UI)
   const strategicMonthTicks = document.getElementById('strategicMonthTicks');
   const strategicTimeline = document.getElementById('strategicTimeline');
   const strategicLayerSelect = document.getElementById('strategicLayer');
+  const strategicTimescaleSelect = document.getElementById('strategicTimescale');
   const strategicQuickLayerSelect = document.getElementById('strategicQuickLayerSelect');
   const strategicWindOn = document.getElementById('strategicWindOn');
   const strategicWindMode = document.getElementById('strategicWindMode');
@@ -1174,6 +1084,7 @@
       overlayMode: 'temperature',
       // Strategic/tactical settings (Phase 1: persisted but not yet fully used)
       strategicYear: 2025,
+      climateTimescale: 'daily',
       includeSea: false,
       interpolation: true,
       windDensity: 40,
@@ -1225,6 +1136,9 @@
           : defaults.weatherVisualizationMode,
         overlayMode: (typeof j.overlayMode === 'string') ? j.overlayMode : defaults.overlayMode,
         strategicYear: Number(j.strategicYear) || defaults.strategicYear,
+        climateTimescale: (typeof j.climateTimescale === 'string')
+          ? j.climateTimescale
+          : ((typeof j.climate_timescale === 'string') ? j.climate_timescale : defaults.climateTimescale),
         includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
         interpolation: (typeof j.interpolation === 'boolean') ? j.interpolation : defaults.interpolation,
         windDensity: Number(j.windDensity) || defaults.windDensity,
@@ -1270,9 +1184,6 @@
     const m = (mode === 'climate' || mode === 'tour' || mode === 'settings') ? mode : 'tour';
     if (m !== 'settings') LAST_NON_SETTINGS_MODE = m;
     try { document.body.dataset.mode = m; } catch (_) {}
-
-    // Climate box UI (layer/year/legend)
-    try { _syncClimateBoxUI(); } catch (_) {}
 
     try {
       strategicSetActive && strategicSetActive(m === 'climate');
@@ -1321,8 +1232,7 @@
   }
   try { window.setMode = setMode; } catch (_) {}
 
-  // Ensure climate control exists (hidden in Tour mode).
-  try { _ensureClimateBoxControl(); _syncClimateBoxUI(); } catch (_) {}
+  // (Intentionally no bottom-right climate control.)
 
   // -------------------- Climatic Map (Strategic) --------------------
   const STRATEGIC_DEFAULT_YEAR = 2025;
@@ -1330,7 +1240,7 @@
   const STRATEGIC_FETCH_THROTTLE_MS = 180;
 
   // Cache strategic grid responses to keep slider scrubbing smooth.
-  // Keyed by (year, iso, quantized bbox). LRU + TTL to cap memory.
+  // Keyed by (year, timescale, iso, quantized bbox). LRU + TTL to cap memory.
   const STRATEGIC_CACHE_MAX = 96;
   const STRATEGIC_CACHE_TTL_MS = 3 * 60 * 1000;
   const STRATEGIC_CACHE = new Map(); // key -> { t:number, j:object }
@@ -1341,8 +1251,8 @@
     return (Math.round(v * 1000) / 1000).toFixed(3);
   }
 
-  function _strategicCacheKey(year, iso, latMin, latMax, lonMin, lonMax) {
-    return `${String(year)}|${String(iso)}|${_q3(latMin)},${_q3(latMax)},${_q3(lonMin)},${_q3(lonMax)}`;
+  function _strategicCacheKey(year, timescale, iso, latMin, latMax, lonMin, lonMax) {
+    return `${String(year)}|${String(timescale || 'daily')}|${String(iso)}|${_q3(latMin)},${_q3(latMax)},${_q3(lonMin)},${_q3(lonMax)}`;
   }
 
   function _strategicCacheGet(key) {
@@ -1426,13 +1336,35 @@
 
   // -------------------- Strategic Legend (in-map) --------------------
   let STRATEGIC_LEGEND_EL = null;
+  let STRATEGIC_LEGEND_LAYER_SELECT = null;
+  let STRATEGIC_LEGEND_YEAR_SELECT = null;
+  let STRATEGIC_LEGEND_TIMESCALE_SELECT = null;
   function _ensureStrategicLegend() {
     if (STRATEGIC_LEGEND_EL) return STRATEGIC_LEGEND_EL;
     try {
       const el = document.createElement('div');
       el.className = 'wm-map-legend hidden';
       el.innerHTML = [
-        '<div class="title" id="wmStrategicLegendTitle">Legend</div>',
+        '<div class="title" id="wmStrategicLegendTitle" style="margin:0;">Legend</div>',
+        '<div class="row">'
+          + '<div class="lab">Layer</div>'
+          + '<select id="wmStrategicLegendLayerSelect" class="sel" aria-label="Layer" title="Layer"></select>'
+        + '</div>',
+        '<div class="row">'
+          + '<div class="lab">Year</div>'
+          + '<select id="wmStrategicLegendYearSelect" class="sel" aria-label="Year" title="Year"></select>'
+        + '</div>',
+        '<div class="row">'
+          + '<div class="lab">Timescale</div>'
+          + '<select id="wmStrategicLegendTimescaleSelect" class="sel" aria-label="Timescale" title="Timescale">'
+            + '<option value="daily">Daily</option>'
+            + '<option value="week">Weekly</option>'
+            + '<option value="two_week">2 Weeks</option>'
+            + '<option value="month">Monthly</option>'
+            + '<option value="quarter">Quarter</option>'
+            + '<option value="year">Yearly</option>'
+          + '</select>'
+        + '</div>',
         '<div class="bar" id="wmStrategicLegendBar"></div>',
         '<div class="ticks" id="wmStrategicLegendTicks"></div>',
         '<div class="note" id="wmStrategicLegendNote" style="display:none"></div>',
@@ -1441,6 +1373,51 @@
       const c = map && map.getContainer ? map.getContainer() : null;
       if (c) c.appendChild(el);
       STRATEGIC_LEGEND_EL = el;
+
+      try {
+        const sel = el.querySelector('#wmStrategicLegendLayerSelect');
+        if (sel) {
+          STRATEGIC_LEGEND_LAYER_SELECT = sel;
+          try { _populateLayerOptions(sel); } catch (_) {}
+          sel.addEventListener('change', () => {
+            const v = String(sel.value || 'temperature_ride');
+            try { _setStrategicLayer(v); } catch (_) {}
+            try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+            try { _applyStrategicBasemap(); } catch (_) {}
+            try { _renderStrategic(); } catch (_) {}
+          });
+        }
+      } catch (_) {}
+
+      try {
+        const selY = el.querySelector('#wmStrategicLegendYearSelect');
+        if (selY) {
+          STRATEGIC_LEGEND_YEAR_SELECT = selY;
+          try { _populateYearOptionsFromPrefs(selY); } catch (_) {}
+          selY.addEventListener('change', () => {
+            const y = Number(selY.value);
+            if (!Number.isFinite(y)) return;
+            try { SETTINGS.strategicYear = y; saveSettings(SETTINGS); } catch (_) {}
+            try { _strategicSetYear(y); } catch (_) {}
+            try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+          });
+        }
+      } catch (_) {}
+
+      try {
+        const selTS = el.querySelector('#wmStrategicLegendTimescaleSelect');
+        if (selTS) {
+          STRATEGIC_LEGEND_TIMESCALE_SELECT = selTS;
+          selTS.addEventListener('change', () => {
+            const ts = String(selTS.value || 'daily');
+            try { STRATEGIC_STATE.timescale = ts; } catch (_) {}
+            try { if (strategicTimescaleSelect) strategicTimescaleSelect.value = ts; } catch (_) {}
+            try { SETTINGS.climateTimescale = ts; saveSettings(SETTINGS); } catch (_) {}
+            try { _strategicApplyTimescaleUI(); } catch (_) {}
+            try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+          });
+        }
+      } catch (_) {}
       return el;
     } catch (_) {
       return null;
@@ -1600,6 +1577,32 @@
     const layer = STRATEGIC_STATE.layer;
     el.classList.remove('hidden');
 
+    // Keep legend's layer select in sync (and keep its options current).
+    try {
+      if (STRATEGIC_LEGEND_LAYER_SELECT) {
+        if (strategicLayerSelect && strategicLayerSelect.options && STRATEGIC_LEGEND_LAYER_SELECT.options.length !== strategicLayerSelect.options.length) {
+          _populateLayerOptions(STRATEGIC_LEGEND_LAYER_SELECT);
+        }
+        STRATEGIC_LEGEND_LAYER_SELECT.value = String(layer || 'temperature_ride');
+      }
+    } catch (_) {}
+
+    try {
+      if (STRATEGIC_LEGEND_YEAR_SELECT) {
+        if (setStrategicYear && setStrategicYear.options && STRATEGIC_LEGEND_YEAR_SELECT.options.length !== setStrategicYear.options.length) {
+          _populateYearOptionsFromPrefs(STRATEGIC_LEGEND_YEAR_SELECT);
+        }
+        const y = Number(STRATEGIC_STATE.year || (SETTINGS && SETTINGS.strategicYear) || STRATEGIC_DEFAULT_YEAR);
+        STRATEGIC_LEGEND_YEAR_SELECT.value = String(Number.isFinite(y) ? y : STRATEGIC_DEFAULT_YEAR);
+      }
+    } catch (_) {}
+    try {
+      if (STRATEGIC_LEGEND_TIMESCALE_SELECT) {
+        const ts = String(STRATEGIC_STATE.timescale || ((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily'));
+        STRATEGIC_LEGEND_TIMESCALE_SELECT.value = ts || 'daily';
+      }
+    } catch (_) {}
+
     if (layer === 'temperature_ride') {
       // Show color scale only between -10..40°C.
       _setLegend(
@@ -1667,17 +1670,19 @@
       _setLegendSteps(
         'Precipitation (mm/day)',
         [
-          { color: 'rgba(255,255,255,0.0)' },
-          { color: 'rgba(170,145,235,0.90)' },
-          { color: 'rgba(135,85,220,0.90)' },
-          { color: 'rgba(85,40,160,0.90)' },
+          { color: 'rgba(255,255,255,0.0)' },  // 0
+          { color: 'rgba(237,231,246,0.90)' },  // 0.5–1  (#ede7f6)
+          { color: 'rgba(179,157,219,0.90)' },  // 1–3    (#b39ddb)
+          { color: 'rgba(126,87,194,0.90)' },   // 3–8    (#7e57c2)
+          { color: 'rgba(94,53,177,0.90)' },    // 8–20   (#5e35b1)
+          { color: 'rgba(49,27,146,0.90)' },    // >20    (#311b92)
         ],
-        ['<2', '2', '5', '10', '≥10'],
+        ['0', '0.5', '1', '3', '8', '20', '>20'],
         null
       );
       _setLegendTooltips(
-        'Daily precipitation sum (mm/day).',
-        'Color encodes precipitation (mm/day).',
+        'Daily precipitation sum (mm/day). Light drizzle (<0.5mm/day) is visually suppressed.',
+        'Color encodes precipitation zones (mm/day) with higher contrast.',
         'Tick labels are mm/day anchors.'
       );
       return;
@@ -4103,10 +4108,15 @@
   }
 
   function _strokeStrategicShoreline(ctx) {
-    // Draw a subtle coastline line when includeSea=true (so land/sea boundary is readable).
+    // Coastline outline for Strategic overlays.
+    // Draw regardless of includeSea so the continent boundary stays readable
+    // and doesn't disappear when toggling includeSea.
     if (!ctx) return;
-    if (!(SETTINGS && SETTINGS.includeSea)) return;
-    const src = (STRATEGIC_SHORE_LAND && STRATEGIC_SHORE_LAND.features) ? STRATEGIC_SHORE_LAND : STRATEGIC_LAND;
+
+    // Prefer higher-res shoreline when available.
+    const src = (STRATEGIC_SHORE_LAND && STRATEGIC_SHORE_LAND.features)
+      ? STRATEGIC_SHORE_LAND
+      : STRATEGIC_LAND;
     if (!src || !src.features) {
       // Prefer loading the higher-res shoreline source; fall back to 110m if needed.
       _ensureStrategicShoreMaskLoaded();
@@ -4158,10 +4168,10 @@
       ctx.globalCompositeOperation = 'source-over';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      // Emphasized shore line for includeSea=true.
-      ctx.strokeStyle = 'rgba(70,70,70,0.70)';
+      // Dark, thick coastline line.
+      ctx.strokeStyle = 'rgba(55,55,55,0.78)';
       const z = (map && typeof map.getZoom === 'function') ? Number(map.getZoom()) : 7;
-      ctx.lineWidth = (z >= 9) ? 3.0 : ((z >= 7) ? 2.6 : 2.2);
+      ctx.lineWidth = (z >= 10) ? 3.2 : ((z >= 8) ? 2.9 : ((z >= 6) ? 2.6 : 2.3));
     } catch (_) {}
 
     ctx.beginPath();
@@ -4312,6 +4322,9 @@
     year: Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR),
     // Continuous day-of-year (1..365)
     doy: 1.0,
+    timescale: (strategicTimescaleSelect && strategicTimescaleSelect.value)
+      ? strategicTimescaleSelect.value
+      : String((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily'),
     layer: (strategicLayerSelect && strategicLayerSelect.value) ? strategicLayerSelect.value : 'temperature_ride',
     windOn: false,
     windMode: (strategicWindMode && strategicWindMode.value) ? strategicWindMode.value : 'flow',
@@ -4385,45 +4398,284 @@
     return `${md.monthName} ${md.day}`;
   }
 
-  function _renderMonthTicksDOY() {
+  function _renderStrategicSliderTicks(timescale) {
     if (!strategicMonthTicks) return;
     strategicMonthTicks.innerHTML = '';
-    const n = 365;
-    for (const s of _DOY_MONTH_STARTS) {
-      const x = ((s.doy - 1) / (n - 1)) * 100;
-      const el = document.createElement('div');
-      el.className = 'wm-tick wm-major';
-      el.style.left = `${x}%`;
-      strategicMonthTicks.appendChild(el);
+    const ts = String(timescale || 'daily');
 
+    // Yearly has no meaningful in-year ticks.
+    if (ts === 'year') return;
+
+    // Daily: show month boundaries on the 1..365 axis.
+    if (ts === 'daily') {
+      const n = 365;
+      for (const s of _DOY_MONTH_STARTS) {
+        const x = ((s.doy - 1) / (n - 1)) * 100;
+        const el = document.createElement('div');
+        el.className = 'wm-tick wm-major';
+        el.style.left = `${x}%`;
+        strategicMonthTicks.appendChild(el);
+
+        const lab = document.createElement('div');
+        lab.className = 'wm-month-label';
+        lab.style.left = `${x}%`;
+        lab.textContent = s.name;
+        strategicMonthTicks.appendChild(lab);
+      }
+      return;
+    }
+
+    const spec = _strategicSliderSpec(ts);
+    const minV = Number(spec.min);
+    const maxV = Number(spec.max);
+    const denom = Math.max(1, (maxV - minV));
+
+    function _xFor(v) {
+      return ((Number(v) - minV) / denom) * 100;
+    }
+
+    function _addTick(v, isMajor) {
+      const el = document.createElement('div');
+      el.className = isMajor ? 'wm-tick wm-major' : 'wm-tick';
+      el.style.left = `${_xFor(v)}%`;
+      strategicMonthTicks.appendChild(el);
+    }
+
+    function _addLabel(v, text) {
       const lab = document.createElement('div');
       lab.className = 'wm-month-label';
-      lab.style.left = `${x}%`;
-      lab.textContent = s.name;
+      lab.style.left = `${_xFor(v)}%`;
+      lab.textContent = String(text || '');
       strategicMonthTicks.appendChild(lab);
+    }
+
+    if (ts === 'month') {
+      for (let m = 1; m <= 12; m++) {
+        _addTick(m, true);
+        _addLabel(m, _DOY_MONTHS[m - 1] ? _DOY_MONTHS[m - 1].name : String(m));
+      }
+      return;
+    }
+
+    if (ts === 'quarter') {
+      for (let q = 1; q <= 4; q++) {
+        _addTick(q, true);
+        _addLabel(q, `Q${q}`);
+      }
+      return;
+    }
+
+    // Week / Two-week: tick each bin, label months at their first bin.
+    if (ts === 'week' || ts === 'two_week') {
+      const stepDays = (ts === 'two_week') ? 14 : 7;
+      const majorAt = new Map();
+      for (const s of _DOY_MONTH_STARTS) {
+        const idx = 1 + Math.floor((s.doy - 1) / stepDays);
+        if (!majorAt.has(idx)) majorAt.set(idx, s.name);
+      }
+
+      for (let i = minV; i <= maxV; i++) {
+        _addTick(i, majorAt.has(i));
+      }
+      for (const [idx, name] of majorAt.entries()) {
+        _addLabel(idx, name);
+      }
     }
   }
 
   function _strategicSetLabels() {
-    const txt = _labelFromDOY(STRATEGIC_STATE.doy);
-    if (strategicDayLabel) strategicDayLabel.textContent = txt;
-    if (strategicTimelineLabel) strategicTimelineLabel.textContent = txt;
+    const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    const ts = String(STRATEGIC_STATE.timescale || 'daily');
+    const p = _strategicPeriodForDOY(STRATEGIC_STATE.doy, ts, y);
+    const txtShort = p && p.shortLabel ? String(p.shortLabel) : _labelFromDOY(STRATEGIC_STATE.doy);
+    const txtMonitor = p && p.monitorLabel ? String(p.monitorLabel) : `${y}-${_mmddFromDOY(STRATEGIC_STATE.doy)}`;
+    if (strategicDayLabel) strategicDayLabel.textContent = txtShort;
+    if (strategicTimelineLabel) strategicTimelineLabel.textContent = txtMonitor;
   }
 
   function _strategicSetYear(year) {
     STRATEGIC_STATE.year = Number(year || STRATEGIC_DEFAULT_YEAR);
-    _renderMonthTicksDOY();
+    _strategicApplyTimescaleUI();
     _updateStrategicLegend();
   }
 
   function _strategicSetDOY(doyVal) {
     STRATEGIC_STATE.doy = _clampDOY(doyVal);
-    if (strategicDaySlider) strategicDaySlider.value = String(STRATEGIC_STATE.doy);
+    if (strategicDaySlider) {
+      const ts = String(STRATEGIC_STATE.timescale || 'daily');
+      const v = _strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts);
+      strategicDaySlider.value = String(v);
+    }
+    _strategicSetLabels();
+    _updateStrategicLegend();
+  }
+
+  function _pad2(n) {
+    return String(Number(n) || 0).padStart(2, '0');
+  }
+
+  function _fmtDM(d) {
+    return `${_pad2(d.day)}.${_pad2(d.month)}.`;
+  }
+
+  function _fmtDMY(d, year) {
+    return `${_pad2(d.day)}.${_pad2(d.month)}.${String(year)}`;
+  }
+
+  function _doyToDM(doyInt) {
+    const md = _doyToMonthDay(doyInt);
+    return { month: md.month, day: md.day, monthName: md.monthName };
+  }
+
+  function _strategicPeriodForDOY(doyFloat, timescale, year) {
+    const ts = String(timescale || 'daily');
+    const d = Math.max(1, Math.min(365, Math.round(Number(doyFloat) || 1)));
+
+    const startEnd = (() => {
+      if (ts === 'daily') return { start: d, end: d };
+      if (ts === 'week') {
+        const start = 1 + 7 * Math.floor((d - 1) / 7);
+        return { start, end: Math.min(365, start + 6) };
+      }
+      if (ts === 'two_week') {
+        const start = 1 + 14 * Math.floor((d - 1) / 14);
+        return { start, end: Math.min(365, start + 13) };
+      }
+      if (ts === 'month') {
+        const md = _doyToMonthDay(d);
+        const start = _DOY_MONTH_STARTS.find(s => s.month === md.month)?.doy || 1;
+        const end = Math.min(365, start + (_DOY_MONTHS[md.month - 1]?.days || 30) - 1);
+        return { start, end };
+      }
+      if (ts === 'quarter') {
+        const md = _doyToMonthDay(d);
+        const qStartMonth = 1 + 3 * Math.floor((md.month - 1) / 3);
+        const qEndMonth = qStartMonth + 2;
+        const start = _DOY_MONTH_STARTS.find(s => s.month === qStartMonth)?.doy || 1;
+        const endStart = _DOY_MONTH_STARTS.find(s => s.month === qEndMonth)?.doy || start;
+        const end = Math.min(365, endStart + (_DOY_MONTHS[qEndMonth - 1]?.days || 30) - 1);
+        return { start, end };
+      }
+      if (ts === 'year') return { start: 1, end: 365 };
+      return { start: d, end: d };
+    })();
+
+    const sDM = _doyToDM(startEnd.start);
+    const eDM = _doyToDM(startEnd.end);
+
+    const monitorLabel = (() => {
+      if (ts === 'daily') return _fmtDMY(sDM, year);
+      if (ts === 'year') return `Yearly: ${_fmtDM(sDM)}–${_fmtDM(eDM)}${String(year)}`;
+      const tsTitle = (ts === 'two_week') ? '2 Weeks' : (ts.charAt(0).toUpperCase() + ts.slice(1));
+      return `${tsTitle}: ${_fmtDM(sDM)}–${_fmtDM(eDM)}${String(year)}`;
+    })();
+
+    const shortLabel = (() => {
+      if (ts === 'daily') return `${sDM.monthName} ${sDM.day}`;
+      if (ts === 'month') return `${sDM.monthName} ${String(year)}`;
+      if (ts === 'quarter') return `Q${1 + Math.floor((sDM.month - 1) / 3)} ${String(year)}`;
+      if (ts === 'year') return String(year);
+      // week / two_week
+      return `${_fmtDM(sDM)}–${_fmtDM(eDM)}${String(year)}`;
+    })();
+
+    return {
+      startDoy: startEnd.start,
+      endDoy: startEnd.end,
+      start: sDM,
+      end: eDM,
+      shortLabel,
+      monitorLabel,
+    };
+  }
+
+  function _strategicSliderSpec(timescale) {
+    const ts = String(timescale || 'daily');
+    if (ts === 'daily') return { min: 1, max: 365, step: 0.1 };
+    if (ts === 'week') return { min: 1, max: 53, step: 1 };
+    if (ts === 'two_week') return { min: 1, max: 27, step: 1 };
+    if (ts === 'month') return { min: 1, max: 12, step: 1 };
+    if (ts === 'quarter') return { min: 1, max: 4, step: 1 };
+    if (ts === 'year') return { min: 1, max: 1, step: 1 };
+    return { min: 1, max: 365, step: 1 };
+  }
+
+  function _strategicSliderValueToDOY(sliderValue, timescale) {
+    const ts = String(timescale || 'daily');
+    const v = Number(sliderValue);
+    if (ts === 'daily') return _clampDOY(v);
+    if (ts === 'week') {
+      const idx = Math.max(1, Math.min(53, Math.round(v || 1)));
+      return _clampDOY(1 + (idx - 1) * 7);
+    }
+    if (ts === 'two_week') {
+      const idx = Math.max(1, Math.min(27, Math.round(v || 1)));
+      return _clampDOY(1 + (idx - 1) * 14);
+    }
+    if (ts === 'month') {
+      const idx = Math.max(1, Math.min(12, Math.round(v || 1)));
+      const s = _DOY_MONTH_STARTS[idx - 1];
+      return _clampDOY(s ? s.doy : 1);
+    }
+    if (ts === 'quarter') {
+      const idx = Math.max(1, Math.min(4, Math.round(v || 1)));
+      const startMonth = 1 + (idx - 1) * 3;
+      const s = _DOY_MONTH_STARTS.find(x => x.month === startMonth);
+      return _clampDOY(s ? s.doy : 1);
+    }
+    if (ts === 'year') return 1;
+    return _clampDOY(v);
+  }
+
+  function _strategicDOYToSliderValue(doyFloat, timescale) {
+    const ts = String(timescale || 'daily');
+    const d = Math.max(1, Math.min(365, Math.round(Number(doyFloat) || 1)));
+    if (ts === 'daily') return _clampDOY(Number(doyFloat) || d);
+    if (ts === 'week') return 1 + Math.floor((d - 1) / 7);
+    if (ts === 'two_week') return 1 + Math.floor((d - 1) / 14);
+    if (ts === 'month') {
+      const md = _doyToMonthDay(d);
+      return md.month;
+    }
+    if (ts === 'quarter') {
+      const md = _doyToMonthDay(d);
+      return 1 + Math.floor((md.month - 1) / 3);
+    }
+    if (ts === 'year') return 1;
+    return d;
+  }
+
+  function _strategicApplyTimescaleUI() {
+    const ts = String(STRATEGIC_STATE.timescale || 'daily');
+    const spec = _strategicSliderSpec(ts);
+    try {
+      if (strategicDaySlider) {
+        strategicDaySlider.min = String(spec.min);
+        strategicDaySlider.max = String(spec.max);
+        strategicDaySlider.step = String(spec.step);
+        // Re-map current state.doy into the new slider coordinate.
+        strategicDaySlider.value = String(_strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts));
+      }
+    } catch (_) {}
+    try {
+      if (strategicMonthTicks) {
+        strategicMonthTicks.style.display = (ts === 'year') ? 'none' : '';
+      }
+    } catch (_) {}
+    try {
+      _renderStrategicSliderTicks(ts);
+    } catch (_) {}
     _strategicSetLabels();
     _updateStrategicLegend();
   }
 
   function _strategicCurrentMMDDPair() {
+    const ts = String(STRATEGIC_STATE.timescale || 'daily');
+    // Only daily supports smooth interpolation between adjacent days.
+    if (ts !== 'daily') {
+      const d0 = Math.max(1, Math.min(365, Math.round(Number(STRATEGIC_STATE.doy) || 1)));
+      return { d0, d1: d0, frac: 0, mmdd0: _mmddFromDOY(d0), mmdd1: _mmddFromDOY(d0) };
+    }
     // Continuous DOY interpolation between adjacent days.
     const d = _clampDOY(STRATEGIC_STATE.doy);
     const base = Math.floor(d);
@@ -4449,6 +4701,160 @@
       if (p && p.tile_id) m.set(String(p.tile_id), p);
     }
     return m;
+  }
+
+  // --- Strategic rain rendering helpers (Phase 1: precipitation visualization only) ---
+  function _gaussianKernel1D(sigma) {
+    const s = Math.max(0.01, Number(sigma) || 1.0);
+    const radius = Math.max(1, Math.ceil(3 * s));
+    const w = [];
+    let sum = 0;
+    for (let i = -radius; i <= radius; i++) {
+      const v = Math.exp(-0.5 * (i * i) / (s * s));
+      w.push(v);
+      sum += v;
+    }
+    const inv = sum > 0 ? (1 / sum) : 1;
+    for (let i = 0; i < w.length; i++) w[i] *= inv;
+    return { radius, w };
+  }
+
+  function _gaussianBlur2D_nanAware(grid, sigma) {
+    // grid: Array<Array<number>>; may include NaN for missing cells.
+    if (!grid || !grid.length) return grid;
+    const rows = grid.length;
+    const cols = grid[0] ? grid[0].length : 0;
+    if (rows < 2 || cols < 2) return grid;
+
+    const { radius, w } = _gaussianKernel1D(sigma);
+
+    // Horizontal pass
+    const tmp = Array.from({ length: rows }, () => Array.from({ length: cols }, () => NaN));
+    for (let r = 0; r < rows; r++) {
+      const row = grid[r];
+      for (let c = 0; c < cols; c++) {
+        let acc = 0;
+        let ws = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const cc = c + k;
+          if (cc < 0 || cc >= cols) continue;
+          const v = row[cc];
+          if (!Number.isFinite(v)) continue;
+          const wk = w[k + radius];
+          acc += wk * v;
+          ws += wk;
+        }
+        tmp[r][c] = ws > 0 ? (acc / ws) : NaN;
+      }
+    }
+
+    // Vertical pass
+    const out = Array.from({ length: rows }, () => Array.from({ length: cols }, () => NaN));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let acc = 0;
+        let ws = 0;
+        for (let k = -radius; k <= radius; k++) {
+          const rr = r + k;
+          if (rr < 0 || rr >= rows) continue;
+          const v = tmp[rr][c];
+          if (!Number.isFinite(v)) continue;
+          const wk = w[k + radius];
+          acc += wk * v;
+          ws += wk;
+        }
+        out[r][c] = ws > 0 ? (acc / ws) : NaN;
+      }
+    }
+    return out;
+  }
+
+  function _prepareStrategicRainRide(points, opts) {
+    // Returns a tileMap where `precipitation_mm` holds the *smoothed, scaled* rain field.
+    // Also returns per-tile smoothed raw-mm (approx) for optional contours.
+    const sigma = (opts && Number.isFinite(Number(opts.sigma))) ? Number(opts.sigma) : 1.0;
+    const m = new Map();
+    const pts = Array.isArray(points) ? points : [];
+    if (!pts.length) return { mapScaled: m, pointsForContours: [], sigma };
+
+    let rowMin = Infinity, rowMax = -Infinity, colMin = Infinity, colMax = -Infinity;
+    const items = [];
+    for (const p of pts) {
+      if (!p || !p.tile_id) continue;
+      const r = Number(p.row);
+      const c = Number(p.col);
+      if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+      rowMin = Math.min(rowMin, r);
+      rowMax = Math.max(rowMax, r);
+      colMin = Math.min(colMin, c);
+      colMax = Math.max(colMax, c);
+      const raw = Math.max(0, Number(p.precipitation_mm));
+      items.push({ id: String(p.tile_id), r, c, raw, lat: Number(p.lat), lon: Number(p.lon) });
+    }
+    if (!Number.isFinite(rowMin) || !Number.isFinite(colMin)) return { mapScaled: m, pointsForContours: [], sigma };
+    const rows = (rowMax - rowMin + 1);
+    const cols = (colMax - colMin + 1);
+    if (rows <= 0 || cols <= 0) return { mapScaled: m, pointsForContours: [], sigma };
+
+    // STEP 1: threshold (ignore drizzle)
+    // rain_effective = max(0, rain - 0.5)
+    const eff = Array.from({ length: rows }, () => Array.from({ length: cols }, () => NaN));
+    for (const it of items) {
+      const rr = it.r - rowMin;
+      const cc = it.c - colMin;
+      if (rr < 0 || cc < 0 || rr >= rows || cc >= cols) continue;
+      const v = Math.max(0, it.raw - 0.5);
+      eff[rr][cc] = Number.isFinite(v) ? v : NaN;
+    }
+
+    // STEP 2: non-linear scaling (preferred): log(1 + rain_effective)
+    const scaled = Array.from({ length: rows }, () => Array.from({ length: cols }, () => NaN));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const v = eff[r][c];
+        scaled[r][c] = Number.isFinite(v) ? Math.log1p(Math.max(0, v)) : NaN;
+      }
+    }
+
+    // STEP 3: Gaussian smoothing BEFORE interpolation.
+    const smoothScaled = _gaussianBlur2D_nanAware(scaled, sigma);
+
+    // Prepare map for existing interpolation:
+    // Store the smoothed/scaled field into `precipitation_mm`.
+    // (Only used by the Strategic rain layer; tooltip/comfort still use the raw tileMap.)
+    const pointsForContours = [];
+    for (const it of items) {
+      const rr = it.r - rowMin;
+      const cc = it.c - colMin;
+      let s = (rr >= 0 && cc >= 0 && rr < rows && cc < cols) ? smoothScaled[rr][cc] : NaN;
+      if (!Number.isFinite(s)) {
+        // Fallback to unsmoothed if smoothing had no neighbors.
+        const vEff = Math.max(0, it.raw - 0.5);
+        s = Math.log1p(vEff);
+      }
+
+      m.set(it.id, {
+        tile_id: it.id,
+        precipitation_mm: Number(s),
+      });
+
+      // For optional contours, we invert the scaled field back to effective mm,
+      // then add the 0.5mm threshold offset to get an approximate raw-mm value.
+      const effMm = Math.max(0, (Math.expm1 ? Math.expm1(Number(s)) : (Math.exp(Number(s)) - 1)));
+      const rawApprox = (effMm > 0) ? (effMm + 0.5) : 0;
+      if (Number.isFinite(it.lat) && Number.isFinite(it.lon)) {
+        pointsForContours.push({
+          tile_id: it.id,
+          row: it.r,
+          col: it.c,
+          lat: it.lat,
+          lon: it.lon,
+          __rain_raw_mm_smooth: rawApprox,
+        });
+      }
+    }
+
+    return { mapScaled: m, pointsForContours, sigma };
   }
 
   function _sampleInterpolated(tileMap, meta, lat, lon) {
@@ -4621,13 +5027,15 @@
     const lonMin = b.getWest();
     const lonMax = b.getEast();
 
-    const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, mmdd, latMin, latMax, lonMin, lonMax);
+    const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, STRATEGIC_STATE.timescale, mmdd, latMin, latMax, lonMin, lonMax);
     const cached = _strategicCacheGet(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(String(mmdd))}`
+    const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}`
+      + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
+      + `&date=${encodeURIComponent(String(mmdd))}`
       + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
       + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
     const t0 = Date.now();
@@ -4725,9 +5133,11 @@
       const latMax = b.getNorth();
       const lonMin = b.getWest();
       const lonMax = b.getEast();
-      const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, mmdd, latMin, latMax, lonMin, lonMax);
+      const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, STRATEGIC_STATE.timescale, mmdd, latMin, latMax, lonMin, lonMax);
       if (_strategicCacheGet(cacheKey)) return;
-      const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}&date=${encodeURIComponent(String(mmdd))}`
+      const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}`
+        + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
+        + `&date=${encodeURIComponent(String(mmdd))}`
         + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
         + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
       fetch(url)
@@ -5362,31 +5772,150 @@
         const isoThr = [5,10,15,20,25,30];
         // No labels; keep lines subtle.
         if (grid) _drawIsolines(ctx, grid, isoThr, 'rgba(60,60,60,0.60)', 1, null);
-        _strokeStrategicShoreline(ctx);
         if (clipped) ctx.restore();
+        _strokeStrategicShoreline(ctx);
         return;
       }
 
       if (layer === 'rain_ride') {
-        // Rainfall zones (daily precipitation median, used as planning rain field)
-        const valueKey = 'precipitation_mm';
-        const grid = _gridFromPoints(resp.points, valueKey);
-        // Fill tiles directly (prevents gaps near coasts); isolines still use grid when available.
+        // Phase 1 enhancement: meteorological-style precipitation field.
+        // Pipeline: raw rain -> threshold -> log scaling -> gaussian smoothing -> existing interpolation -> rendering
 
-        // Non-overlapping band fill; leave <2mm/day unshaded.
-        const thr = [2, 5, 10];
-        const cols = [
-          null,
-          { r: 170, g: 145, b: 235 }, // 2–5
-          { r: 135, g: 85,  b: 220 }, // 5–10
-          { r: 85,  g: 40,  b: 160 }, // >=10
-        ];
-        _drawBandedTileFill(ctx, resp.points, meta, valueKey, thr, cols, 0.20);
+        // Cache the prepared smoothed/scaled map for this resp.points.
+        const sigma = 1.0; // allowed 0.8–1.2; keep stable for now
+        let prep = STRATEGIC_STATE._rainRidePrep;
+        if (!prep || prep._pointsRef !== resp.points) {
+          prep = _prepareStrategicRainRide(resp.points, { sigma });
+          prep._pointsRef = resp.points;
+          STRATEGIC_STATE._rainRidePrep = prep;
+        }
 
-        // Iso-lines at the same band thresholds.
-        if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
-        _strokeStrategicShoreline(ctx);
+        const rainMapScaled = prep && prep.mapScaled;
+        if (!rainMapScaled || !meta) {
+          if (clipped) ctx.restore();
+          _strokeStrategicShoreline(ctx);
+          return;
+        }
+
+        // High-contrast precipitation palette (hex -> rgb)
+        const _hexRgb = (hex) => {
+          const h = String(hex || '').replace('#', '').trim();
+          if (h.length !== 6) return { r: 0, g: 0, b: 0 };
+          const r = parseInt(h.slice(0, 2), 16);
+          const g = parseInt(h.slice(2, 4), 16);
+          const b = parseInt(h.slice(4, 6), 16);
+          return {
+            r: Number.isFinite(r) ? r : 0,
+            g: Number.isFinite(g) ? g : 0,
+            b: Number.isFinite(b) ? b : 0,
+          };
+        };
+        const PAL = {
+          c0: _hexRgb('#ede7f6'),
+          c1: _hexRgb('#b39ddb'),
+          c2: _hexRgb('#7e57c2'),
+          c3: _hexRgb('#5e35b1'),
+          c4: _hexRgb('#311b92'),
+        };
+        const colorForRawMm = (rawMm) => {
+          const r = Number(rawMm);
+          if (!Number.isFinite(r) || r < 0.5) return null;
+          if (r < 1) return PAL.c0;
+          if (r < 3) return PAL.c1;
+          if (r < 8) return PAL.c2;
+          if (r < 20) return PAL.c3;
+          return PAL.c4;
+        };
+        const darken = (rgb, f) => ({
+          r: Math.max(0, Math.min(255, Math.round(rgb.r * f))),
+          g: Math.max(0, Math.min(255, Math.round(rgb.g * f))),
+          b: Math.max(0, Math.min(255, Math.round(rgb.b * f))),
+        });
+
+        // Render into a low-res raster and upscale for speed + smoothness.
+        const z = map.getZoom ? map.getZoom() : 6;
+        const stride = Math.max(2, Math.min(6, Math.round(6 - Math.max(0, Math.min(6, z - 5)))));
+        const w2 = Math.max(1, Math.ceil(w / stride));
+        const h2 = Math.max(1, Math.ceil(h / stride));
+        const off = (STRATEGIC_STATE._rainRideRaster || (STRATEGIC_STATE._rainRideRaster = document.createElement('canvas')));
+        off.width = w2;
+        off.height = h2;
+        const octx = off.getContext('2d');
+        if (!octx) {
+          if (clipped) ctx.restore();
+          _strokeStrategicShoreline(ctx);
+          return;
+        }
+        const img = octx.createImageData(w2, h2);
+        const data = img.data;
+
+        // Existing interpolation is kept: we sample `precipitation_mm` from the prepared map.
+        // That value is the *smoothed, scaled* rain field (log1p of effective mm).
+        for (let y2 = 0; y2 < h2; y2++) {
+          const py = y2 * stride + stride * 0.5;
+          for (let x2 = 0; x2 < w2; x2++) {
+            const px = x2 * stride + stride * 0.5;
+            let a = 0;
+            let rgb = null;
+            try {
+              const ll = map.containerPointToLatLng([px, py]);
+              const s = ll ? _sampleInterpolated(rainMapScaled, meta, ll.lat, ll.lng) : null;
+              const scaledSmooth = s ? Number(s.precipitation_mm) : NaN;
+              if (Number.isFinite(scaledSmooth) && scaledSmooth > 1e-9) {
+                const effMm = Math.max(0, (Math.expm1 ? Math.expm1(scaledSmooth) : (Math.exp(scaledSmooth) - 1)));
+                const rawApprox = (effMm > 0) ? (effMm + 0.5) : 0;
+                rgb = colorForRawMm(rawApprox);
+                if (rgb) {
+                  // Opacity based on the same mm/day value that drives color bins.
+                  // This avoids different shades for similar tooltip values.
+                  const u = _clamp01(rawApprox / 20.0);
+                  a = 0.18 + 0.62 * u;
+
+                  // Slight emphasis for solid rain (>=3mm/day).
+                  if (rawApprox >= 3) {
+                    a = Math.min(0.9, a * 1.10);
+                    rgb = darken(rgb, 0.92);
+                  }
+                }
+              }
+            } catch (_) {
+              a = 0;
+              rgb = null;
+            }
+
+            const i = (y2 * w2 + x2) * 4;
+            if (!rgb || a <= 0) {
+              data[i + 0] = 0;
+              data[i + 1] = 0;
+              data[i + 2] = 0;
+              data[i + 3] = 0;
+            } else {
+              data[i + 0] = rgb.r;
+              data[i + 1] = rgb.g;
+              data[i + 2] = rgb.b;
+              data[i + 3] = Math.max(0, Math.min(255, Math.round(_clamp01(a) * 255)));
+            }
+          }
+        }
+
+        octx.putImageData(img, 0, 0);
+        ctx.save();
+        ctx.imageSmoothingEnabled = true;
+        ctx.globalAlpha = 1;
+        ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
+        ctx.restore();
+
+        // Optional subtle contours for readability: 1mm, 5mm, 10mm
+        try {
+          const contourPts = (prep && prep.pointsForContours) ? prep.pointsForContours : [];
+          const grid = _gridFromPoints(contourPts, '__rain_raw_mm_smooth');
+          if (grid) {
+            _drawIsolines(ctx, grid, [1, 5, 10], 'rgba(120,105,150,0.22)', 1, null);
+          }
+        } catch (_) {}
+
         if (clipped) ctx.restore();
+        _strokeStrategicShoreline(ctx);
         return;
       }
 
@@ -5413,14 +5942,15 @@
         ];
         _drawBandedTileFill(ctx, pts, meta, valueKey, thr, cols, 0.22);
         if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
-        _strokeStrategicShoreline(ctx);
         if (clipped) ctx.restore();
+        _strokeStrategicShoreline(ctx);
         return;
       }
 
       // Other strategic layers are not part of Phase 1 iso-weather rendering.
 
       if (clipped) ctx.restore();
+      _strokeStrategicShoreline(ctx);
     });
 
     // Wind overlay
@@ -5480,6 +6010,23 @@
 
     if (on) {
       _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR));
+
+      // Coastline uses the higher-res (50m) dataset when available.
+      // Load it eagerly so it doesn't appear to "drop" after toggling includeSea.
+      try { _ensureStrategicShoreMaskLoaded(); } catch (_) {}
+
+      // Timescale (temporal aggregation): persisted setting, defaults to daily.
+      try {
+        const ts = String((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : (STRATEGIC_STATE.timescale || 'daily'));
+        STRATEGIC_STATE.timescale = ts || 'daily';
+        if (strategicTimescaleSelect) strategicTimescaleSelect.value = STRATEGIC_STATE.timescale;
+      } catch (_) {
+        STRATEGIC_STATE.timescale = 'daily';
+        try { if (strategicTimescaleSelect) strategicTimescaleSelect.value = 'daily'; } catch (_) {}
+      }
+
+      try { _strategicApplyTimescaleUI(); } catch (_) {}
+
       // Default DOY: today (UTC) mapped into 1..365
       try {
         const today = new Date();
@@ -5563,11 +6110,36 @@
         }
 
         const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
-        const mmdd = _mmddFromDOY(STRATEGIC_STATE.doy);
-        const dateStr = `${y}-${mmdd}`;
+        const ts = String(STRATEGIC_STATE.timescale || 'daily');
+        const p = _strategicPeriodForDOY(STRATEGIC_STATE.doy, ts, y);
+        const dateStr = (p && p.monitorLabel) ? String(p.monitorLabel) : `${y}-${_mmddFromDOY(STRATEGIC_STATE.doy)}`;
+
+        const daysInPeriod = (p && Number.isFinite(Number(p.startDoy)) && Number.isFinite(Number(p.endDoy)))
+          ? Math.max(1, Math.round(Number(p.endDoy) - Number(p.startDoy) + 1))
+          : 1;
 
         const t = Number(s.temp_day_median);
-        const r = Number(s.precipitation_mm);
+
+        // For rain_ride, the map rendering uses a smoothed precipitation field.
+        // Use the same field value in the tooltip so color and numbers match.
+        let r = Number(s.precipitation_mm);
+        try {
+          if (String(STRATEGIC_STATE.layer || '') === 'rain_ride') {
+            const prep = STRATEGIC_STATE._rainRidePrep;
+            const meta2 = STRATEGIC_STATE._meta;
+            if (prep && prep.mapScaled && meta2 && ll) {
+              const ss = _sampleInterpolated(prep.mapScaled, meta2, ll.lat, ll.lng);
+              const scaledSmooth = ss ? Number(ss.precipitation_mm) : NaN;
+              if (Number.isFinite(scaledSmooth) && scaledSmooth > 1e-9) {
+                const effMm = Math.max(0, (Math.expm1 ? Math.expm1(scaledSmooth) : (Math.exp(scaledSmooth) - 1)));
+                const rawApprox = (effMm > 0) ? (effMm + 0.5) : 0;
+                r = rawApprox;
+              } else {
+                r = 0;
+              }
+            }
+          }
+        } catch (_) {}
         const w = Number(s.wind_speed_ms);
         const wdFrom = Number(s.wind_dir_deg);
         const wdTo = Number.isFinite(wdFrom) ? ((wdFrom + 180) % 360) : null;
@@ -5579,6 +6151,7 @@
           `${dateStr}`,
           `Temp: ${_fmtNum(t, 1)} °C`,
           `Rain: ${_fmtNum(r, 1)} mm/day`,
+          `Rain sum: ${_fmtNum((Number.isFinite(r) ? (r * daysInPeriod) : NaN), 1)} mm (${daysInPeriod}d)`,
           `Wind: ${_fmtNum(w, 1)} m/s${Number.isFinite(wdTo) ? ` (to ${Math.round(wdTo)}°)` : ''}`,
           `Comfort: ${Number.isFinite(comfort) ? String(Math.round(comfort)) : '—'}${Number.isFinite(comfort) ? ` (${_comfortLabel(comfort)})` : ''}`,
         ];
@@ -5680,6 +6253,15 @@
   } catch (_) {}
 
   // UI wiring
+  if (strategicTimescaleSelect) {
+    strategicTimescaleSelect.addEventListener('change', () => {
+      const ts = String(strategicTimescaleSelect.value || 'daily');
+      STRATEGIC_STATE.timescale = ts;
+      try { SETTINGS.climateTimescale = ts; saveSettings(SETTINGS); } catch (_) {}
+      try { _strategicApplyTimescaleUI(); } catch (_) {}
+      _scheduleStrategicFetch();
+    });
+  }
   if (strategicLayerSelect) {
     strategicLayerSelect.addEventListener('change', () => {
       STRATEGIC_STATE.layer = strategicLayerSelect.value;
@@ -5712,7 +6294,9 @@
   }
   if (strategicDaySlider) {
     strategicDaySlider.addEventListener('input', () => {
-      _strategicSetDOY(strategicDaySlider.value);
+      const ts = String(STRATEGIC_STATE.timescale || 'daily');
+      const doy = _strategicSliderValueToDOY(strategicDaySlider.value, ts);
+      _strategicSetDOY(doy);
       _scheduleStrategicFetch();
     });
   }
@@ -5727,10 +6311,13 @@
       if (STRATEGIC_STATE.playing) {
         const tick = () => {
           if (!STRATEGIC_STATE.playing) return;
-          // Animation logic: d += 0.5 per frame, ~5 fps
-          let d = _clampDOY(STRATEGIC_STATE.doy + 0.5);
-          if (d >= 365) d = 1;
-          _strategicSetDOY(d);
+          const ts = String(STRATEGIC_STATE.timescale || 'daily');
+          const spec = _strategicSliderSpec(ts);
+          const cur = _strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts);
+          let next = Number(cur) + 1;
+          if (next > spec.max) next = spec.min;
+          const doy = _strategicSliderValueToDOY(next, ts);
+          _strategicSetDOY(doy);
           _scheduleStrategicFetch();
           const delay = 200;
           STRATEGIC_STATE.playTimer = setTimeout(tick, delay);
@@ -5738,6 +6325,36 @@
         STRATEGIC_STATE.playTimer = setTimeout(tick, 200);
       }
     });
+  }
+
+  function _strategicStepOnce(delta) {
+    if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return;
+    // If stepping manually, pause playback.
+    if (STRATEGIC_STATE.playing) {
+      STRATEGIC_STATE.playing = false;
+      try { if (strategicPlayBtn) strategicPlayBtn.textContent = '▶ Play Season'; } catch (_) {}
+      if (STRATEGIC_STATE.playTimer) {
+        try { clearTimeout(STRATEGIC_STATE.playTimer); } catch (_) {}
+        STRATEGIC_STATE.playTimer = null;
+      }
+    }
+    const ts = String(STRATEGIC_STATE.timescale || 'daily');
+    const spec = _strategicSliderSpec(ts);
+    const cur = _strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts);
+    let next = Number(cur) + Number(delta || 0);
+    if (!Number.isFinite(next)) next = spec.min;
+    if (next > spec.max) next = spec.min;
+    if (next < spec.min) next = spec.max;
+    const doy = _strategicSliderValueToDOY(next, ts);
+    _strategicSetDOY(doy);
+    _scheduleStrategicFetch();
+  }
+
+  if (strategicStepBackBtn) {
+    strategicStepBackBtn.addEventListener('click', () => _strategicStepOnce(-1));
+  }
+  if (strategicStepForwardBtn) {
+    strategicStepForwardBtn.addEventListener('click', () => _strategicStepOnce(+1));
   }
   // Speed slider removed in Phase 1.
 
