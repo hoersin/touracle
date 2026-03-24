@@ -5,3 +5,4 @@ numpy
 gpxpy
 requests
 global-land-mask
+Pillow

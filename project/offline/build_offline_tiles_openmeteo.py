@@ -623,7 +623,8 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--lat-min", type=float, default=34.0)
     p.add_argument("--lat-max", type=float, default=72.0)
-    p.add_argument("--lon-min", type=float, default=-11.0)
+    # Extend westward to include Iceland (Reykjavik).
+    p.add_argument("--lon-min", type=float, default=-28.0)
     p.add_argument("--lon-max", type=float, default=33.0)
 
     p.add_argument("--tile-km", type=float, default=50.0)
@@ -654,6 +655,21 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--chunk-count", type=int, default=10)
     p.add_argument("--chunk-index", type=int, default=0)
+
+    p.add_argument(
+        "--only-tile-id",
+        action="append",
+        default=[],
+        help=(
+            "Process only these tile IDs (repeatable). Useful to resume just a few missing tiles. "
+            "Example: --only-tile-id r21_c9 --only-tile-id r22_c42"
+        ),
+    )
+    p.add_argument(
+        "--only-tiles-file",
+        default="",
+        help="Optional path to a text file containing tile IDs (one per line) to process.",
+    )
 
     p.add_argument("--max-tiles", type=int, default=0, help="Debug: cap processed tile count")
 
@@ -704,6 +720,35 @@ def main() -> None:
         raise SystemExit("chunk-index must be in [0, chunk-count)")
 
     selected = [t for i, t in enumerate(tiles) if (i % chunk_count) == chunk_index]
+
+    # Optional targeting: process only explicitly requested tile IDs.
+    only_ids: List[str] = []
+    try:
+        only_ids.extend([str(x).strip() for x in (args.only_tile_id or []) if str(x).strip()])
+    except Exception:
+        pass
+    try:
+        p = str(getattr(args, "only_tiles_file", "") or "").strip()
+        if p:
+            path = Path(p)
+            if path.exists() and path.is_file():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    tid = str(line).strip()
+                    if tid and not tid.startswith("#"):
+                        only_ids.append(tid)
+    except Exception:
+        pass
+
+    if only_ids:
+        only_set = {tid for tid in only_ids if tid}
+        by_id = {t.tile_id: t for t in selected}
+        unknown = sorted([tid for tid in only_set if tid not in by_id])
+        if unknown:
+            print(
+                "[WARN] --only-tile-* contains unknown/unselected tile IDs (ignored): " + ", ".join(unknown),
+                file=sys.stderr,
+            )
+        selected = [by_id[tid] for tid in sorted(by_id.keys()) if tid in only_set]
     if args.max_tiles and int(args.max_tiles) > 0:
         selected = selected[: int(args.max_tiles)]
 

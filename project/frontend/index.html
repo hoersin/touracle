@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Bikepacking Weather Map</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link id="leafletCss" rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     html, body { height: 100%; margin: 0; overflow-x: hidden; }
 
@@ -98,7 +98,7 @@
     body[data-mode="tour"] .wm-pref-group[data-wm-scope="climate"] { display: none; }
     body[data-mode="climate"] .wm-pref-group[data-wm-scope="tour"] { display: none; }
 
-    /* Comfort thresholds: Climate mode has no route context → no head/tail split */
+    /* Lucky Days conditions: Climate mode has no route context → no head/tail split */
     body[data-mode="climate"] label[for="setWindTailComfort"],
     body[data-mode="climate"] #setWindTailComfort {
       display: none;
@@ -200,6 +200,33 @@
       color: #111827;
       cursor: pointer;
     }
+    .wm-map-legend .btns {
+      flex: 1 1 auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      min-width: 0;
+    }
+    .wm-mini-btn {
+      border: 1px solid rgba(0,0,0,0.15);
+      border-radius: 8px;
+      padding: 6px 8px;
+      background: rgba(255,255,255,0.92);
+      font-size: 12px;
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #111827;
+      cursor: pointer;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .wm-mini-btn[aria-pressed="true"] {
+      border-color: rgba(40,167,69,0.35);
+      background: rgba(40,167,69,0.18);
+      font-weight: 800;
+    }
+    .wm-mini-btn:focus { outline: none; }
+    .wm-mini-btn:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
     .wm-map-legend .title {
       font-size: 11px;
       font-weight: 800;
@@ -330,9 +357,165 @@
       color: #334155;
       min-width: 110px;
     }
-    #strategicDaySlider {
+    .wm-range-wrap {
+      position: relative;
       width: 100%;
       min-width: 0;
+      height: 24px;
+      display: flex;
+      align-items: center;
+    }
+    .wm-range-track {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 6px;
+      transform: translateY(-50%);
+      border-radius: 999px;
+      background: rgba(0,0,0,0.10);
+      overflow: visible;
+      pointer-events: none;
+    }
+    .wm-range-selected {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      background: rgba(0,0,0,0.20);
+      border-radius: 999px;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .wm-range-handle {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 18px;
+      height: 24px;
+      border-radius: 4px;
+      background: rgba(0,0,0,0.30);
+      border: 1px solid rgba(255,255,255,0.82);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.18);
+      box-sizing: border-box;
+      pointer-events: auto;
+      cursor: grab;
+      z-index: 6;
+    }
+    .wm-range-handle:active { cursor: grabbing; }
+    .wm-range-handle.wm-dragging { cursor: grabbing; }
+
+    .wm-range-thumb {
+      position: absolute;
+      top: 50%;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid rgba(0,0,0,0.32);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.16), 0 0 0 1px rgba(255,255,255,0.65) inset;
+      transform: translate(-50%, -50%);
+      box-sizing: border-box;
+      pointer-events: auto;
+      z-index: 7;
+      cursor: ew-resize;
+      transition: transform 90ms ease;
+    }
+    .wm-range-thumb:hover,
+    .wm-range-thumb.wm-active {
+      transform: translate(-50%, -50%) scale(1.18);
+    }
+    .wm-range-handle:hover,
+    .wm-range-handle.wm-active {
+      transform: translate(-50%, -50%) scale(1.10);
+    }
+    .wm-range-tooltip {
+      position: absolute;
+      left: 50%;
+      top: -26px;
+      transform: translateX(-50%);
+      font-size: 11px;
+      color: rgba(0,0,0,0.72);
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(0,0,0,0.14);
+      border-radius: 7px;
+      padding: 4px 7px;
+      white-space: nowrap;
+      pointer-events: none;
+      display: none;
+    }
+    .wm-range-input {
+      position: absolute;
+      left: 0;
+      right: 0;
+      width: 100%;
+      margin: 0;
+      background: transparent;
+      z-index: 4;
+    }
+    /* Let the native slider thumbs remain usable; hide the native track. */
+    .wm-range-input {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 24px;
+      outline: none;
+    }
+
+    /* Hide native sliders (we render our own L/C/R handles). */
+    #strategicRangeStart,
+    #strategicRangeEnd {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .wm-range-input::-webkit-slider-runnable-track {
+      height: 6px;
+      background: transparent;
+      border: none;
+    }
+    .wm-range-input::-moz-range-track {
+      height: 6px;
+      background: transparent;
+      border: none;
+    }
+    .wm-range-input::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid rgba(0,0,0,0.22);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.10);
+      margin-top: -4px;
+    }
+    .wm-range-input::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid rgba(0,0,0,0.22);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.10);
+    }
+
+    /* Dual-range fix is handled via dynamic z-index switching in JS. */
+    .wm-range-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-left: 8px;
+    }
+    #strategicTimeline .wm-mini {
+      border: 1px solid rgba(0,0,0,0.15);
+      background: #fff;
+      border-radius: 8px;
+      padding: 6px 8px;
+      cursor: pointer;
+      font-size: 12px;
+      line-height: 1;
+    }
+    #strategicTimeline select.wm-mini {
+      padding: 6px 8px;
     }
     #strategicMonthTicks {
       position: relative;
@@ -616,13 +799,14 @@
                   <option value="month">Monthly</option>
                   <option value="quarter">Quarter</option>
                   <option value="year">Yearly</option>
+                  <option value="custom">Custom</option>
                 </select>
                 <label for="strategicLayer">Layer:</label>
                 <select id="strategicLayer">
-                  <option value="temperature_ride">Temperature (Ride)</option>
-                  <option value="rain_ride">Rain (Ride)</option>
+                  <option value="temperature_ride">Temperature</option>
+                  <option value="rain_ride">Rain</option>
                   <option value="wind_dir">Wind</option>
-                  <option value="comfort_ride">Ride Comfort</option>
+                  <option value="comfort">Lucky Days</option>
                 </select>
                 <label style="display:flex;align-items:center;gap:8px; font-size:12px; color:#334155;">
                   <input type="checkbox" id="strategicWindOn" class="wm-toggle" />
@@ -706,12 +890,8 @@
                 <div class="wm-pref-group" data-wm-scope="climate">
                   <div class="wm-pref-title">Strategic (Climate Mode)</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setStrategicYear">Strategic year (default)</label>
-                    <select id="setStrategicYear">
-                      <option value="2025">2025</option>
-                      <option value="2024">2024</option>
-                      <option value="2023">2023</option>
-                    </select>
+                    <label for="setStrategicYears">Strategic years</label>
+                    <div id="setStrategicYears" aria-label="Strategic years" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
 
                     <label for="setIncludeSea">Include sea areas</label>
                     <input type="checkbox" id="setIncludeSea" class="wm-toggle" />
@@ -735,17 +915,17 @@
                 </div>
 
                 <div class="wm-pref-group" data-wm-scope="both">
-                  <div class="wm-pref-title">Comfort Thresholds</div>
+                  <div class="wm-pref-title">Lucky Days Conditions</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setTempCold">Comfort min temp (°C)</label>
+                    <label for="setTempCold">Min temp (°C)</label>
                     <input type="number" id="setTempCold" min="-40" max="30" step="1" />
-                    <label for="setTempHot">Comfort max temp (°C)</label>
+                    <label for="setTempHot">Max temp (°C)</label>
                     <input type="number" id="setTempHot" min="5" max="60" step="1" />
-                    <label for="setRainHigh">Comfort max rain (mm/day)</label>
+                    <label for="setRainHigh">Max rain (mm/day)</label>
                     <input type="number" id="setRainHigh" min="0" max="100" step="1" />
-                    <label for="setWindHeadComfort">Comfort max headwind (m/s)</label>
+                    <label for="setWindHeadComfort">Max headwind (m/s)</label>
                     <input type="number" id="setWindHeadComfort" min="0" max="20" step="0.5" />
-                    <label for="setWindTailComfort">Comfort max tailwind (m/s)</label>
+                    <label for="setWindTailComfort">Max tailwind (m/s)</label>
                     <input type="number" id="setWindTailComfort" min="0" max="30" step="0.5" />
                   </div>
                 </div>
@@ -779,7 +959,20 @@
       <button id="strategicStepForward" type="button" class="wm-step-btn" aria-label="Next step" title="Next step">▶</button>
       <div class="wm-strategic-slidercol">
         <div class="label" id="strategicTimelineLabel">—</div>
-        <input id="strategicDaySlider" type="range" min="1" max="365" step="0.1" value="1" />
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div class="wm-range-wrap" id="strategicRangeWrap" aria-label="Strategic date range">
+            <div class="wm-range-track" aria-hidden="true">
+                <div class="wm-range-selected" id="strategicRangeSelected">
+                  <div class="wm-range-thumb" id="strategicRangeThumbStart" aria-label="Start date" title="Start"></div>
+                  <div class="wm-range-handle" id="strategicRangeHandle" aria-label="Drag to move time window" title="Drag to move window"></div>
+                  <div class="wm-range-thumb" id="strategicRangeThumbEnd" aria-label="End date" title="End"></div>
+                </div>
+            </div>
+            <div class="wm-range-tooltip" id="strategicRangeTooltip"></div>
+            <input id="strategicRangeStart" class="wm-range-input" type="range" min="1" max="365" step="1" value="1" />
+            <input id="strategicRangeEnd" class="wm-range-input" type="range" min="1" max="365" step="1" value="14" />
+          </div>
+        </div>
         <div id="strategicMonthTicks" aria-hidden="true"></div>
       </div>
     </div>
@@ -789,10 +982,11 @@
       <div id="map"></div>
       <div class="wm-map-quicklayer" aria-label="Strategic quick layer">
         <select id="strategicQuickLayerSelect" aria-label="Strategic quick layer" title="Quick layer">
-          <option value="temperature_ride">Temperature (Ride)</option>
-          <option value="rain_ride">Rain (Ride)</option>
+          <option value="temperature_ride">Temperature (Active)</option>
+          <option value="rain_ride">Rain (total 24h)</option>
           <option value="wind_dir">Wind</option>
-          <option value="comfort_ride">Ride Comfort</option>
+          <option value="comfort_day">Lucky Days (24h)</option>
+          <option value="comfort_ride">Lucky Days (Active)</option>
         </select>
       </div>
       <div id="profilePanel" style="position:relative; width:100%;">
@@ -821,13 +1015,67 @@
       </div>
     </main>
   </div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Leaflet is loaded (with fallback) at the end of body, before map.js -->
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="/frontend/temperature_scale.js?v=1"></script>
   <script src="/profile.js?v=1"></script>
   <script src="/frontend/sidebar.js?v=1"></script>
   <script>
     (function(){
       'use strict';
+
+      // If something goes wrong during boot, show the error inside the map area
+      // so "blank map" failures are diagnosable without DevTools.
+      (function(){
+        function hasLeafletContainer(){
+          try {
+            const el = document.getElementById('map');
+            return !!(el && el.querySelector && el.querySelector('.leaflet-container'));
+          } catch (_) { return false; }
+        }
+        function showError(msg){
+          try {
+            if (hasLeafletContainer()) return;
+            const el = document.getElementById('map');
+            if (!el) return;
+            el.innerHTML = '';
+            el.style.display = 'flex';
+            el.style.alignItems = 'center';
+            el.style.justifyContent = 'center';
+            el.style.background = '#f7f7f7';
+            el.style.color = '#222';
+            el.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+            el.style.fontSize = '13px';
+            el.style.textAlign = 'center';
+            el.style.padding = '16px';
+            el.style.whiteSpace = 'pre-wrap';
+            el.textContent = 'Map failed to initialize.\n\n' + String(msg || 'Unknown error');
+          } catch (_) {}
+        }
+        try {
+          window.addEventListener('error', (e) => {
+            try {
+              const msg = (e && e.message) ? e.message : (e && e.error && e.error.message) ? e.error.message : String(e && e.error ? e.error : e);
+              const file = (e && e.filename) ? String(e.filename) : '';
+              const line = (e && typeof e.lineno === 'number') ? e.lineno : (e && e.lineno) ? Number(e.lineno) : null;
+              const col = (e && typeof e.colno === 'number') ? e.colno : (e && e.colno) ? Number(e.colno) : null;
+              const loc = file ? `${file}${(line !== null && Number.isFinite(line)) ? `:${line}` : ''}${(col !== null && Number.isFinite(col)) ? `:${col}` : ''}` : '';
+              const stack = (e && e.error && e.error.stack) ? String(e.error.stack) : '';
+              const details = [msg, loc ? `\n@ ${loc}` : '', stack ? `\n\n${stack}` : ''].join('');
+              showError(details);
+            } catch (_) {}
+          });
+          window.addEventListener('unhandledrejection', (e) => {
+            try {
+              const r = e && e.reason;
+              const m = (r && r.message) ? r.message : String(r);
+              const stack = (r && r.stack) ? String(r.stack) : '';
+              showError('Unhandled promise rejection: ' + m + (stack ? `\n\n${stack}` : ''));
+            } catch (_) {}
+          });
+        } catch (_) {}
+        try { window.__WM_SHOW_BOOT_ERROR__ = showError; } catch (_) {}
+      })();
 
       // External, robust mode navigation wiring.
       // - Always starts in Tour Planning.
@@ -1073,8 +1321,97 @@
       }
     })();
   </script>
-  <script src="/map.js?v=81"></script>
-  <script src="/frontend/profile_zoom.js?v=1"></script>
+  <script>
+    // Robust Leaflet loader: try unpkg first, then jsdelivr fallback.
+    // IMPORTANT: Load Leaflet + map.js at the very end so earlier scripts (profile.js/sidebar/mode boot)
+    // have already run, matching the previous working load order.
+    (function(){
+      'use strict';
+
+      function addCss(href){
+        try {
+          const l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.href = href;
+          document.head.appendChild(l);
+        } catch (_) {}
+      }
+
+      function loadScript(src){
+        return new Promise((resolve, reject) => {
+          try {
+            const s = document.createElement('script');
+            s.src = src;
+            s.async = true;
+            s.onload = () => resolve(true);
+            s.onerror = () => reject(new Error('load failed: ' + src));
+            document.body.appendChild(s);
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+
+      async function ensureLeaflet(){
+        if (window.L && typeof window.L.map === 'function') return true;
+
+        const leafletUnpkgJs = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        const leafletJsdelivrJs = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+        const leafletJsdelivrCss = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+
+        try {
+          await loadScript(leafletUnpkgJs);
+        } catch (_) {
+          // Fallback CSS+JS
+          try { addCss(leafletJsdelivrCss); } catch (_) {}
+          await loadScript(leafletJsdelivrJs);
+        }
+
+        return !!(window.L && typeof window.L.map === 'function');
+      }
+
+      function showLeafletError(){
+        try {
+          const el = document.getElementById('map');
+          if (!el) return;
+          el.innerHTML = '';
+          el.style.display = 'flex';
+          el.style.alignItems = 'center';
+          el.style.justifyContent = 'center';
+          el.style.background = '#f7f7f7';
+          el.style.color = '#222';
+          el.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+          el.style.fontSize = '14px';
+          el.style.textAlign = 'center';
+          el.style.padding = '16px';
+          el.textContent = 'Map failed to load (Leaflet not available). Please check internet access (unpkg/jsdelivr) and reload.';
+        } catch (_) {}
+      }
+
+      async function bootMap(){
+        const mapSrc = '/map.js?v=112';
+        const zoomSrc = '/frontend/profile_zoom.js?v=1';
+        try {
+          const ok = await ensureLeaflet();
+          if (!ok) throw new Error('Leaflet missing');
+          await loadScript(mapSrc);
+          await loadScript(zoomSrc);
+          return true;
+        } catch (e) {
+          try { console.error('[WM] Leaflet/map load failed', e); } catch (_) {}
+          showLeafletError();
+          return false;
+        }
+      }
+
+      // Expose for debugging.
+      window.__WM_ENSURE_LEAFLET__ = ensureLeaflet;
+      window.__WM_BOOT_MAP__ = bootMap;
+
+      // Run now (we are already at end-of-body).
+      bootMap();
+    })();
+  </script>
   <script>
     // Assisted test helpers: always available in Console
     window.setTestDemoSettings = function() {

@@ -41,8 +41,16 @@ from weather import compute_daytime_temperature_statistics
 
 try:
     from climate_aggregation import aggregate_climate as _aggregate_climate
+    from climate_aggregation import aggregate_range as _aggregate_range
+    from climate_aggregation import aggregate_climate_multi as _aggregate_climate_multi
+    from climate_aggregation import aggregate_range_multi as _aggregate_range_multi
+    from climate_aggregation import aggregate_daily_multi as _aggregate_daily_multi
 except Exception:  # pragma: no cover
     _aggregate_climate = None  # type: ignore
+    _aggregate_range = None  # type: ignore
+    _aggregate_climate_multi = None  # type: ignore
+    _aggregate_range_multi = None  # type: ignore
+    _aggregate_daily_multi = None  # type: ignore
 
 try:
     from offline_weather_store import OfflineWeatherStore
@@ -203,7 +211,8 @@ def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
                 yrs = getattr(cfg, 'years', None) if cfg is not None else None
                 if yrs is not None:
                     ys, ye = yrs
-                    if int(ye) <= int(ys) or not (int(ys) <= int(y) <= int(ye)):
+                    # Accept single-year DBs where ys == ye.
+                    if int(ye) < int(ys) or not (int(ys) <= int(y) <= int(ye)):
                         try:
                             del _OFFLINE_STORES_BY_YEAR[y]
                         except Exception:
@@ -220,14 +229,13 @@ def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
             if p.exists():
                 cfg = OfflineWeatherStore._load_config(p)  # type: ignore[attr-defined]
                 if cfg is not None:
-                    # Strategic/Climatic mode expects *climatology* (multi-year aggregation).
-                    # Some offline DBs are built for a single calendar year only; using those here
-                    # makes absolute precipitation values jump to that year's real weather.
-                    # Guard against that by only accepting year-specific DBs that span >1 year.
+                    # Strategic/Climatic mode can use both multi-year and single-year DBs.
+                    # If a year-specific DB exists, prefer it so the year selector actually
+                    # changes the displayed values.
                     try:
                         if getattr(cfg, 'years', None) is not None:
                             ys, ye = cfg.years  # type: ignore[misc]
-                            if int(ye) <= int(ys):
+                            if int(ye) < int(ys):
                                 return _get_offline_store()
                             if not (int(ys) <= int(y) <= int(ye)):
                                 return _get_offline_store()
@@ -263,27 +271,95 @@ def _parse_mmdd_or_date(raw: str) -> tuple[int, int]:
 def api_strategic_grid():
     """Strategic/Climatic map: return offline grid nodes + climatology for a day.
 
-    Query params:
-      - date: YYYY-MM-DD or MM-DD (required)
-      - year: int (optional; default 2025)
-            - timescale: daily|week|two_week|month|quarter|year (optional; default daily)
-      - lat_min, lat_max, lon_min, lon_max: viewport bounds (required)
+        Query params (backward compatible):
+            - Preferred (Phase 2):
+                    - start_date: YYYY-MM-DD
+                    - duration_days: int >= 1
+            - Legacy (Phase 1):
+                    - date: YYYY-MM-DD or MM-DD
+                    - timescale: daily|week|two_week|month|quarter|year
+            - year: int (optional anchor year; default 2025)
+            - years: comma-separated years (e.g. 2025,2024,2023). If provided,
+              data is aggregated across the selected years.
+            - mode: active|full_day (optional; default active). Mode controls
+              which temperature semantics to prefer when aggregating.
+            - lat_min, lat_max, lon_min, lon_max: viewport bounds (required)
     """
     if OfflineWeatherStore is None:
         return jsonify({"error": "Offline store unavailable"}), 400
 
+    start_date_raw = request.args.get('start_date')
+    duration_raw = request.args.get('duration_days')
     date_raw = request.args.get('date')
-    if not date_raw:
-        return jsonify({"error": "Missing 'date'"}), 400
+    if not start_date_raw and not date_raw:
+        return jsonify({"error": "Missing 'start_date' (Phase 2) or 'date' (legacy)"}), 400
 
+    def _parse_years(raw: str | None) -> list[int]:
+        if raw is None:
+            return []
+        out: list[int] = []
+        for part in str(raw).split(','):
+            s = str(part).strip()
+            if not s:
+                continue
+            try:
+                y = int(s)
+            except Exception:
+                continue
+            if 1900 <= y <= 2200:
+                out.append(int(y))
+        # De-dup preserving order
+        seen: set[int] = set()
+        uniq: list[int] = []
+        for y in out:
+            if y in seen:
+                continue
+            seen.add(y)
+            uniq.append(y)
+        return uniq
+
+    # Anchor year (legacy single-year behavior uses this).
     try:
         year_raw = request.args.get('year')
         year = int(year_raw) if year_raw is not None else 2025
     except Exception:
         year = 2025
 
+    years_selected = _parse_years(request.args.get('years'))
+    if not years_selected:
+        years_selected = [int(year)]
+    # Use latest selected year as seasonal anchor.
     try:
-        month, day = _parse_mmdd_or_date(date_raw)
+        year = int(max(years_selected))
+    except Exception:
+        year = int(year)
+
+    mode_raw = str(request.args.get('mode') or 'active').strip().lower()
+    if mode_raw in ('24h', 'full', 'full-day', 'full_day', 'day'):
+        mode = 'full_day'
+    else:
+        mode = 'active'
+
+    month = None
+    day = None
+    start_date_iso = None
+    duration_days = None
+    try:
+        if start_date_raw:
+            d0 = _dt.date.fromisoformat(str(start_date_raw).strip())
+            start_date_iso = d0.isoformat()
+            month = int(d0.month)
+            day = int(d0.day)
+            try:
+                duration_days = int(str(duration_raw).strip()) if duration_raw is not None else 1
+            except Exception:
+                duration_days = 1
+            if duration_days < 1:
+                duration_days = 1
+        else:
+            m2, d2 = _parse_mmdd_or_date(date_raw)
+            month = int(m2)
+            day = int(d2)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -312,6 +388,23 @@ def api_strategic_grid():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+    # Optional Lucky Weather conditions for counting lucky days within a timescale.
+    # Frontend passes these when layers `comfort_day` / `comfort_ride` are active.
+    def _opt_float(name: str) -> float | None:
+        v = request.args.get(name)
+        if v is None or str(v).strip() == "":
+            return None
+        try:
+            return float(v)
+        except Exception:
+            return None
+
+    lucky_temp_cold = _opt_float('lucky_temp_cold')
+    lucky_temp_hot = _opt_float('lucky_temp_hot')
+    lucky_rain_max = _opt_float('lucky_rain_max')
+    lucky_wind_max = _opt_float('lucky_wind_max')
+    want_lucky = all(x is not None for x in (lucky_temp_cold, lucky_temp_hot, lucky_rain_max, lucky_wind_max))
+
     # Expand bounds slightly to support interpolation near edges.
     try:
         pad_lat = 0.6  # ~65km
@@ -323,9 +416,22 @@ def api_strategic_grid():
     except Exception:
         lat_min_q, lat_max_q, lon_min_q, lon_max_q = lat_min, lat_max, lon_min, lon_max
 
-    store = _get_offline_store_for_year(year)
-    if store is None:
+    # Resolve stores (one per selected year). Missing years are ignored unless
+    # none are available.
+    stores_by_year: list[tuple[int, Any]] = []
+    for y in years_selected:
+        try:
+            st = _get_offline_store_for_year(int(y))
+        except Exception:
+            st = None
+        if st is not None:
+            stores_by_year.append((int(y), st))
+
+    if not stores_by_year:
         return jsonify({"error": "Offline store not configured"}), 400
+
+    # Backward-compat: keep a single store reference when only one year is used.
+    store = stores_by_year[0][1]
 
     try:
         cfg = getattr(store, 'cfg', None)
@@ -343,41 +449,203 @@ def api_strategic_grid():
     except Exception:
         center_doy = 1
 
+    # Phase 2: explicit range aggregation.
+    if start_date_iso and duration_days is not None and _aggregate_range is not None:
+        try:
+            if len(stores_by_year) > 1 and _aggregate_range_multi is not None:
+                pts = _aggregate_range_multi(
+                    stores=stores_by_year,
+                    anchor_year=int(year),
+                    start_date=str(start_date_iso),
+                    duration_days=int(duration_days),
+                    lat_min=float(lat_min_q),
+                    lat_max=float(lat_max_q),
+                    lon_min=float(lon_min_q),
+                    lon_max=float(lon_max_q),
+                    lucky_temp_cold=lucky_temp_cold,
+                    lucky_temp_hot=lucky_temp_hot,
+                    lucky_rain_max=lucky_rain_max,
+                    lucky_wind_max=lucky_wind_max,
+                )
+            else:
+                pts = _aggregate_range(
+                    store=store,
+                    selected_year=int(year),
+                    start_date=str(start_date_iso),
+                    duration_days=int(duration_days),
+                    lat_min=float(lat_min_q),
+                    lat_max=float(lat_max_q),
+                    lon_min=float(lon_min_q),
+                    lon_max=float(lon_max_q),
+                    lucky_temp_cold=lucky_temp_cold,
+                    lucky_temp_hot=lucky_temp_hot,
+                    lucky_rain_max=lucky_rain_max,
+                    lucky_wind_max=lucky_wind_max,
+                )
+        except Exception as e:
+            return jsonify({"error": f"Range aggregation failed: {e}"}), 500
+
+        try:
+            d0 = _dt.date.fromisoformat(str(start_date_iso))
+            end_date = (d0 + _dt.timedelta(days=max(1, int(duration_days)) - 1)).isoformat()
+        except Exception:
+            end_date = str(start_date_iso)
+
+        return jsonify(
+            {
+                "year": int(year),
+                "years_selected": [int(y) for (y, _st) in stores_by_year],
+                "mode": str(mode),
+                "month": int(month),
+                "day": int(day),
+                "timescale": "range",
+                "center_doy": int(center_doy),
+                "start_date": str(start_date_iso),
+                "end_date": str(end_date),
+                "duration_days": int(duration_days),
+                "sample_days": int(max(1, int(duration_days)) * max(1, len(stores_by_year))),
+                "tile_km": float(tile_km),
+                "bbox": bbox,
+                "years": {
+                    "start": int(min([y for (y, _st) in stores_by_year])),
+                    "end": int(max([y for (y, _st) in stores_by_year])),
+                } if stores_by_year else ({"start": int(years[0]), "end": int(years[1])} if years else None),
+                "count": int(len(pts)),
+                "points": pts,
+            }
+        )
+
     # Existing behavior: daily climatology.
     if str(timescale) == 'daily' or _aggregate_climate is None:
         try:
-            pts = store.get_climatology_grid(lat_min_q, lat_max_q, lon_min_q, lon_max_q, month, day)
+            if len(stores_by_year) > 1 and _aggregate_daily_multi is not None:
+                pts = _aggregate_daily_multi(
+                    stores=stores_by_year,
+                    month=int(month),
+                    day=int(day),
+                    lat_min=float(lat_min_q),
+                    lat_max=float(lat_max_q),
+                    lon_min=float(lon_min_q),
+                    lon_max=float(lon_max_q),
+                    lucky_temp_cold=lucky_temp_cold,
+                    lucky_temp_hot=lucky_temp_hot,
+                    lucky_rain_max=lucky_rain_max,
+                    lucky_wind_max=lucky_wind_max,
+                )
+            else:
+                pts = store.get_climatology_grid(lat_min_q, lat_max_q, lon_min_q, lon_max_q, month, day)
         except Exception as e:
             return jsonify({"error": f"Query failed: {e}"}), 500
+
+        if want_lucky:
+            def _is_lucky(temp_c: float | None, rain_mm: float | None, wind_ms: float | None) -> bool:
+                try:
+                    if temp_c is None or rain_mm is None or wind_ms is None:
+                        return False
+                    t = float(temp_c)
+                    r = float(rain_mm)
+                    w = float(wind_ms)
+                    return (
+                        t >= float(lucky_temp_cold) and t <= float(lucky_temp_hot)
+                        and r <= float(lucky_rain_max)
+                        and w <= float(lucky_wind_max)
+                    )
+                except Exception:
+                    return False
+
+            for p in pts or []:
+                try:
+                    t_day = p.get('temperature_c')
+                    t_ride = p.get('temp_day_median')
+                    r = p.get('precipitation_mm')
+                    w = p.get('wind_speed_ms')
+                    p['lucky_day_count'] = 1 if _is_lucky(t_day, r, w) else 0
+                    p['lucky_ride_count'] = 1 if _is_lucky(t_ride, r, w) else 0
+                except Exception:
+                    continue
     else:
         try:
-            pts = _aggregate_climate(
-                str(timescale),
-                int(center_doy),
-                int(year),
-                store=store,
-                lat_min=float(lat_min_q),
-                lat_max=float(lat_max_q),
-                lon_min=float(lon_min_q),
-                lon_max=float(lon_max_q),
-            )
+            if len(stores_by_year) > 1 and _aggregate_climate_multi is not None:
+                pts = _aggregate_climate_multi(
+                    str(timescale),
+                    int(center_doy),
+                    int(year),
+                    stores=stores_by_year,
+                    lat_min=float(lat_min_q),
+                    lat_max=float(lat_max_q),
+                    lon_min=float(lon_min_q),
+                    lon_max=float(lon_max_q),
+                    lucky_temp_cold=lucky_temp_cold,
+                    lucky_temp_hot=lucky_temp_hot,
+                    lucky_rain_max=lucky_rain_max,
+                    lucky_wind_max=lucky_wind_max,
+                )
+            else:
+                pts = _aggregate_climate(
+                    str(timescale),
+                    int(center_doy),
+                    int(year),
+                    store=store,
+                    lat_min=float(lat_min_q),
+                    lat_max=float(lat_max_q),
+                    lon_min=float(lon_min_q),
+                    lon_max=float(lon_max_q),
+                    lucky_temp_cold=lucky_temp_cold,
+                    lucky_temp_hot=lucky_temp_hot,
+                    lucky_rain_max=lucky_rain_max,
+                    lucky_wind_max=lucky_wind_max,
+                )
         except Exception as e:
             return jsonify({"error": f"Aggregation failed: {e}"}), 500
+
+    # For tooltip denominators: estimate number of aggregated sample-days.
+    try:
+        ts = str(timescale or 'daily')
+        if ts == 'daily':
+            window_days = 1
+        elif ts == 'week':
+            window_days = 7
+        elif ts == 'two_week':
+            window_days = 15
+        elif ts == 'month':
+            window_days = 31
+        elif ts == 'quarter':
+            window_days = 91
+        elif ts == 'year':
+            y = int(year)
+            window_days = 366 if (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) else 365
+        else:
+            window_days = 1
+        sample_days = int(window_days * max(1, len(stores_by_year)))
+    except Exception:
+        sample_days = None
 
     return jsonify(
         {
             "year": int(year),
+            "years_selected": [int(y) for (y, _st) in stores_by_year],
+            "mode": str(mode),
             "month": int(month),
             "day": int(day),
             "timescale": str(timescale),
             "center_doy": int(center_doy),
+            "sample_days": sample_days,
             "tile_km": float(tile_km),
             "bbox": bbox,
-            "years": {"start": int(years[0]), "end": int(years[1])} if years else None,
+            "years": {
+                "start": int(min([y for (y, _st) in stores_by_year])),
+                "end": int(max([y for (y, _st) in stores_by_year])),
+            } if stores_by_year else ({"start": int(years[0]), "end": int(years[1])} if years else None),
             "count": int(len(pts)),
             "points": pts,
         }
     )
+
+
+@app.route('/api/strategy_map')
+def api_strategy_map():
+    """Alias for /api/strategic_grid (Phase 3 naming)."""
+    return api_strategic_grid()
 
 
 def _get_offline_stats(lat: float, lon: float, month: int, day: int) -> Optional[Dict[str, Any]]:
@@ -554,8 +822,7 @@ def ne_110m_land_geojson():
     """Public-domain Natural Earth land polygons (110m) for coastline masking."""
     resp = send_from_directory(app.static_folder, 'ne_110m_land.geojson')
     try:
-        resp.headers['Cache-Control'] = 'no-store, max-age=0'
-        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     except Exception:
         pass
     return resp
@@ -566,8 +833,29 @@ def ne_50m_land_geojson():
     """Public-domain Natural Earth land polygons (50m) for improved shoreline rendering."""
     resp = send_from_directory(app.static_folder, 'ne_50m_land.geojson')
     try:
-        resp.headers['Cache-Control'] = 'no-store, max-age=0'
-        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    except Exception:
+        pass
+    return resp
+
+
+@app.route('/ne_10m_land.geojson')
+def ne_10m_land_geojson():
+    """Public-domain Natural Earth land polygons (10m) for high-zoom shoreline rendering."""
+    resp = send_from_directory(app.static_folder, 'ne_10m_land.geojson')
+    try:
+        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    except Exception:
+        pass
+    return resp
+
+
+@app.route('/ne_10m_land_europe.geojson')
+def ne_10m_land_europe_geojson():
+    """Public-domain Natural Earth land polygons (10m), preclipped to Europe+Med+Iceland for faster loading."""
+    resp = send_from_directory(app.static_folder, 'ne_10m_land_europe.geojson')
+    try:
+        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     except Exception:
         pass
     return resp
@@ -2115,7 +2403,14 @@ def api_map_stream():
                 temps = []; winds = []; precs = []
                 for d_idx in range(total_days_val):
                     st, _mch = stats_by_day.get(int(d_idx), next(iter(stats_by_day.values())))
-                    t = float(st.get('temperature_c', 0.0))
+                    # Prefer daytime/ride-hours median temperature when available.
+                    try:
+                        t_src = st.get('temp_day_median', None)
+                        if t_src is None:
+                            t_src = st.get('temperature_c', 0.0)
+                        t = float(t_src)
+                    except Exception:
+                        t = float(st.get('temperature_c', 0.0))
                     w = float(st.get('wind_speed_ms', 0.0))
                     pmm = float(st.get('precipitation_mm', 0.0))
                     temps.append(t); winds.append(w); precs.append(pmm)

@@ -12,6 +12,7 @@ Core frontend responsibilities:
 - render base maps (Leaflet)
 - render route geometry
 - render weather overlays/glyphs on the map
+- render coastline/land masks for the Climatic Map (Natural Earth GeoJSON; zoom-dependent resolution)
 - render the route profile strip and handle hover/tooltip
 - manage user preferences in local storage
 - fetch data from backend endpoints (including SSE streaming)
@@ -22,6 +23,7 @@ Entry point: `project/backend/app.py`
 
 Core backend responsibilities:
 - serve static frontend assets
+- serve cached coastline GeoJSON endpoints used by the frontend for land/shore rendering
 - accept GPX uploads and persist session state
 - sample routes into evenly spaced points
 - fetch weather data from providers or offline stores

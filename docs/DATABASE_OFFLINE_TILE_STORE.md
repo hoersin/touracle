@@ -7,6 +7,7 @@ The offline tile store is a SQLite database built from the Open‑Meteo Archive 
 - Builder: `project/offline/build_offline_tiles_openmeteo.py`
 - Reader: `project/backend/offline_weather_store.py`
 - Typical DB location(s): `project/cache/offline_weather_YYYY.sqlite`
+	- Variants are supported as long as the filename starts with the year, e.g. `offline_weather_2021_wide.sqlite`.
 
 ## Purpose
 The tile store is optimized for:
@@ -33,6 +34,8 @@ Defines the tile grid.
 - `tile_id` is a string like `r12_c34`
 - `lat/lon` are tile center coordinates
 - `row/col` are grid indices
+
+Note: tile IDs and row/col indices are computed relative to the configured bbox. If you change the bbox (e.g. extend westward to include Iceland), build a new DB file rather than trying to “extend” an existing one.
 
 ### `climatology`
 Stores derived statistics per (tile, month, day).

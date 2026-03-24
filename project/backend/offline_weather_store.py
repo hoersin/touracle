@@ -48,6 +48,7 @@ class OfflineWeatherStore:
         self._has_rain_hist_percentiles = (
             "rain_hist_p25_mm" in cols and "rain_hist_p75_mm" in cols and "rain_hist_p90_mm" in cols
         )
+        self._has_temp_24h = ("temp_24h_c" in cols)
 
     def close(self) -> None:
         try:
@@ -77,6 +78,26 @@ class OfflineWeatherStore:
             except Exception:
                 return None
 
+        def _parse_year_suffix(suffix: str) -> Optional[int]:
+            """Extract year from filenames like:
+
+            - offline_weather_2025.sqlite -> 2025
+            - offline_weather_2021_wide.sqlite -> 2021
+            """
+            try:
+                s = str(suffix)
+                digits = []
+                for ch in s:
+                    if ch.isdigit():
+                        digits.append(ch)
+                    else:
+                        break
+                if not digits:
+                    return None
+                return int("".join(digits))
+            except Exception:
+                return None
+
         # Auto-detect: prefer the DB with the most complete tile coverage.
         # Some DBs can be multi-year but very sparse (few tiles) and thus unusable
         # for most routes. Tie-break using the widest historical year span.
@@ -89,8 +110,10 @@ class OfflineWeatherStore:
             for p in cache_dir.glob("offline_weather_*.sqlite"):
                 try:
                     suffix = p.stem.split("offline_weather_", 1)[1]
-                    year = int(suffix)
-                    year_dbs.append((year, p))
+                    year = _parse_year_suffix(suffix)
+                    if year is None:
+                        continue
+                    year_dbs.append((int(year), p))
                 except Exception:
                     continue
             for _, p in sorted(year_dbs, key=lambda t: t[0], reverse=True):

@@ -1,5 +1,27 @@
 /* global L */
 (function() {
+  // If Leaflet failed to load (e.g. CDN blocked/offline), avoid a hard crash
+  // and show a clear in-map error.
+  try {
+    if (typeof window === 'undefined' || !window.L || typeof window.L.map !== 'function') {
+      const el = (typeof document !== 'undefined') ? document.getElementById('map') : null;
+      if (el) {
+        el.innerHTML = '';
+        el.style.display = 'flex';
+        el.style.alignItems = 'center';
+        el.style.justifyContent = 'center';
+        el.style.background = '#f7f7f7';
+        el.style.color = '#222';
+        el.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+        el.style.fontSize = '14px';
+        el.style.textAlign = 'center';
+        el.style.padding = '16px';
+        el.textContent = 'Map engine not available (Leaflet failed to load). Check internet/CDN access and reload.';
+      }
+      return;
+    }
+  } catch (_) {}
+
   // Prefer canvas renderer so snapshotting (html2canvas) captures route layers without SVG transform drift.
   const map = L.map('map', { preferCanvas: true });
   try { window.__WM_LEAFLET_MAP__ = map; } catch (_) {}
@@ -32,7 +54,7 @@
       const mode = _getAppMode();
       const labHead = document.querySelector('label[for="setWindHeadComfort"]');
       if (labHead) {
-        labHead.textContent = (mode === 'climate') ? 'Comfort max wind (m/s)' : 'Comfort max headwind (m/s)';
+        labHead.textContent = (mode === 'climate') ? 'Max wind (m/s)' : 'Max headwind (m/s)';
       }
     } catch (_) {}
   }
@@ -88,10 +110,10 @@
     } catch (_) {}
     // Fallback
     const defs = [
-      { v: 'temperature_ride', t: 'Temperature (Ride)' },
-      { v: 'rain_ride', t: 'Rain (Ride)' },
+      { v: 'temperature_ride', t: 'Temperature' },
+      { v: 'rain_ride', t: 'Rain' },
       { v: 'wind_dir', t: 'Wind' },
-      { v: 'comfort_ride', t: 'Ride Comfort' },
+      { v: 'comfort', t: 'Lucky Days' },
     ];
     for (const d of defs) {
       const o = document.createElement('option');
@@ -99,6 +121,12 @@
       o.textContent = d.t;
       sel.appendChild(o);
     }
+  }
+
+  function _strategicNormalizeLayer(layer) {
+    const l = String(layer || '');
+    if (l === 'comfort_day' || l === 'comfort_ride') return 'comfort';
+    return l || 'temperature_ride';
   }
 
   // Note: a prior iteration used a Leaflet control in the bottom-right for
@@ -181,6 +209,7 @@
   const setGlyphType = document.getElementById('setGlyphType');
   const setWeatherVisualizationMode = document.getElementById('setWeatherVisualizationMode');
   const setStrategicYear = document.getElementById('setStrategicYear');
+  const setStrategicYears = document.getElementById('setStrategicYears');
   const setIncludeSea = document.getElementById('setIncludeSea');
   const setInterpolation = document.getElementById('setInterpolation');
   const setWindDensity = document.getElementById('setWindDensity');
@@ -193,6 +222,18 @@
 
   const strategicDayLabel = document.getElementById('strategicDayLabel');
   const strategicTimelineLabel = document.getElementById('strategicTimelineLabel');
+  // Phase 2 (range): dual-handle slider + middle drag.
+  const strategicRangeWrap = document.getElementById('strategicRangeWrap');
+  const strategicRangeStart = document.getElementById('strategicRangeStart');
+  const strategicRangeEnd = document.getElementById('strategicRangeEnd');
+  const strategicRangeSelected = document.getElementById('strategicRangeSelected');
+  const strategicRangeHandle = document.getElementById('strategicRangeHandle');
+  const strategicRangeThumbStart = document.getElementById('strategicRangeThumbStart');
+  const strategicRangeThumbEnd = document.getElementById('strategicRangeThumbEnd');
+  const strategicRangeTooltip = document.getElementById('strategicRangeTooltip');
+  // Phase 2 (range): preset buttons and step/speed selects were removed intentionally.
+
+  // Legacy (Phase 1): single day slider.
   const strategicDaySlider = document.getElementById('strategicDaySlider');
   const strategicStepBackBtn = document.getElementById('strategicStepBack');
   const strategicPlayBtn = document.getElementById('strategicPlay');
@@ -269,16 +310,245 @@
   // Profile overlay mode (controlled via Preferences, mirrored in profile panel)
   let OVERLAY_MODE = (setOverlayMode && setOverlayMode.value) ? setOverlayMode.value : 'temperature';
 
+  function _tempLegendData(rangeMinC, rangeMaxC) {
+    const minC = Number(rangeMinC);
+    const maxC = Number(rangeMaxC);
+    const rangeMin = Number.isFinite(minC) ? minC : -5;
+    const rangeMax = (Number.isFinite(maxC) && maxC > rangeMin) ? maxC : 35;
+
+    const sc = (typeof window !== 'undefined') ? window.WM_TEMP_SCALE : null;
+    const bounds = (sc && Array.isArray(sc.TEMP_BOUNDS)) ? sc.TEMP_BOUNDS : [-5, 0, 5, 10, 15, 20, 25, 30, 35];
+    const colorsHex = (sc && Array.isArray(sc.TEMP_COLORS)) ? sc.TEMP_COLORS : ['#313695','#2c7bb6','#00a6ca','#66c2a5','#1a9850','#66bd63','#fee08b','#f46d43'];
+
+    const overlapLen = (lo, hi) => {
+      const a = Number.isFinite(Number(lo)) ? Number(lo) : rangeMin;
+      const b = Number.isFinite(Number(hi)) ? Number(hi) : rangeMax;
+      const x0 = Math.max(rangeMin, Math.min(rangeMax, a));
+      const x1 = Math.max(rangeMin, Math.min(rangeMax, b));
+      return Math.max(0, x1 - x0);
+    };
+
+    const segments = [];
+    for (let i = 0; i < Math.min(colorsHex.length, bounds.length - 1); i++) {
+      const flex = overlapLen(bounds[i], bounds[i + 1]);
+      if (!(flex > 0)) continue;
+      segments.push({ color: colorsHex[i], flex });
+    }
+
+    const major = [-5, 0, 10, 20, 30, 35].filter(v => v >= rangeMin && v <= rangeMax);
+    const minorSet = new Set();
+    for (const b of bounds) {
+      const v = Number(b);
+      if (!Number.isFinite(v)) continue;
+      if (v <= rangeMin || v >= rangeMax) continue;
+      if (major.includes(v)) continue;
+      minorSet.add(v);
+    }
+    const minor = Array.from(minorSet.values()).sort((a, b) => a - b);
+
+    return { rangeMin, rangeMax, segments, major, minor };
+  }
+
+  function _tempLegendTicksMarkup(data, opts) {
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const rangeMin = Number(data && data.rangeMin);
+    const rangeMax = Number(data && data.rangeMax);
+    const denom = Math.max(1e-9, rangeMax - rangeMin);
+    const major = Array.isArray(data && data.major) ? data.major : [];
+    const minor = Array.isArray(data && data.minor) ? data.minor : [];
+
+    const pct = (v) => (100 * (Number(v) - rangeMin) / denom);
+    const fmtLabel = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '';
+      if (o.unitOnMax && Math.abs(n - rangeMax) < 1e-9) return `${Math.round(n)} °C`;
+      return String(Math.round(n));
+    };
+    const xform = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return 'translateX(-50%)';
+      if (Math.abs(n - rangeMin) < 1e-9) return 'translateX(0)';
+      if (Math.abs(n - rangeMax) < 1e-9) return 'translateX(-100%)';
+      return 'translateX(-50%)';
+    };
+
+    const ticks = [];
+    for (const v of minor) ticks.push({ v, major: false });
+    for (const v of major) ticks.push({ v, major: true });
+    ticks.sort((a, b) => Number(a.v) - Number(b.v));
+
+    const marks = ticks.map(t => {
+      const left = pct(t.v);
+      const h = t.major ? 6 : 4;
+      const bg = t.major ? 'rgba(0,0,0,0.40)' : 'rgba(0,0,0,0.22)';
+      return `<span style="position:absolute;left:${left}%;bottom:0;width:1px;height:${h}px;background:${bg};transform:translateX(-0.5px);"></span>`;
+    }).join('');
+
+    const labels = major.map(v => {
+      const left = pct(v);
+      return `<span style="position:absolute;left:${left}%;top:0;transform:${xform(v)};">${fmtLabel(v)}</span>`;
+    }).join('');
+
+    return `
+      <div style="display:block;margin-top:5px;">
+        <div style="position:relative;height:7px;">${marks}</div>
+        <div style="position:relative;margin-top:2px;height:10px;">${labels}</div>
+      </div>
+    `;
+  }
+
+  function _renderTempLegendTicksInto(ticksEl, data) {
+    if (!ticksEl) return;
+    try {
+      ticksEl.innerHTML = '';
+      try { ticksEl.style.display = 'block'; } catch (_) {}
+      try { ticksEl.style.gap = '0px'; } catch (_) {}
+      try { ticksEl.style.flexDirection = 'column'; } catch (_) {}
+
+      const rangeMin = Number(data && data.rangeMin);
+      const rangeMax = Number(data && data.rangeMax);
+      const denom = Math.max(1e-9, rangeMax - rangeMin);
+      const major = Array.isArray(data && data.major) ? data.major : [];
+      const minor = Array.isArray(data && data.minor) ? data.minor : [];
+
+      const pct = (v) => (100 * (Number(v) - rangeMin) / denom);
+      const xform = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 'translateX(-50%)';
+        if (Math.abs(n - rangeMin) < 1e-9) return 'translateX(0)';
+        if (Math.abs(n - rangeMax) < 1e-9) return 'translateX(-100%)';
+        return 'translateX(-50%)';
+      };
+
+      const marks = document.createElement('div');
+      marks.style.position = 'relative';
+      marks.style.height = '7px';
+      marks.style.marginTop = '2px';
+
+      const addMark = (v, isMajor) => {
+        const left = pct(v);
+        const mk = document.createElement('span');
+        mk.style.position = 'absolute';
+        mk.style.left = `${left}%`;
+        mk.style.bottom = '0';
+        mk.style.width = '1px';
+        mk.style.height = isMajor ? '6px' : '4px';
+        mk.style.background = isMajor ? 'rgba(0,0,0,0.40)' : 'rgba(0,0,0,0.22)';
+        mk.style.transform = 'translateX(-0.5px)';
+        marks.appendChild(mk);
+      };
+      for (const v of minor) addMark(v, false);
+      for (const v of major) addMark(v, true);
+
+      const labels = document.createElement('div');
+      labels.style.position = 'relative';
+      labels.style.marginTop = '2px';
+      labels.style.height = '10px';
+
+      for (const v of major) {
+        const left = pct(v);
+        const s = document.createElement('span');
+        s.style.position = 'absolute';
+        s.style.left = `${left}%`;
+        s.style.top = '0';
+        s.style.transform = xform(v);
+        s.textContent = (Math.abs(Number(v) - rangeMax) < 1e-9) ? `${Math.round(Number(v))} °C` : String(Math.round(Number(v)));
+        labels.appendChild(s);
+      }
+
+      ticksEl.appendChild(marks);
+      ticksEl.appendChild(labels);
+    } catch (_) {}
+  }
+
+  function _renderRainLegendTicksInto(ticksEl, opts) {
+    if (!ticksEl) return;
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const rangeMin = Number.isFinite(Number(o.rangeMin)) ? Number(o.rangeMin) : 0.5;
+    const rangeMax = Number.isFinite(Number(o.rangeMax)) ? Number(o.rangeMax) : 50;
+    if (!(rangeMax > rangeMin)) return;
+
+    const denom = Math.max(1e-9, rangeMax - rangeMin);
+    const major = Array.isArray(o.major) ? o.major.map(Number).filter(Number.isFinite) : [2, 10, 20, 50];
+    const pct = (v) => (100 * (Number(v) - rangeMin) / denom);
+    const xform = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return 'translateX(-50%)';
+      if (Math.abs(n - rangeMin) < 1e-9) return 'translateX(0)';
+      if (Math.abs(n - rangeMax) < 1e-9) return 'translateX(-100%)';
+      return 'translateX(-50%)';
+    };
+
+    try {
+      ticksEl.innerHTML = '';
+      try { ticksEl.style.display = 'block'; } catch (_) {}
+      try { ticksEl.style.gap = '0px'; } catch (_) {}
+      try { ticksEl.style.flexDirection = 'column'; } catch (_) {}
+
+      const marks = document.createElement('div');
+      marks.style.position = 'relative';
+      marks.style.height = '7px';
+      marks.style.marginTop = '2px';
+
+      const labels = document.createElement('div');
+      labels.style.position = 'relative';
+      labels.style.marginTop = '2px';
+      labels.style.height = '10px';
+
+      for (const v of major) {
+        if (v < rangeMin - 1e-9 || v > rangeMax + 1e-9) continue;
+        const left = pct(v);
+
+        const mk = document.createElement('span');
+        mk.style.position = 'absolute';
+        mk.style.left = `${left}%`;
+        mk.style.bottom = '0';
+        mk.style.width = '1px';
+        mk.style.height = '6px';
+        mk.style.background = 'rgba(0,0,0,0.38)';
+        mk.style.transform = 'translateX(-0.5px)';
+        marks.appendChild(mk);
+
+        const s = document.createElement('span');
+        s.style.position = 'absolute';
+        s.style.left = `${left}%`;
+        s.style.top = '0';
+        s.style.transform = xform(v);
+        s.textContent = (Math.abs(v - rangeMax) < 1e-9) ? `${Math.round(v)} mm` : String(Math.round(v));
+        labels.appendChild(s);
+      }
+
+      ticksEl.appendChild(marks);
+      ticksEl.appendChild(labels);
+    } catch (_) {}
+  }
+
   function _updateProfileLegend() {
     try {
       if (!profileLegendHost) return;
       const m = (OVERLAY_MODE === 'precipitation' || OVERLAY_MODE === 'wind' || OVERLAY_MODE === 'temperature') ? OVERLAY_MODE : 'temperature';
       profileLegendHost.style.display = 'block';
       if (m === 'temperature') {
+        const td = _tempLegendData(-5, 35);
+        const segHtml = (td && Array.isArray(td.segments) && td.segments.length)
+          ? td.segments.map(s => `<div class="seg" style="background:${s.color};flex:${Number(s.flex) || 1} 1 0%;"></div>`).join('')
+          : [
+          '<div style="flex:1;background:#313695;height:100%;"></div>',
+          '<div style="flex:1;background:#2c7bb6;height:100%;"></div>',
+          '<div style="flex:1;background:#00a6ca;height:100%;"></div>',
+          '<div style="flex:1;background:#66c2a5;height:100%;"></div>',
+          '<div style="flex:1;background:#1a9850;height:100%;"></div>',
+          '<div style="flex:1;background:#66bd63;height:100%;"></div>',
+          '<div style="flex:1;background:#fee08b;height:100%;"></div>',
+          '<div style="flex:1;background:#f46d43;height:100%;"></div>',
+              '<div class="seg" style="background:#fee08b"></div>',
+              '<div class="seg" style="background:#f46d43"></div>',
+            ].join('');
+        const ticksHtml = _tempLegendTicksMarkup(td, { unitOnMax: true });
         profileLegendHost.innerHTML = `
           <div class="title">Temperature</div>
-          <div class="bar" style="background: linear-gradient(90deg,#963cbe 0%,#005bff 17%,#28a050 58%,#f0dc50 75%,#f59b3c 83%,#d73c2d 92%,#8b0000 100%);"></div>
-          <div class="ticks"><span>-10</span><span>0</span><span>20</span><span>40 °C</span></div>
+          <div class="bar steps">${segHtml}</div>
+          <div class="ticks" style="display:block;">${ticksHtml}</div>
           <div class="note">Solid line: median temperature. Dashed lines: typical daytime p25/p75. Shaded band: historical p25–p75 across years.</div>
         `;
       } else if (m === 'precipitation') {
@@ -333,7 +603,6 @@
         shareBtn.style.display = 'block';
         wrap.appendChild(shareBtn);
         try { L.DomEvent.disableClickPropagation(wrap); } catch (_) {}
-        try { L.DomEvent.disableScrollPropagation(wrap); } catch (_) {}
         return wrap;
       };
       ctrl.addTo(map);
@@ -342,6 +611,8 @@
   let OVERLAY_POINTS = [];
   let TOUR_DAYS_AGGR = {};
   let evtSource = null;
+  let evtSourceProfile = null;
+  let PROFILE_ZOOM_REFRESH_BOUND = false;
   let PRIME_IN_PROGRESS = false;
   let MAIN_IN_PROGRESS = false;
   let LAST_GPX_PATH = null;
@@ -829,31 +1100,14 @@
 
   // Temperature → color (shared ramp with glyphs)
   function tempColor(t) {
-    // Global temperature palette (used across the whole app):
-    // violet → blue → green → yellow → orange → red → darkred
-    // Range: -20..40 °C
-    // Best bike temperature: 15..25 °C maps green → yellow.
-    const anchors = [
-      { t: -20.0, c: [0x96, 0x3c, 0xbe] }, // violet
-      { t: -10.0, c: [0x00, 0x5b, 0xff] }, // blue
-      { t: 15.0,  c: [0x28, 0xa0, 0x50] }, // green
-      { t: 25.0,  c: [0xf0, 0xdc, 0x50] }, // yellow
-      { t: 30.0,  c: [0xf5, 0x9b, 0x3c] }, // orange
-      { t: 35.0,  c: [0xd7, 0x3c, 0x2d] }, // red
-      { t: 40.0,  c: [0x8b, 0x00, 0x00] }, // darkred
-    ];
-    const tt = Math.max(anchors[0].t, Math.min(anchors[anchors.length-1].t, Number(t)));
-    for (let i = 0; i < anchors.length - 1; i++) {
-      const a0 = anchors[i], a1 = anchors[i+1];
-      if (a0.t <= tt && tt <= a1.t) {
-        const u = (a1.t === a0.t) ? 1 : (tt - a0.t) / (a1.t - a0.t);
-        const r = Math.round(a0.c[0] + u * (a1.c[0] - a0.c[0]));
-        const g = Math.round(a0.c[1] + u * (a1.c[1] - a0.c[1]));
-        const b = Math.round(a0.c[2] + u * (a1.c[2] - a0.c[2]));
-        return `rgba(${r},${g},${b},1)`;
+    // Phase 1: discrete bins (single source of truth in /frontend/temperature_scale.js)
+    try {
+      const sc = (typeof window !== 'undefined') ? window.WM_TEMP_SCALE : null;
+      if (sc && typeof sc.getTempColorRgba === 'function') {
+        return sc.getTempColorRgba(Number(t), 1);
       }
-    }
-    const c = anchors[anchors.length-1].c; return `rgba(${c[0]},${c[1]},${c[2]},1)`;
+    } catch (_) {}
+    return 'rgba(153,153,153,1)';
   }
 
   // Map rain probability to weather icon class
@@ -1084,6 +1338,9 @@
       overlayMode: 'temperature',
       // Strategic/tactical settings (Phase 1: persisted but not yet fully used)
       strategicYear: 2025,
+      // Phase 3: multi-year + explicit mode switch (active vs 24h)
+      strategicYears: [2025],
+      strategicMode: 'active',
       climateTimescale: 'daily',
       includeSea: false,
       interpolation: true,
@@ -1107,6 +1364,29 @@
         if (Number.isFinite(startY)) lastY = Math.round(startY + safeYears - 1);
       }
       if (!Number.isFinite(lastY)) lastY = defaults.histLastYear;
+
+      const _sanitizeYears = (v, fallbackYear) => {
+        try {
+          const arr = Array.isArray(v) ? v : [];
+          const years = arr
+            .map(x => Math.round(Number(x)))
+            .filter(y => Number.isFinite(y) && y >= 1970 && y <= 2100);
+          const uniq = Array.from(new Set(years));
+          uniq.sort((a, b) => b - a);
+          if (uniq.length) return uniq;
+        } catch (_) {}
+        const fy = Math.round(Number(fallbackYear));
+        return (Number.isFinite(fy) && fy >= 1970 && fy <= 2100) ? [fy] : [defaults.strategicYear];
+      };
+
+      const strategicModeRaw = (typeof j.strategicMode === 'string') ? String(j.strategicMode) : ((typeof j.mode === 'string') ? String(j.mode) : defaults.strategicMode);
+      const strategicMode = (strategicModeRaw === 'full_day' || strategicModeRaw === '24h' || strategicModeRaw === 'day')
+        ? 'full_day'
+        : 'active';
+
+      const loadedStrategicYear = Number(j.strategicYear) || defaults.strategicYear;
+      const strategicYears = _sanitizeYears(j.strategicYears, loadedStrategicYear);
+      const primaryStrategicYear = Math.round(Number(strategicYears[0] || loadedStrategicYear || defaults.strategicYear));
       return {
         ...defaults,
         startDate: (typeof j.startDate === 'string' && j.startDate) ? j.startDate : defaults.startDate,
@@ -1135,7 +1415,9 @@
           ? j.weatherVisualizationMode
           : defaults.weatherVisualizationMode,
         overlayMode: (typeof j.overlayMode === 'string') ? j.overlayMode : defaults.overlayMode,
-        strategicYear: Number(j.strategicYear) || defaults.strategicYear,
+        strategicYear: primaryStrategicYear,
+        strategicYears,
+        strategicMode,
         climateTimescale: (typeof j.climateTimescale === 'string')
           ? j.climateTimescale
           : ((typeof j.climate_timescale === 'string') ? j.climate_timescale : defaults.climateTimescale),
@@ -1191,6 +1473,16 @@
 
     // Climate mode must never show TOUR tactical visuals (bands/glyphs).
     if (m === 'climate') {
+      // Climate mode must never fetch route/weather streams.
+      try { if (evtSource) evtSource.close(); } catch (_) {}
+      try { if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close(); } catch (_) {}
+      try { if (evtSourceProfile) evtSourceProfile.close(); } catch (_) {}
+      PRIME_IN_PROGRESS = false;
+      MAIN_IN_PROGRESS = false;
+      try { stopProgressAnim(); } catch (_) {}
+      try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
+      try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
+
       try { _setTourBandsEnabled(false); } catch (_) {}
       try {
         const tip = document.querySelector && document.querySelector('.wm-tour-bands-tip');
@@ -1236,8 +1528,154 @@
 
   // -------------------- Climatic Map (Strategic) --------------------
   const STRATEGIC_DEFAULT_YEAR = 2025;
+  const STRATEGIC_YEAR_CHOICES = [2025, 2024, 2023, 2022, 2021];
+  const STRATEGIC_DEFAULT_MODE = 'active'; // 'active' | 'full_day'
   const STRATEGIC_CROSSFADE_MS = 300;
   const STRATEGIC_FETCH_THROTTLE_MS = 180;
+
+  function _uniqYearsDesc(arr) {
+    const out = [];
+    const seen = new Set();
+    for (const x of (Array.isArray(arr) ? arr : [])) {
+      const y = Math.round(Number(x));
+      if (!Number.isFinite(y)) continue;
+      if (seen.has(y)) continue;
+      seen.add(y);
+      out.push(y);
+    }
+    out.sort((a, b) => b - a);
+    return out;
+  }
+
+  function _strategicGetSelectedYears() {
+    try {
+      const yrs = (STRATEGIC_STATE && Array.isArray(STRATEGIC_STATE.years) && STRATEGIC_STATE.years.length)
+        ? STRATEGIC_STATE.years
+        : (SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
+            ? SETTINGS.strategicYears
+            : [Number((SETTINGS && SETTINGS.strategicYear) || STRATEGIC_DEFAULT_YEAR)];
+      const u = _uniqYearsDesc(yrs);
+      return u.length ? u : [STRATEGIC_DEFAULT_YEAR];
+    } catch (_) {
+      return [STRATEGIC_DEFAULT_YEAR];
+    }
+  }
+
+  function _strategicGetMode() {
+    try {
+      const mRaw = (STRATEGIC_STATE && typeof STRATEGIC_STATE.mode === 'string')
+        ? String(STRATEGIC_STATE.mode)
+        : (SETTINGS && typeof SETTINGS.strategicMode === 'string')
+            ? String(SETTINGS.strategicMode)
+            : STRATEGIC_DEFAULT_MODE;
+      return (mRaw === 'full_day') ? 'full_day' : 'active';
+    } catch (_) {
+      return STRATEGIC_DEFAULT_MODE;
+    }
+  }
+
+  function _strategicYearsKey(years) {
+    const ys = _uniqYearsDesc(years || _strategicGetSelectedYears());
+    return ys.join(',');
+  }
+
+  function _strategicModeLabel(mode) {
+    return (String(mode || '') === 'full_day') ? '24h' : 'Active';
+  }
+
+  function _renderMiniBtn(host, label, pressed, onClick, title) {
+    if (!host) return null;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'wm-mini-btn';
+    b.textContent = String(label);
+    b.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    if (title) b.title = String(title);
+    b.addEventListener('click', (ev) => {
+      try { ev.preventDefault(); } catch (_) {}
+      try { ev.stopPropagation(); } catch (_) {}
+      try { onClick && onClick(); } catch (_) {}
+    });
+    host.appendChild(b);
+    return b;
+  }
+
+  function _renderStrategicYearsButtons(host, selectedYears, onChange, opts) {
+    if (!host) return;
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const includeAll = (o.includeAll !== undefined) ? Boolean(o.includeAll) : true;
+    host.innerHTML = '';
+    const sel = _uniqYearsDesc(selectedYears);
+    const selSet = new Set(sel);
+
+    const allPressed = STRATEGIC_YEAR_CHOICES.every(y => selSet.has(y));
+    if (includeAll) {
+      _renderMiniBtn(
+        host,
+        'All',
+        allPressed,
+        () => {
+          const next = allPressed ? [STRATEGIC_YEAR_CHOICES[0]] : STRATEGIC_YEAR_CHOICES.slice();
+          onChange && onChange(next);
+        },
+        allPressed ? 'Select only the newest year' : 'Select all years'
+      );
+    }
+
+    for (const y of STRATEGIC_YEAR_CHOICES) {
+      const pressed = selSet.has(y);
+      _renderMiniBtn(
+        host,
+        String(y),
+        pressed,
+        () => {
+          const nextSet = new Set(selSet);
+          if (nextSet.has(y)) nextSet.delete(y);
+          else nextSet.add(y);
+          let next = Array.from(nextSet);
+          next.sort((a, b) => b - a);
+          if (!next.length) next = [y];
+          onChange && onChange(next);
+        },
+        pressed ? 'Remove year' : 'Add year'
+      );
+    }
+  }
+
+  function _renderStrategicModeButtons(host, selectedMode, onChange) {
+    if (!host) return;
+    host.innerHTML = '';
+    const m = (String(selectedMode || '') === 'full_day') ? 'full_day' : 'active';
+    _renderMiniBtn(host, '24h', m === 'full_day', () => { onChange && onChange('full_day'); }, 'Full day (24h)');
+    _renderMiniBtn(host, 'Active', m === 'active', () => { onChange && onChange('active'); }, 'Active / ride hours');
+  }
+
+  function _setStrategicYears(nextYears) {
+    const ys = _uniqYearsDesc(nextYears);
+    const years = ys.length ? ys : [STRATEGIC_DEFAULT_YEAR];
+    STRATEGIC_STATE.years = years;
+    STRATEGIC_STATE.year = years[0];
+    try {
+      SETTINGS.strategicYears = years;
+      SETTINGS.strategicYear = years[0];
+      saveSettings(SETTINGS);
+    } catch (_) {}
+    try { _strategicSetYear(Number(years[0] || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
+    try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears, { includeAll: true }); } catch (_) {}
+    try { _updateStrategicLegend(); } catch (_) {}
+    try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) { _renderStrategic(); if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('years'); } } catch (_) {}
+  }
+
+  function _setStrategicMode(nextMode) {
+    const m = (String(nextMode || '') === 'full_day') ? 'full_day' : 'active';
+    STRATEGIC_STATE.mode = m;
+    try {
+      SETTINGS.strategicMode = m;
+      saveSettings(SETTINGS);
+    } catch (_) {}
+    try { _updateStrategicLegend(); } catch (_) {}
+    try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) { _renderStrategic(); if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('mode'); } } catch (_) {}
+  }
 
   // Cache strategic grid responses to keep slider scrubbing smooth.
   // Keyed by (year, timescale, iso, quantized bbox). LRU + TTL to cap memory.
@@ -1251,8 +1689,53 @@
     return (Math.round(v * 1000) / 1000).toFixed(3);
   }
 
-  function _strategicCacheKey(year, timescale, iso, latMin, latMax, lonMin, lonMax) {
-    return `${String(year)}|${String(timescale || 'daily')}|${String(iso)}|${_q3(latMin)},${_q3(latMax)},${_q3(lonMin)},${_q3(lonMax)}`;
+  function _strategicCacheKey(yearsKey, mode, timescale, iso, latMin, latMax, lonMin, lonMax, variant) {
+    const v = (variant === null || variant === undefined) ? '' : String(variant);
+    const yk = (yearsKey === null || yearsKey === undefined) ? '' : String(yearsKey);
+    const mk = (mode === null || mode === undefined) ? '' : String(mode);
+    return `${yk}|${mk}|${String(timescale || 'daily')}|${String(iso)}|${_q3(latMin)},${_q3(latMax)},${_q3(lonMin)},${_q3(lonMax)}|${v}`;
+  }
+
+  function _strategicLuckyVariant() {
+    try {
+      // Always include Lucky Days thresholds in the cache key because the
+      // strategic tooltip shows Lucky Days even on Temp/Rain/Wind layers.
+      // Use defaults while settings are still initializing to avoid NaN→0 bugs.
+      const tColdRaw = Number(SETTINGS && SETTINGS.tempCold);
+      const tHotRaw = Number(SETTINGS && SETTINGS.tempHot);
+      const rMaxRaw = Number(SETTINGS && SETTINGS.rainHigh);
+      const wMaxRaw = Number(SETTINGS && SETTINGS.windHeadComfort);
+      const tCold = Number.isFinite(tColdRaw) ? tColdRaw : 5;
+      const tHot = Number.isFinite(tHotRaw) ? tHotRaw : 30;
+      const rMax = Number.isFinite(rMaxRaw) ? rMaxRaw : 10;
+      const wMax = Number.isFinite(wMaxRaw) ? wMaxRaw : 4;
+      // Quantize to stabilize caching on small slider changes.
+      const q1 = (x) => (Number.isFinite(Number(x)) ? (Math.round(Number(x) * 10) / 10).toFixed(1) : 'nan');
+      return `lucky:t${q1(tCold)}..${q1(tHot)}|r${q1(rMax)}|w${q1(wMax)}`;
+    } catch (_) {
+      return 'lucky:err';
+    }
+  }
+
+  function _strategicLuckyQueryParams() {
+    try {
+      // Always request Lucky Days counts (used in tooltip for all layers).
+      // Use defaults while settings are still initializing to avoid NaN params.
+      const tColdRaw = Number(SETTINGS && SETTINGS.tempCold);
+      const tHotRaw = Number(SETTINGS && SETTINGS.tempHot);
+      const rMaxRaw = Number(SETTINGS && SETTINGS.rainHigh);
+      const wMaxRaw = Number(SETTINGS && SETTINGS.windHeadComfort);
+      const tCold = Number.isFinite(tColdRaw) ? tColdRaw : 5;
+      const tHot = Number.isFinite(tHotRaw) ? tHotRaw : 30;
+      const rMax = Number.isFinite(rMaxRaw) ? rMaxRaw : 10;
+      const wMax = Number.isFinite(wMaxRaw) ? wMaxRaw : 4;
+      return `&lucky_temp_cold=${encodeURIComponent(String(tCold))}`
+        + `&lucky_temp_hot=${encodeURIComponent(String(tHot))}`
+        + `&lucky_rain_max=${encodeURIComponent(String(rMax))}`
+        + `&lucky_wind_max=${encodeURIComponent(String(wMax))}`;
+    } catch (_) {
+      return '';
+    }
   }
 
   function _strategicCacheGet(key) {
@@ -1337,7 +1820,8 @@
   // -------------------- Strategic Legend (in-map) --------------------
   let STRATEGIC_LEGEND_EL = null;
   let STRATEGIC_LEGEND_LAYER_SELECT = null;
-  let STRATEGIC_LEGEND_YEAR_SELECT = null;
+  let STRATEGIC_LEGEND_YEARS_HOST = null;
+  let STRATEGIC_LEGEND_MODE_HOST = null;
   let STRATEGIC_LEGEND_TIMESCALE_SELECT = null;
   function _ensureStrategicLegend() {
     if (STRATEGIC_LEGEND_EL) return STRATEGIC_LEGEND_EL;
@@ -1351,8 +1835,12 @@
           + '<select id="wmStrategicLegendLayerSelect" class="sel" aria-label="Layer" title="Layer"></select>'
         + '</div>',
         '<div class="row">'
-          + '<div class="lab">Year</div>'
-          + '<select id="wmStrategicLegendYearSelect" class="sel" aria-label="Year" title="Year"></select>'
+          + '<div class="lab">Years</div>'
+          + '<div id="wmStrategicLegendYears" class="btns" aria-label="Years"></div>'
+        + '</div>',
+        '<div class="row">'
+          + '<div class="lab">Mode</div>'
+          + '<div id="wmStrategicLegendMode" class="btns" aria-label="Mode"></div>'
         + '</div>',
         '<div class="row">'
           + '<div class="lab">Timescale</div>'
@@ -1363,6 +1851,7 @@
             + '<option value="month">Monthly</option>'
             + '<option value="quarter">Quarter</option>'
             + '<option value="year">Yearly</option>'
+            + '<option value="custom">Custom</option>'
           + '</select>'
         + '</div>',
         '<div class="bar" id="wmStrategicLegendBar"></div>',
@@ -1382,7 +1871,7 @@
           sel.addEventListener('change', () => {
             const v = String(sel.value || 'temperature_ride');
             try { _setStrategicLayer(v); } catch (_) {}
-            try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+            // Layer switch uses the same underlying dataset; no refetch needed.
             try { _applyStrategicBasemap(); } catch (_) {}
             try { _renderStrategic(); } catch (_) {}
           });
@@ -1390,17 +1879,18 @@
       } catch (_) {}
 
       try {
-        const selY = el.querySelector('#wmStrategicLegendYearSelect');
-        if (selY) {
-          STRATEGIC_LEGEND_YEAR_SELECT = selY;
-          try { _populateYearOptionsFromPrefs(selY); } catch (_) {}
-          selY.addEventListener('change', () => {
-            const y = Number(selY.value);
-            if (!Number.isFinite(y)) return;
-            try { SETTINGS.strategicYear = y; saveSettings(SETTINGS); } catch (_) {}
-            try { _strategicSetYear(y); } catch (_) {}
-            try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
-          });
+        const hostY = el.querySelector('#wmStrategicLegendYears');
+        if (hostY) {
+          STRATEGIC_LEGEND_YEARS_HOST = hostY;
+          _renderStrategicYearsButtons(hostY, _strategicGetSelectedYears(), _setStrategicYears, { includeAll: true });
+        }
+      } catch (_) {}
+
+      try {
+        const hostM = el.querySelector('#wmStrategicLegendMode');
+        if (hostM) {
+          STRATEGIC_LEGEND_MODE_HOST = hostM;
+          _renderStrategicModeButtons(hostM, _strategicGetMode(), _setStrategicMode);
         }
       } catch (_) {}
 
@@ -1409,12 +1899,7 @@
         if (selTS) {
           STRATEGIC_LEGEND_TIMESCALE_SELECT = selTS;
           selTS.addEventListener('change', () => {
-            const ts = String(selTS.value || 'daily');
-            try { STRATEGIC_STATE.timescale = ts; } catch (_) {}
-            try { if (strategicTimescaleSelect) strategicTimescaleSelect.value = ts; } catch (_) {}
-            try { SETTINGS.climateTimescale = ts; saveSettings(SETTINGS); } catch (_) {}
-            try { _strategicApplyTimescaleUI(); } catch (_) {}
-            try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _scheduleStrategicFetch(); } catch (_) {}
+            _strategicApplyTimescaleSelection(String(selTS.value || 'daily'));
           });
         }
       } catch (_) {}
@@ -1490,6 +1975,12 @@
         d.className = 'seg';
         const col = String(seg && seg.color ? seg.color : 'rgba(0,0,0,0.08)');
         d.style.background = col;
+        try {
+          if (seg && seg.border) {
+            d.style.outline = String(seg.border);
+            d.style.outlineOffset = '-1px';
+          }
+        } catch (_) {}
         if (seg && Number.isFinite(Number(seg.flex)) && Number(seg.flex) > 0) {
           d.style.flex = String(Number(seg.flex));
         }
@@ -1566,6 +2057,43 @@
     } catch (_) {}
   }
 
+  function _strategicLegendMetaNote() {
+    try {
+      const resp = STRATEGIC_STATE ? STRATEGIC_STATE.lastResp : null;
+      const years = (resp && Array.isArray(resp.years_selected) && resp.years_selected.length)
+        ? resp.years_selected
+        : _strategicGetSelectedYears();
+      const yearsTxt = _uniqYearsDesc(years).join(', ');
+      const modeRaw = (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+      const modeTxt = _strategicModeLabel(modeRaw);
+
+      let rangeTxt = '';
+      try {
+        if (resp && String(resp.timescale || '') === 'range') {
+          const s = String(resp.start_date || '');
+          const e = String(resp.end_date || '');
+          const d = Math.max(1, Math.round(Number(resp.duration_days) || 1));
+          if (s && e) rangeTxt = `Range: ${_fmtISODayMonth(s)} – ${_fmtISODayMonth(e)} (${d}d)`;
+          else if (s) rangeTxt = `Range: ${_fmtISODayMonth(s)} (${d}d)`;
+        } else {
+          const ts = String(STRATEGIC_STATE && STRATEGIC_STATE.timescale ? STRATEGIC_STATE.timescale : 'daily');
+          const map = { daily: 'Daily', week: 'Weekly', two_week: '2 Weeks', month: 'Monthly', quarter: 'Quarter', year: 'Yearly', custom: 'Custom' };
+          rangeTxt = map[ts] ? `Timescale: ${map[ts]}` : `Timescale: ${ts}`;
+        }
+      } catch (_) {
+        rangeTxt = '';
+      }
+
+      const parts = [];
+      if (yearsTxt) parts.push(`Years: ${yearsTxt}`);
+      if (modeTxt) parts.push(`Mode: ${modeTxt}`);
+      if (rangeTxt) parts.push(rangeTxt);
+      return parts.join(' • ');
+    } catch (_) {
+      return '';
+    }
+  }
+
   function _updateStrategicLegend() {
     const el = _ensureStrategicLegend();
     if (!el) return;
@@ -1574,7 +2102,8 @@
       return;
     }
 
-    const layer = STRATEGIC_STATE.layer;
+    const layer = _strategicNormalizeLayer(STRATEGIC_STATE.layer);
+    const metaNote = _strategicLegendMetaNote();
     el.classList.remove('hidden');
 
     // Keep legend's layer select in sync (and keep its options current).
@@ -1588,102 +2117,90 @@
     } catch (_) {}
 
     try {
-      if (STRATEGIC_LEGEND_YEAR_SELECT) {
-        if (setStrategicYear && setStrategicYear.options && STRATEGIC_LEGEND_YEAR_SELECT.options.length !== setStrategicYear.options.length) {
-          _populateYearOptionsFromPrefs(STRATEGIC_LEGEND_YEAR_SELECT);
-        }
-        const y = Number(STRATEGIC_STATE.year || (SETTINGS && SETTINGS.strategicYear) || STRATEGIC_DEFAULT_YEAR);
-        STRATEGIC_LEGEND_YEAR_SELECT.value = String(Number.isFinite(y) ? y : STRATEGIC_DEFAULT_YEAR);
+      if (STRATEGIC_LEGEND_YEARS_HOST) {
+        _renderStrategicYearsButtons(STRATEGIC_LEGEND_YEARS_HOST, _strategicGetSelectedYears(), _setStrategicYears, { includeAll: true });
+      }
+    } catch (_) {}
+
+    try {
+      if (STRATEGIC_LEGEND_MODE_HOST) {
+        _renderStrategicModeButtons(STRATEGIC_LEGEND_MODE_HOST, _strategicGetMode(), _setStrategicMode);
       }
     } catch (_) {}
     try {
       if (STRATEGIC_LEGEND_TIMESCALE_SELECT) {
         const ts = String(STRATEGIC_STATE.timescale || ((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily'));
+        if (_strategicUsingRangeUI()) {
+          try { _strategicUpdateCustomOptionLabel(STRATEGIC_LEGEND_TIMESCALE_SELECT); } catch (_) {}
+        }
         STRATEGIC_LEGEND_TIMESCALE_SELECT.value = ts || 'daily';
       }
     } catch (_) {}
 
     if (layer === 'temperature_ride') {
-      // Show color scale only between -10..40°C.
-      _setLegend(
-        'Temperature (ride hours, °C)',
-        [
-          { t: 0.00, c: { r: 0,   g: 91,  b: 255 } }, // -10 blue
-          { t: 0.50, c: { r: 40,  g: 160, b: 80 } },  // 15 green
-          { t: 0.70, c: { r: 240, g: 220, b: 80 } },  // 25 yellow
-          { t: 0.80, c: { r: 245, g: 155, b: 60 } },  // 30 orange
-          { t: 0.90, c: { r: 215, g: 60,  b: 45 } },  // 35 red
-          { t: 1.00, c: { r: 139, g: 0,   b: 0 } },   // 40 darkred
-        ],
-        ['-10', '0', '10', '20', '30', '40'],
-        null
-      );
+      const td = _tempLegendData(-5, 35);
+      const segments = (td && Array.isArray(td.segments) && td.segments.length)
+        ? td.segments
+        : [
+            { color: '#2c7bb6', flex: 5 },
+            { color: '#00a6ca', flex: 5 },
+            { color: '#66c2a5', flex: 5 },
+            { color: '#1a9850', flex: 5 },
+            { color: '#66bd63', flex: 5 },
+            { color: '#fee08b', flex: 5 },
+          ];
 
-      // Add small tick marks between the color bar and labels.
+      const modeRaw = (() => {
+        try {
+          const resp = STRATEGIC_STATE ? STRATEGIC_STATE.lastResp : null;
+          return (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+        } catch (_) {
+          return _strategicGetMode();
+        }
+      })();
+      const title = (String(modeRaw) === 'full_day') ? 'Temperature (24h, °C)' : 'Temperature (active hours, °C)';
+      _setLegendSteps(title, segments, [], metaNote || null);
       try {
         const ticksEl = el.querySelector('#wmStrategicLegendTicks');
-        if (ticksEl) {
-          const labs = ['-10', '0', '10', '20', '30', '40'];
-          ticksEl.innerHTML = '';
-
-          // Stack: tick marks row + labels row (CSS for .ticks is flex by default).
-          try { ticksEl.style.display = 'block'; } catch (_) {}
-          try { ticksEl.style.gap = '0px'; } catch (_) {}
-
-          const marks = document.createElement('div');
-          marks.style.display = 'flex';
-          marks.style.justifyContent = 'space-between';
-          marks.style.alignItems = 'flex-end';
-          marks.style.height = '7px';
-          marks.style.marginTop = '2px';
-          for (let i = 0; i < labs.length; i++) {
-            const mk = document.createElement('span');
-            mk.style.display = 'inline-block';
-            mk.style.width = '1px';
-            mk.style.height = '5px';
-            mk.style.background = 'rgba(0,0,0,0.35)';
-            marks.appendChild(mk);
-          }
-
-          const labels = document.createElement('div');
-          labels.style.display = 'flex';
-          labels.style.justifyContent = 'space-between';
-          labels.style.marginTop = '2px';
-          for (const t of labs) {
-            const s = document.createElement('span');
-            s.textContent = String(t);
-            labels.appendChild(s);
-          }
-
-          ticksEl.appendChild(marks);
-          ticksEl.appendChild(labels);
-        }
+        _renderTempLegendTicksInto(ticksEl, td);
       } catch (_) {}
       _setLegendTooltips(
-        'Ride-hours temperature (median of 10/12/14/16 local time).',
-        'Color encodes temperature (°C).',
-        'Tick labels are °C anchors for the palette.'
+        (String(modeRaw) === 'full_day')
+          ? 'Full-day temperature (24h) aggregated from offline climatology.'
+          : 'Active-hours temperature (median of 10/12/14/16 local time).',
+        'Color encodes discrete temperature bins.',
+        'Ticks align with the temperature→color scale.'
       );
       return;
     }
     if (layer === 'rain_ride') {
+      const ts = String(STRATEGIC_STATE.timescale || ((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily') || 'daily');
+      const rangesTxt = '0.5–2 • 2–5 • 5–10 • 10–20 • 20–50 • >50';
+      const note = (ts && ts !== 'daily')
+        ? `${rangesTxt} (mm/day, capped). Interval shows mm/day average; tooltip shows sum.`
+        : `${rangesTxt} (mm/day, capped).`;
+      const note2 = metaNote ? `${note}  |  ${metaNote}` : note;
       _setLegendSteps(
-        'Precipitation (mm/day)',
+        'Rain intensity (mm/day, capped)',
         [
-          { color: 'rgba(255,255,255,0.0)' },  // 0
-          { color: 'rgba(237,231,246,0.90)' },  // 0.5–1  (#ede7f6)
-          { color: 'rgba(179,157,219,0.90)' },  // 1–3    (#b39ddb)
-          { color: 'rgba(126,87,194,0.90)' },   // 3–8    (#7e57c2)
-          { color: 'rgba(94,53,177,0.90)' },    // 8–20   (#5e35b1)
-          { color: 'rgba(49,27,146,0.90)' },    // >20    (#311b92)
+          { color: 'rgba(180,160,255,0.10)' },  // 0.5–2 very subtle
+          { color: 'rgba(150,120,255,0.18)' },  // 2–5 light
+          { color: 'rgba(120,80,220,0.30)' },   // 5–10 moderate
+          { color: 'rgba(100,60,200,0.45)' },   // 10–20 strong
+          { color: 'rgba(80,40,160,0.60)' },    // 20–50 heavy
+          { color: 'rgba(70,30,140,0.70)' },    // >50 extreme (capped max)
         ],
-        ['0', '0.5', '1', '3', '8', '20', '>20'],
-        null
+        [],
+        note2
       );
+      try {
+        const ticksEl = el.querySelector('#wmStrategicLegendTicks');
+        _renderRainLegendTicksInto(ticksEl, { rangeMin: 0.5, rangeMax: 50, major: [2, 10, 20, 50] });
+      } catch (_) {}
       _setLegendTooltips(
-        'Daily precipitation sum (mm/day). Light drizzle (<0.5mm/day) is visually suppressed.',
-        'Color encodes precipitation zones (mm/day) with higher contrast.',
-        'Tick labels are mm/day anchors.'
+        'Bikepacking-relevant rain intensity (mm/day). Light drizzle (<0.5mm/day) is hidden; values above 50mm/day are visually capped.',
+        'Discrete bins after interpolation (no gradient), with light smoothing for field shape.',
+        'Ticks are mm/day anchors on the capped scale.'
       );
       return;
     }
@@ -1696,27 +2213,34 @@
       );
       return;
     }
-    if (layer === 'comfort_ride') {
+    if (layer === 'comfort' || layer === 'comfort_day' || layer === 'comfort_ride') {
+      const modeRaw = (() => {
+        try {
+          const resp = STRATEGIC_STATE ? STRATEGIC_STATE.lastResp : null;
+          return (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+        } catch (_) {
+          return _strategicGetMode();
+        }
+      })();
+      const isActive = (String(modeRaw) !== 'full_day');
       _setLegendSteps(
-        'Ride comfort (bikepacking)',
+        isActive ? 'Lucky Days (Active, %)' : 'Lucky Days (%)',
         [
-          { color: 'rgba(220,55,55,0.95)' },   // red
-          { color: 'rgba(245,155,60,0.95)' },  // orange
-          { color: 'rgba(240,220,80,0.95)' },  // yellow
-          { color: 'rgba(40,160,80,0.95)' },   // green
-          { color: 'rgba(0,120,70,0.95)' },    // deep green
+          { color: '#d73027' },  // 0–20 bad
+          { color: '#f46d43' },  // 20–40
+          { color: '#fee08b' },  // 40–60 neutral
+          { color: '#a6d96a' },  // 60–80 good
+          { color: '#1a9850' },  // 80–100 excellent
         ],
-        ['<-2', '0', '2', '4', '≥4'],
-        null
+        ['0', '20', '40', '60', '80', '100%'],
+        (metaNote
+          ? `Share of sample-days that meet your Lucky Days conditions (${isActive ? 'active hours' : '24h'}).  |  ${metaNote}`
+          : `Share of sample-days that meet your Lucky Days conditions (${isActive ? 'active hours' : '24h'}).`)
       );
-      const cold = Number(SETTINGS.tempCold || 5);
-      const hot = Number(SETTINGS.tempHot || 30);
-      const rainHigh = Number(SETTINGS.rainHigh || 10);
-      const wAbs = Number(SETTINGS.windHeadComfort || 4);
       _setLegendTooltips(
-        'Bikepacking comfort index = TempScore + RainScore + WindScore.',
-        `Thresholds: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind < ${wAbs} m/s (absolute).`,
-        'ISO bands: ≥4 deep green, 2..4 green, 0..2 yellow, -2..0 orange, < -2 red.'
+        `Counts how many sample-days in the selected interval are within your Lucky Days conditions (${isActive ? 'active hours' : '24h'}).`,
+        'Color encodes the share of lucky days (0–100%).',
+        'Tick labels are % anchors in 20% steps.'
       );
       return;
     }
@@ -1727,14 +2251,14 @@
       const rainHigh = Number(SETTINGS.rainHigh || 10);
       const wAbs = Number(SETTINGS.windHeadComfort || 4);
       _setLegendTooltips(
-        'Comfort score combines temperature, rain and wind for tent hours.',
+        'Lucky Days score combines temperature, rain and wind for tent hours.',
         `Thresholds: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind < ${wAbs} m/s (absolute).`,
         'Tick labels are score anchors (0..1).'
       );
       return;
     }
     if (layer === 'wind_speed') {
-      _setLegend('Wind speed (m/s)', PAL_WIND, ['0', '4', '8', '16'], null);
+      _setLegend('Wind speed (m/s)', PAL_WIND, ['0', '4', '8', '16'], metaNote || null);
       _setLegendTooltips(
         'Wind speed averaged for the day (m/s).',
         'Color encodes wind speed (m/s).',
@@ -1743,21 +2267,11 @@
       return;
     }
     if (layer === 'wind_dir') {
-      _setLegendSteps(
-        'Wind (streamlines)',
-        [
-          { color: 'rgba(180,180,180,0.75)' },
-          { color: 'rgba(60,130,220,0.75)' },
-          { color: 'rgba(245,155,60,0.75)' },
-          { color: 'rgba(220,55,55,0.75)' },
-        ],
-        ['0', '3', '6', '10', '>10'],
-        'Direction by streamline direction; color encodes speed.'
-      );
+      _setLegend('Wind (direction + speed)', PAL_WIND, ['0', '4', '8', '16'], metaNote || null);
       _setLegendTooltips(
         'Wind streamlines: direction and speed.',
         'Color encodes wind speed (m/s).',
-        'Speed bins: 0–3 grey, 3–6 blue, 6–10 orange, >10 red.'
+        'Tick labels are m/s anchors.'
       );
       return;
     }
@@ -1776,7 +2290,7 @@
   }
 
   function _setStrategicLayer(layer) {
-    STRATEGIC_STATE.layer = String(layer || 'temperature_ride');
+    STRATEGIC_STATE.layer = _strategicNormalizeLayer(layer);
     try {
       if (strategicLayerSelect) strategicLayerSelect.value = STRATEGIC_STATE.layer;
     } catch (_) {}
@@ -1846,6 +2360,26 @@
     }
   }
 
+  function _fmtISODayMonth(iso) {
+    try {
+      const s = String(iso || '').trim();
+      // Fast path for YYYY-MM-DD
+      const m = s.match(/^\d{4}-(\d{2})-(\d{2})/);
+      if (m) {
+        const mm = String(m[1]);
+        const dd = String(m[2]);
+        return `${dd}.${mm}`;
+      }
+      const d = new Date(s);
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      if (!dd || !mm) return s;
+      return `${dd}.${mm}`;
+    } catch (_) {
+      return String(iso);
+    }
+  }
+
   function _comfortScore(tempC, rainMm, windMs, isTent) {
     const tCold = Number(SETTINGS.tempCold);
     const tHot = Number(SETTINGS.tempHot);
@@ -1896,6 +2430,11 @@
         this._buffer.style.visibility = 'hidden';
         this._buffer.style.pointerEvents = 'none';
 
+        // Track current backing-store size to avoid clearing on every move/zoom.
+        this._lastW = 0;
+        this._lastH = 0;
+        this._lastDpr = 0;
+
         m.getPanes().overlayPane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
         this._reset();
@@ -1916,10 +2455,18 @@
         const dpr = (window.devicePixelRatio || 1);
         this._container.style.width = `${size.x}px`;
         this._container.style.height = `${size.y}px`;
-        [this._front, this._buffer].forEach(c => {
-          c.width = Math.max(1, Math.floor(size.x * dpr));
-          c.height = Math.max(1, Math.floor(size.y * dpr));
-        });
+        const w = Math.max(1, Math.floor(size.x * dpr));
+        const h = Math.max(1, Math.floor(size.y * dpr));
+        const needResize = (w !== this._lastW) || (h !== this._lastH) || (dpr !== this._lastDpr);
+        if (needResize) {
+          this._lastW = w;
+          this._lastH = h;
+          this._lastDpr = dpr;
+          [this._front, this._buffer].forEach(c => {
+            c.width = w;
+            c.height = h;
+          });
+        }
       },
       drawWith: function(drawFn) {
         if (!this._map) return;
@@ -1961,6 +2508,10 @@
         this._canvas.style.height = '100%';
         this._anim = null;
         this._particles = [];
+
+        this._lastW = 0;
+        this._lastH = 0;
+        this._lastDpr = 0;
         m.getPanes().overlayPane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
         this._reset();
@@ -1979,8 +2530,16 @@
         const dpr = (window.devicePixelRatio || 1);
         this._container.style.width = `${size.x}px`;
         this._container.style.height = `${size.y}px`;
-        this._canvas.width = Math.max(1, Math.floor(size.x * dpr));
-        this._canvas.height = Math.max(1, Math.floor(size.y * dpr));
+        const w = Math.max(1, Math.floor(size.x * dpr));
+        const h = Math.max(1, Math.floor(size.y * dpr));
+        const needResize = (w !== this._lastW) || (h !== this._lastH) || (dpr !== this._lastDpr);
+        if (needResize) {
+          this._lastW = w;
+          this._lastH = h;
+          this._lastDpr = dpr;
+          this._canvas.width = w;
+          this._canvas.height = h;
+        }
       },
       stop: function() {
         if (this._anim) {
@@ -2558,14 +3117,26 @@
           el.style.color = '#111';
           el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)';
           el.style.pointerEvents = 'auto';
+          const td = _tempLegendData(-5, 35);
+          const segHtml = (td && Array.isArray(td.segments) && td.segments.length)
+            ? td.segments.map(s => `<div style="flex:${Number(s.flex) || 1} 1 0%;height:100%;background:${s.color};"></div>`).join('')
+            : [
+                '<div style="flex:1;height:100%;background:#313695"></div>',
+                '<div style="flex:1;height:100%;background:#2c7bb6"></div>',
+                '<div style="flex:1;height:100%;background:#00a6ca"></div>',
+                '<div style="flex:1;height:100%;background:#66c2a5"></div>',
+                '<div style="flex:1;height:100%;background:#1a9850"></div>',
+                '<div style="flex:1;height:100%;background:#66bd63"></div>',
+                '<div style="flex:1;height:100%;background:#fee08b"></div>',
+                '<div style="flex:1;height:100%;background:#f46d43"></div>',
+              ].join('');
+          const ticksHtml = _tempLegendTicksMarkup(td, { unitOnMax: true });
           el.innerHTML = `
             <div style="font-weight:600;margin-bottom:6px;">Legend</div>
             <div style="margin-bottom:8px;">
               <div style="font-weight:600;margin-bottom:3px;">Temperature</div>
-              <div style="width:160px;height:10px;border-radius:6px;background:linear-gradient(90deg,#963cbe 0%,#005bff 17%,#28a050 58%,#f0dc50 75%,#f59b3c 83%,#d73c2d 92%,#8b0000 100%);"></div>
-              <div style="display:flex;justify-content:space-between;margin-top:4px;opacity:0.85;">
-                <span>-10</span><span>0</span><span>20</span><span>40 °C</span>
-              </div>
+              <div style="width:160px;height:10px;border-radius:6px;overflow:hidden;border:1px solid rgba(0,0,0,0.10);display:flex;">${segHtml}</div>
+              <div style="font-size:10px;opacity:0.85;">${ticksHtml}</div>
             </div>
             <div style="margin-bottom:8px;">
               <div style="font-weight:600;margin-bottom:3px;">Rain</div>
@@ -2870,12 +3441,18 @@
               : null;
             const nTxt = Number.isFinite(Number(s.matchDays)) ? ` (n=${Math.round(Number(s.matchDays))})` : '';
 
+            const sc = (typeof window !== 'undefined') ? window.WM_TEMP_SCALE : null;
+            const tBinLabel = (Number.isFinite(t) && sc && typeof sc.getTempBinLabel === 'function') ? String(sc.getTempBinLabel(t) || '') : '';
+            const tSuffix = (Number.isFinite(t) && tBinLabel)
+              ? ` <span style="opacity:0.85;">(${tBinLabel})</span>`
+              : '';
+
             const whichTxt = (bestType === 'band' && wantBandHover) ? 'temperature band' : 'route';
             const htmlKey = `${Math.round(best.dist * 10) / 10}|${dayIdx}|${wantBandHover ? 'b' : 'r'}|${haveSample ? '1' : '0'}`;
             const html = haveSample ? `
               <div style="margin-bottom:2px;">Day ${dayIdx + 1} — ${dateStr}</div>
               <div style="opacity:0.85;margin-bottom:4px;">${Math.round(best.dist)} km • ${whichTxt}</div>
-              <div>Temp: ${Number.isFinite(t) ? Math.round(t) : '—'}°C</div>
+              <div>Temp: ${Number.isFinite(t) ? Math.round(t) : '—'}°C${tSuffix}</div>
               ${(Number.isFinite(typicalLo) && Number.isFinite(typicalHi))
                 ? `<div style="opacity:0.90;">Typical: ${Math.round(typicalLo)}–${Math.round(typicalHi)}°C</div>`
                 : ''}
@@ -3526,14 +4103,11 @@
           const w1 = bandWidthAt(s1);
           const wAvg = 0.5 * (w0 + w1);
 
-          const c0 = tempColorSpec(t0);
-          const c1 = tempColorSpec(t1);
-          const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-          grad.addColorStop(0, c0);
-          grad.addColorStop(1, c1);
+          const tMid = 0.5 * (Number(t0) + Number(t1));
+          const col = tempColorSpec(tMid);
 
           ctx.globalAlpha = 1.0;
-          ctx.strokeStyle = grad;
+          ctx.strokeStyle = col;
           ctx.lineWidth = wAvg;
           ctx.beginPath();
           ctx.moveTo(a.x, a.y);
@@ -3959,11 +4533,56 @@
   }
 
   // --- Land mask for Strategic overlays (used when includeSea=false) ---
+  const STRATEGIC_COASTLINE_VERSION = '1';
   let STRATEGIC_LAND = null; // GeoJSON FeatureCollection
   let STRATEGIC_LAND_LOADING = false;
   // Higher-res shoreline source (used when includeSea=true)
   let STRATEGIC_SHORE_LAND = null; // GeoJSON FeatureCollection
   let STRATEGIC_SHORE_LOADING = false;
+  // Ultra-res shoreline source (10m) for high zoom levels.
+  let STRATEGIC_ULTRA_LAND = null; // GeoJSON FeatureCollection
+  let STRATEGIC_ULTRA_LOADING = false;
+
+  function _strategicPreferHiResLand() {
+    try {
+      const z = (map && typeof map.getZoom === 'function') ? Number(map.getZoom()) : 0;
+      return Number.isFinite(z) ? (z >= 6) : false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _strategicPreferUltraResLand() {
+    try {
+      const z = (map && typeof map.getZoom === 'function') ? Number(map.getZoom()) : 0;
+      return Number.isFinite(z) ? (z >= 8) : false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _strategicLandSourceForCurrentZoom() {
+    const preferHi = _strategicPreferHiResLand();
+    const preferUltra = _strategicPreferUltraResLand();
+
+    const ultra = (STRATEGIC_ULTRA_LAND && STRATEGIC_ULTRA_LAND.features) ? STRATEGIC_ULTRA_LAND : null;
+    const hi = (STRATEGIC_SHORE_LAND && STRATEGIC_SHORE_LAND.features) ? STRATEGIC_SHORE_LAND : null;
+    const lo = (STRATEGIC_LAND && STRATEGIC_LAND.features) ? STRATEGIC_LAND : null;
+
+    // Trigger lazy loading; render will refresh once ready.
+    try { _ensureStrategicLandMaskLoaded(); } catch (_) {}
+    if (preferHi) {
+      try { _ensureStrategicShoreMaskLoaded(); } catch (_) {}
+    }
+    if (preferUltra) {
+      try { _ensureStrategicUltraMaskLoaded(); } catch (_) {}
+    }
+
+    // Prefer higher resolution only when zoomed in; otherwise use 110m for speed + less visual noise.
+    if (preferUltra && ultra) return ultra;
+    if (preferHi && hi) return hi;
+    return lo || hi || ultra;
+  }
 
   function _geoFeatureBbox(feature) {
     try {
@@ -3994,6 +4613,54 @@
     }
   }
 
+  function _geoRingBbox(ring) {
+    try {
+      if (!Array.isArray(ring) || ring.length < 2) return null;
+      let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+      for (const pt of ring) {
+        if (!pt || pt.length < 2) continue;
+        const lon = Number(pt[0]);
+        const lat = Number(pt[1]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        minLat = Math.min(minLat, lat);
+        maxLat = Math.max(maxLat, lat);
+        minLon = Math.min(minLon, lon);
+        maxLon = Math.max(maxLon, lon);
+      }
+      if (!(minLat <= maxLat && minLon <= maxLon)) return null;
+      return { minLat, maxLat, minLon, maxLon };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _prepareFeatureRings(feature) {
+    try {
+      const g = feature && feature.geometry;
+      if (!g || !g.type || !g.coordinates) return null;
+      const out = [];
+      if (g.type === 'Polygon') {
+        for (const ring of g.coordinates) {
+          const bb = _geoRingBbox(ring);
+          if (bb) out.push({ bb, ring });
+        }
+        return out;
+      }
+      if (g.type === 'MultiPolygon') {
+        for (const poly of g.coordinates) {
+          for (const ring of poly) {
+            const bb = _geoRingBbox(ring);
+            if (bb) out.push({ bb, ring });
+          }
+        }
+        return out;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function _bboxIntersects(a, b) {
     if (!a || !b) return false;
     return !(a.maxLat < b.minLat || a.minLat > b.maxLat || a.maxLon < b.minLon || a.minLon > b.maxLon);
@@ -4003,12 +4670,13 @@
     if (STRATEGIC_LAND || STRATEGIC_LAND_LOADING) return;
     STRATEGIC_LAND_LOADING = true;
     try {
-      const r = await fetch('/ne_110m_land.geojson');
+      const r = await fetch(`/ne_110m_land.geojson?v=${encodeURIComponent(STRATEGIC_COASTLINE_VERSION)}`, { cache: 'force-cache' });
       const j = await r.json();
       if (j && j.type === 'FeatureCollection' && Array.isArray(j.features)) {
         // Precompute bboxes for quick culling.
         for (const f of j.features) {
           try { f.__bbox = _geoFeatureBbox(f); } catch (_) {}
+          try { f.__rings = _prepareFeatureRings(f); } catch (_) {}
         }
         STRATEGIC_LAND = j;
       }
@@ -4024,12 +4692,13 @@
     if (STRATEGIC_SHORE_LAND || STRATEGIC_SHORE_LOADING) return;
     STRATEGIC_SHORE_LOADING = true;
     try {
-      const r = await fetch('/ne_50m_land.geojson');
+      const r = await fetch(`/ne_50m_land.geojson?v=${encodeURIComponent(STRATEGIC_COASTLINE_VERSION)}`, { cache: 'force-cache' });
       const j = await r.json();
       if (j && j.type === 'FeatureCollection' && Array.isArray(j.features)) {
         // Precompute bboxes for quick culling.
         for (const f of j.features) {
           try { f.__bbox = _geoFeatureBbox(f); } catch (_) {}
+          try { f.__rings = _prepareFeatureRings(f); } catch (_) {}
         }
         STRATEGIC_SHORE_LAND = j;
       }
@@ -4041,13 +4710,34 @@
     }
   }
 
+  async function _ensureStrategicUltraMaskLoaded() {
+    if (STRATEGIC_ULTRA_LAND || STRATEGIC_ULTRA_LOADING) return;
+    STRATEGIC_ULTRA_LOADING = true;
+    try {
+      const r = await fetch(`/ne_10m_land_europe.geojson?v=${encodeURIComponent(STRATEGIC_COASTLINE_VERSION)}`, { cache: 'force-cache' });
+      const j = await r.json();
+      if (j && j.type === 'FeatureCollection' && Array.isArray(j.features)) {
+        // Precompute bboxes for quick culling.
+        for (const f of j.features) {
+          try { f.__bbox = _geoFeatureBbox(f); } catch (_) {}
+          try { f.__rings = _prepareFeatureRings(f); } catch (_) {}
+        }
+        STRATEGIC_ULTRA_LAND = j;
+      }
+    } catch (e) {
+      console.warn('Ultra shore mask load failed', e);
+    } finally {
+      STRATEGIC_ULTRA_LOADING = false;
+      try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
+    }
+  }
+
   function _beginStrategicLandClip(ctx) {
     // Returns true if a clip was applied (caller must ctx.restore()).
     if (!ctx) return false;
     if (SETTINGS && SETTINGS.includeSea) return false;
-    if (!STRATEGIC_LAND || !STRATEGIC_LAND.features) {
-      // Load lazily; render will refresh once ready.
-      _ensureStrategicLandMaskLoaded();
+    const src = _strategicLandSourceForCurrentZoom();
+    if (!src || !src.features) {
       return false;
     }
 
@@ -4080,7 +4770,18 @@
       if (started) ctx.closePath();
     };
 
-    const geom = (g) => {
+    const drawFeature = (f) => {
+      if (!f) return;
+      const rings = f.__rings;
+      if (rings && Array.isArray(rings) && rings.length) {
+        for (const r of rings) {
+          if (!r) continue;
+          if (view && r.bb && !_bboxIntersects(r.bb, view)) continue;
+          drawRing(r.ring);
+        }
+        return;
+      }
+      const g = f.geometry;
       if (!g || !g.type || !g.coordinates) return;
       if (g.type === 'Polygon') {
         for (const ring of g.coordinates) drawRing(ring);
@@ -4093,13 +4794,13 @@
       }
     };
 
-    for (const f of STRATEGIC_LAND.features) {
+    for (const f of src.features) {
       if (!f) continue;
       if (view) {
         const bb = f.__bbox;
         if (bb && !_bboxIntersects(bb, view)) continue;
       }
-      geom(f.geometry);
+      drawFeature(f);
     }
 
     // Use even-odd so holes (lakes) punch out correctly even if ring winding varies.
@@ -4114,13 +4815,8 @@
     if (!ctx) return;
 
     // Prefer higher-res shoreline when available.
-    const src = (STRATEGIC_SHORE_LAND && STRATEGIC_SHORE_LAND.features)
-      ? STRATEGIC_SHORE_LAND
-      : STRATEGIC_LAND;
+    const src = _strategicLandSourceForCurrentZoom();
     if (!src || !src.features) {
-      // Prefer loading the higher-res shoreline source; fall back to 110m if needed.
-      _ensureStrategicShoreMaskLoaded();
-      _ensureStrategicLandMaskLoaded();
       return;
     }
 
@@ -4135,22 +4831,49 @@
       };
     } catch (_) {}
 
+    const zNow = (map && typeof map.getZoom === 'function') ? Number(map.getZoom()) : 7;
+    const isUltra = (src === STRATEGIC_ULTRA_LAND);
+    const isHi = (src === STRATEGIC_SHORE_LAND);
+    // Decimate only for stroke to reduce path complexity (keeps clip exact).
+    const minPxDist = isUltra ? ((zNow >= 10) ? 0.6 : 0.9) : (isHi ? 0.4 : 0.0);
+
     const drawRing = (ring) => {
       if (!Array.isArray(ring) || ring.length < 2) return;
       let started = false;
+      let lastX = NaN, lastY = NaN;
       for (const pt of ring) {
         if (!pt || pt.length < 2) continue;
         const lon = Number(pt[0]);
         const lat = Number(pt[1]);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
         const q = map.latLngToContainerPoint([lat, lon]);
+        if (minPxDist > 0 && Number.isFinite(lastX) && Number.isFinite(lastY)) {
+          const dx = q.x - lastX;
+          const dy = q.y - lastY;
+          if ((dx * dx + dy * dy) < (minPxDist * minPxDist)) {
+            continue;
+          }
+        }
         if (!started) { ctx.moveTo(q.x, q.y); started = true; }
         else ctx.lineTo(q.x, q.y);
+        lastX = q.x;
+        lastY = q.y;
       }
       if (started) ctx.closePath();
     };
 
-    const geom = (g) => {
+    const drawFeature = (f) => {
+      if (!f) return;
+      const rings = f.__rings;
+      if (rings && Array.isArray(rings) && rings.length) {
+        for (const r of rings) {
+          if (!r) continue;
+          if (view && r.bb && !_bboxIntersects(r.bb, view)) continue;
+          drawRing(r.ring);
+        }
+        return;
+      }
+      const g = f.geometry;
       if (!g || !g.type || !g.coordinates) return;
       if (g.type === 'Polygon') {
         for (const ring of g.coordinates) drawRing(ring);
@@ -4168,10 +4891,10 @@
       ctx.globalCompositeOperation = 'source-over';
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      // Dark, thick coastline line.
-      ctx.strokeStyle = 'rgba(55,55,55,0.78)';
-      const z = (map && typeof map.getZoom === 'function') ? Number(map.getZoom()) : 7;
-      ctx.lineWidth = (z >= 10) ? 3.2 : ((z >= 8) ? 2.9 : ((z >= 6) ? 2.6 : 2.3));
+      // Softer coastline line; resolution increases with zoom (110m→50m→10m) via the selected source.
+      ctx.strokeStyle = 'rgba(90,90,90,0.48)';
+      const z = zNow;
+      ctx.lineWidth = (z >= 10) ? 2.0 : ((z >= 8) ? 1.7 : ((z >= 6) ? 1.4 : 1.2));
     } catch (_) {}
 
     ctx.beginPath();
@@ -4181,7 +4904,7 @@
         const bb = f.__bbox;
         if (bb && !_bboxIntersects(bb, view)) continue;
       }
-      geom(f.geometry);
+      drawFeature(f);
     }
     try { ctx.stroke(); } catch (_) {}
     ctx.restore();
@@ -4319,8 +5042,17 @@
 
   const STRATEGIC_STATE = {
     active: false,
-    year: Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR),
-    // Continuous day-of-year (1..365)
+    years: (SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
+      ? _uniqYearsDesc(SETTINGS.strategicYears)
+      : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)],
+    year: (SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
+      ? Number(_uniqYearsDesc(SETTINGS.strategicYears)[0] || SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)
+      : Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR),
+    mode: (SETTINGS && String(SETTINGS.strategicMode || '') === 'full_day') ? 'full_day' : 'active',
+    // Phase 2: range selection stored as start/end DOY (inclusive).
+    rangeStartDoy: 1,
+    rangeEndDoy: 14,
+    // Keep a representative DOY for legacy helpers (we keep it as rangeStart).
     doy: 1.0,
     timescale: (strategicTimescaleSelect && strategicTimescaleSelect.value)
       ? strategicTimescaleSelect.value
@@ -4375,6 +5107,11 @@
     return v;
   }
 
+  function _clampDOYInt(d) {
+    const v = Math.round(Number(d) || 1);
+    return Math.max(1, Math.min(365, v));
+  }
+
   function _doyToMonthDay(doyInt) {
     let d = Math.max(1, Math.min(365, Math.round(Number(doyInt) || 1)));
     for (let i = 0; i < _DOY_MONTHS.length; i++) {
@@ -4398,10 +5135,207 @@
     return `${md.monthName} ${md.day}`;
   }
 
+  function _isoDateFromDOY(doyInt, year) {
+    const y = Number(year || STRATEGIC_DEFAULT_YEAR);
+    const md = _doyToMonthDay(_clampDOYInt(doyInt));
+    const mm = _pad2(md.month);
+    const dd = _pad2(md.day);
+    return `${String(y)}-${mm}-${dd}`;
+  }
+
+  function _strategicUsingRangeUI() {
+    return Boolean(strategicRangeStart && strategicRangeEnd);
+  }
+
+  function _strategicGetRangeDOY() {
+    const s = _clampDOYInt(STRATEGIC_STATE.rangeStartDoy);
+    const e = _clampDOYInt(STRATEGIC_STATE.rangeEndDoy);
+    const startDoy = Math.min(s, e);
+    const endDoy = Math.max(s, e);
+    const durationDays = Math.max(1, Math.round(endDoy - startDoy + 1));
+    return { startDoy, endDoy, durationDays };
+  }
+
+  function _strategicFmtDayMonthCompact(doyInt) {
+    const md = _doyToMonthDay(_clampDOYInt(doyInt));
+    // Requirement: x.y style (no padding), interpreted as day.month.
+    return `${md.day}.${md.month}`;
+  }
+
+  function _strategicCustomTimescaleLabel() {
+    const { startDoy, endDoy, durationDays } = _strategicGetRangeDOY();
+    return `Custom (${_strategicFmtDayMonthCompact(startDoy)}–${_strategicFmtDayMonthCompact(endDoy)} = ${durationDays} days)`;
+  }
+
+  function _strategicUpdateCustomOptionLabel(sel) {
+    if (!sel) return;
+    try {
+      const opt = sel.querySelector('option[value="custom"]');
+      if (opt) opt.textContent = _strategicCustomTimescaleLabel();
+    } catch (_) {}
+  }
+
+  function _strategicExpectedRangeForTimescale(anchorDoy, timescale) {
+    const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    const ts = String(timescale || 'daily');
+    if (ts === 'custom') return null;
+    const p = _strategicPeriodForDOY(_clampDOYInt(anchorDoy), ts, y);
+    if (!p) return null;
+    return { startDoy: _clampDOYInt(p.startDoy), endDoy: _clampDOYInt(p.endDoy) };
+  }
+
+  function _strategicDetectStandardTimescaleForCurrentRange() {
+    const { startDoy, endDoy } = _strategicGetRangeDOY();
+    const candidates = ['daily', 'week', 'two_week', 'month', 'quarter', 'year'];
+    for (const ts of candidates) {
+      const exp = _strategicExpectedRangeForTimescale(startDoy, ts);
+      if (!exp) continue;
+      if (exp.startDoy === startDoy && exp.endDoy === endDoy) return ts;
+    }
+    return 'custom';
+  }
+
+  function _strategicSyncTimescaleSelectsFromRange() {
+    if (!_strategicUsingRangeUI()) return;
+    const inferred = _strategicDetectStandardTimescaleForCurrentRange();
+    try { STRATEGIC_STATE.timescale = inferred; } catch (_) {}
+
+    _strategicUpdateCustomOptionLabel(strategicTimescaleSelect);
+    _strategicUpdateCustomOptionLabel(STRATEGIC_LEGEND_TIMESCALE_SELECT);
+
+    try {
+      if (strategicTimescaleSelect && strategicTimescaleSelect.value !== inferred) strategicTimescaleSelect.value = inferred;
+    } catch (_) {}
+    try {
+      if (STRATEGIC_LEGEND_TIMESCALE_SELECT && STRATEGIC_LEGEND_TIMESCALE_SELECT.value !== inferred) STRATEGIC_LEGEND_TIMESCALE_SELECT.value = inferred;
+    } catch (_) {}
+  }
+
+  function _strategicApplyTimescaleSelection(ts) {
+    const value = String(ts || 'daily');
+
+    if (_strategicUsingRangeUI()) {
+      if (value === 'custom') {
+        _strategicSyncTimescaleSelectsFromRange();
+        return;
+      }
+      const { startDoy } = _strategicGetRangeDOY();
+      const exp = _strategicExpectedRangeForTimescale(startDoy, value);
+      if (exp) {
+        try { STRATEGIC_STATE.timescale = value; } catch (_) {}
+        try { SETTINGS.climateTimescale = value; saveSettings(SETTINGS); } catch (_) {}
+        _strategicSetRange(exp.startDoy, exp.endDoy, { skipFetch: false });
+      }
+      return;
+    }
+
+    // Legacy mode
+    try { STRATEGIC_STATE.timescale = value; } catch (_) {}
+    try { SETTINGS.climateTimescale = value; saveSettings(SETTINGS); } catch (_) {}
+    try { _strategicApplyTimescaleUI(); } catch (_) {}
+    _scheduleStrategicFetch('timescale');
+  }
+
+  function _strategicRangeLabelParts() {
+    const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    const { startDoy, endDoy, durationDays } = _strategicGetRangeDOY();
+    const sDM = _doyToDM(startDoy);
+    const eDM = _doyToDM(endDoy);
+    if (durationDays <= 1) {
+      return {
+        shortLabel: `${sDM.monthName} ${sDM.day}`,
+        monitorLabel: `Range: ${_fmtDM(sDM)} (1d)`,
+      };
+    }
+    return {
+      shortLabel: `${sDM.monthName} ${sDM.day} – ${eDM.monthName} ${eDM.day} (${durationDays}d)`,
+      monitorLabel: `Range: ${_fmtDM(sDM)}–${_fmtDM(eDM)} (${durationDays}d)`,
+    };
+  }
+
+  function _strategicSyncRangeSelectedUI() {
+    if (!strategicRangeWrap || !strategicRangeSelected) return;
+    const { startDoy, endDoy, durationDays } = _strategicGetRangeDOY();
+    const leftPct = ((startDoy - 1) / 365) * 100;
+    const widthPct = (durationDays / 365) * 100;
+    strategicRangeSelected.style.left = `${Math.max(0, Math.min(100, leftPct))}%`;
+    strategicRangeSelected.style.width = `${Math.max(0.4, Math.min(100, widthPct))}%`;
+    try {
+      if (strategicRangeTooltip) {
+        const centerPct = Math.max(0, Math.min(100, leftPct + 0.5 * widthPct));
+        strategicRangeTooltip.style.left = `${centerPct}%`;
+      }
+    } catch (_) {}
+
+    // Position explicit L/R thumb elements.
+    try {
+      if (strategicRangeThumbStart) strategicRangeThumbStart.style.left = '0%';
+      if (strategicRangeThumbEnd) strategicRangeThumbEnd.style.left = '100%';
+    } catch (_) {}
+  }
+
+  function _strategicSetActiveRangeElement(which) {
+    const w = String(which || '');
+    try {
+      if (strategicRangeThumbStart) strategicRangeThumbStart.classList.toggle('wm-active', w === 'L');
+      if (strategicRangeHandle) strategicRangeHandle.classList.toggle('wm-active', w === 'C');
+      if (strategicRangeThumbEnd) strategicRangeThumbEnd.classList.toggle('wm-active', w === 'R');
+    } catch (_) {}
+  }
+
+  function _strategicDoyFromClientX(clientX) {
+    if (!strategicRangeWrap) return 1;
+    const rect = strategicRangeWrap.getBoundingClientRect();
+    const w = Math.max(1, rect.width);
+    const x = Math.max(0, Math.min(w, Number(clientX) - rect.left));
+    const doy = 1 + Math.round((x / w) * 365);
+    return _clampDOYInt(doy);
+  }
+
+  let _strategicRangeTooltipTimer = null;
+  function _strategicShowRangeTooltip() {
+    if (!strategicRangeTooltip) return;
+    try {
+      const { startDoy, endDoy, durationDays } = _strategicGetRangeDOY();
+      const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+      const sDM = _doyToDM(startDoy);
+      const eDM = _doyToDM(endDoy);
+      strategicRangeTooltip.textContent = (durationDays <= 1)
+        ? `${_fmtDMY(sDM, y)}`
+        : `${_fmtDM(sDM)}–${_fmtDM(eDM)}${String(y)} (${durationDays}d)`;
+      strategicRangeTooltip.style.display = '';
+      if (_strategicRangeTooltipTimer) {
+        try { clearTimeout(_strategicRangeTooltipTimer); } catch (_) {}
+      }
+      _strategicRangeTooltipTimer = setTimeout(() => {
+        try { if (strategicRangeTooltip) strategicRangeTooltip.style.display = 'none'; } catch (_) {}
+      }, 900);
+    } catch (_) {}
+  }
+
   function _renderStrategicSliderTicks(timescale) {
     if (!strategicMonthTicks) return;
     strategicMonthTicks.innerHTML = '';
     const ts = String(timescale || 'daily');
+
+    // Phase 2 range slider always uses 1..365 axis (month boundaries).
+    if (_strategicUsingRangeUI()) {
+      const n = 365;
+      for (const s of _DOY_MONTH_STARTS) {
+        const x = ((s.doy - 1) / (n - 1)) * 100;
+        const el = document.createElement('div');
+        el.className = 'wm-tick wm-major';
+        el.style.left = `${x}%`;
+        strategicMonthTicks.appendChild(el);
+
+        const lab = document.createElement('div');
+        lab.className = 'wm-month-label';
+        lab.style.left = `${x}%`;
+        lab.textContent = s.name;
+        strategicMonthTicks.appendChild(lab);
+      }
+      return;
+    }
 
     // Yearly has no meaningful in-year ticks.
     if (ts === 'year') return;
@@ -4484,6 +5418,13 @@
   }
 
   function _strategicSetLabels() {
+    if (_strategicUsingRangeUI()) {
+      const lp = _strategicRangeLabelParts();
+      if (strategicDayLabel) strategicDayLabel.textContent = String(lp.shortLabel || '—');
+      if (strategicTimelineLabel) strategicTimelineLabel.textContent = String(lp.monitorLabel || '—');
+      _strategicSyncRangeSelectedUI();
+      return;
+    }
     const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
     const ts = String(STRATEGIC_STATE.timescale || 'daily');
     const p = _strategicPeriodForDOY(STRATEGIC_STATE.doy, ts, y);
@@ -4499,7 +5440,36 @@
     _updateStrategicLegend();
   }
 
+  function _strategicSetRange(startDoy, endDoy, opts) {
+    const s = _clampDOYInt(startDoy);
+    const e = _clampDOYInt(endDoy);
+    const start = Math.min(s, e);
+    const end = Math.max(s, e);
+    STRATEGIC_STATE.rangeStartDoy = start;
+    STRATEGIC_STATE.rangeEndDoy = end;
+    STRATEGIC_STATE.doy = start;
+    try {
+      if (strategicRangeStart) strategicRangeStart.value = String(start);
+      if (strategicRangeEnd) strategicRangeEnd.value = String(end);
+    } catch (_) {}
+    _strategicSetLabels();
+    _strategicSyncTimescaleSelectsFromRange();
+    _updateStrategicLegend();
+    _strategicShowRangeTooltip();
+    if (!(opts && opts.skipFetch)) _scheduleStrategicFetch('range');
+  }
+
   function _strategicSetDOY(doyVal) {
+    // Legacy entrypoint; in range mode, treat this as moving the whole window.
+    if (_strategicUsingRangeUI()) {
+      const { durationDays } = _strategicGetRangeDOY();
+      const start = _clampDOYInt(doyVal);
+      const maxStart = Math.max(1, 365 - durationDays + 1);
+      const s2 = Math.max(1, Math.min(maxStart, start));
+      const e2 = Math.max(s2, Math.min(365, s2 + durationDays - 1));
+      _strategicSetRange(s2, e2, { skipFetch: false });
+      return;
+    }
     STRATEGIC_STATE.doy = _clampDOY(doyVal);
     if (strategicDaySlider) {
       const ts = String(STRATEGIC_STATE.timescale || 'daily');
@@ -4646,6 +5616,26 @@
   }
 
   function _strategicApplyTimescaleUI() {
+    if (_strategicUsingRangeUI()) {
+      try {
+        if (strategicRangeStart) {
+          strategicRangeStart.min = '1';
+          strategicRangeStart.max = '365';
+          strategicRangeStart.step = '1';
+        }
+        if (strategicRangeEnd) {
+          strategicRangeEnd.min = '1';
+          strategicRangeEnd.max = '365';
+          strategicRangeEnd.step = '1';
+        }
+      } catch (_) {}
+      try { _renderStrategicSliderTicks('daily'); } catch (_) {}
+      _strategicSetLabels();
+      _strategicSyncTimescaleSelectsFromRange();
+      _updateStrategicLegend();
+      return;
+    }
+
     const ts = String(STRATEGIC_STATE.timescale || 'daily');
     const spec = _strategicSliderSpec(ts);
     try {
@@ -4693,6 +5683,28 @@
       }
     } catch (_) {}
     return null;
+  }
+
+  function _coverageBBoxFromPoints(points) {
+    try {
+      let latMin = Infinity, latMax = -Infinity, lonMin = Infinity, lonMax = -Infinity;
+      let n = 0;
+      for (const p of (points || [])) {
+        if (!p) continue;
+        const lat = Number(p.lat);
+        const lon = Number(p.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        n++;
+        if (lat < latMin) latMin = lat;
+        if (lat > latMax) latMax = lat;
+        if (lon < lonMin) lonMin = lon;
+        if (lon > lonMax) lonMax = lon;
+      }
+      if (n <= 0) return null;
+      return { latMin, latMax, lonMin, lonMax };
+    } catch (_) {
+      return null;
+    }
   }
 
   function _makeTileMap(points) {
@@ -4898,6 +5910,8 @@
           temp_day_median: Number(p.temp_day_median),
           temp_day_p25: Number(p.temp_day_p25),
           temp_day_p75: Number(p.temp_day_p75),
+          lucky_day_count: (p && (p.lucky_day_count !== undefined)) ? Number(p.lucky_day_count) : null,
+          lucky_ride_count: (p && (p.lucky_ride_count !== undefined)) ? Number(p.lucky_ride_count) : null,
         };
       }
 
@@ -4907,7 +5921,12 @@
         return Number.isFinite(v) ? v : null;
       }
 
-      const keys = ['temperature_c','precipitation_mm','rain_probability','rain_typical_mm','wind_speed_ms','wind_dir_deg','wind_var_deg','temp_day_median','temp_day_p25','temp_day_p75'];
+      const keys = [
+        'temperature_c','precipitation_mm','rain_probability','rain_typical_mm',
+        'wind_speed_ms','wind_dir_deg','wind_var_deg',
+        'temp_day_median','temp_day_p25','temp_day_p75',
+        'lucky_day_count','lucky_ride_count',
+      ];
       const out = {};
       for (const k of keys) {
         const a = num(p00, k);
@@ -5027,20 +6046,90 @@
     const lonMin = b.getWest();
     const lonMax = b.getEast();
 
-    const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, STRATEGIC_STATE.timescale, mmdd, latMin, latMax, lonMin, lonMax);
+    const years = _strategicGetSelectedYears();
+    const yearsKey = _strategicYearsKey(years);
+    const mode = _strategicGetMode();
+    const cacheKey = _strategicCacheKey(
+      yearsKey,
+      mode,
+      STRATEGIC_STATE.timescale,
+      mmdd,
+      latMin,
+      latMax,
+      lonMin,
+      lonMax,
+      _strategicLuckyVariant(),
+    );
     const cached = _strategicCacheGet(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}`
+    const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
+      + `&years=${encodeURIComponent(String(yearsKey))}`
+      + `&mode=${encodeURIComponent(String(mode))}`
       + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
       + `&date=${encodeURIComponent(String(mmdd))}`
       + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
+      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
+      + _strategicLuckyQueryParams();
     const t0 = Date.now();
 
     // Abort any in-flight request; slider scrubs should only render the latest.
+    try {
+      if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
+    } catch (_) {}
+    const ac = new AbortController();
+    STRATEGIC_STATE.fetchAbort = ac;
+
+    const resp = await fetch(url, { signal: ac.signal });
+    const j = await resp.json();
+    if (!resp.ok) throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
+    try { _strategicCacheSet(cacheKey, j); } catch (_) {}
+    STRATEGIC_STATE.lastFetchAt = t0;
+    return j;
+  }
+
+  async function _fetchStrategicGridForRange(startDateIso, durationDays) {
+    if (!STRATEGIC_STATE.active) return;
+    const b = map.getBounds();
+    const latMin = b.getSouth();
+    const latMax = b.getNorth();
+    const lonMin = b.getWest();
+    const lonMax = b.getEast();
+
+    const startIso = String(startDateIso || '');
+    const dur = Math.max(1, Math.round(Number(durationDays) || 1));
+
+    const years = _strategicGetSelectedYears();
+    const yearsKey = _strategicYearsKey(years);
+    const mode = _strategicGetMode();
+    const cacheKey = _strategicCacheKey(
+      yearsKey,
+      mode,
+      'range',
+      `${startIso}|${dur}`,
+      latMin,
+      latMax,
+      lonMin,
+      lonMax,
+      _strategicLuckyVariant(),
+    );
+    const cached = _strategicCacheGet(cacheKey);
+    if (cached) return cached;
+
+    const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
+      + `&years=${encodeURIComponent(String(yearsKey))}`
+      + `&mode=${encodeURIComponent(String(mode))}`
+      + `&start_date=${encodeURIComponent(startIso)}`
+      + `&duration_days=${encodeURIComponent(String(dur))}`
+      + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
+      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
+      + _strategicLuckyQueryParams();
+    const t0 = Date.now();
+
     try {
       if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
     } catch (_) {}
@@ -5098,7 +6187,8 @@
       const merged = { ...p };
       const numKeys = [
         'temperature_c','precipitation_mm','rain_probability','rain_typical_mm',
-        'wind_speed_ms','wind_var_deg','temp_day_median','temp_day_p25','temp_day_p75'
+        'wind_speed_ms','wind_var_deg','temp_day_median','temp_day_p25','temp_day_p75',
+        'lucky_day_count','lucky_ride_count'
       ];
       for (const nk of numKeys) merged[nk] = lerpNum(pa && pa[nk], pb && pb[nk]);
       merged.wind_dir_deg = lerpDir(pa && pa.wind_dir_deg, pb && pb.wind_dir_deg);
@@ -5109,6 +6199,19 @@
 
   async function _fetchStrategicGrid() {
     if (!STRATEGIC_STATE.active) return;
+    if (_strategicUsingRangeUI()) {
+      const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+      const { startDoy, durationDays } = _strategicGetRangeDOY();
+      const startIso = _isoDateFromDOY(startDoy, y);
+      const j = await _fetchStrategicGridForRange(startIso, durationDays);
+      if (!j || !j.points) return;
+      try { j._coverage_bbox = _coverageBBoxFromPoints(j.points); } catch (_) {}
+      STRATEGIC_STATE.lastResp = j;
+      // Invalidate sampling caches so tooltip counts update immediately.
+      STRATEGIC_STATE._meta = null;
+      STRATEGIC_STATE._tileMap = null;
+      return;
+    }
     const { mmdd0, mmdd1, frac } = _strategicCurrentMMDDPair();
     const a = await _fetchStrategicGridForMMDD(mmdd0);
     const b = (mmdd1 === mmdd0) ? a : await _fetchStrategicGridForMMDD(mmdd1);
@@ -5117,12 +6220,20 @@
       ...a,
       points: (b && b.points) ? _blendStrategicPoints(a.points, b.points, frac) : a.points,
     };
+    try { blended._coverage_bbox = _coverageBBoxFromPoints(blended.points); } catch (_) {}
     STRATEGIC_STATE.lastResp = blended;
+    // Invalidate sampling caches so tooltip counts update immediately.
+    STRATEGIC_STATE._meta = null;
+    STRATEGIC_STATE._tileMap = null;
   }
 
   function _prefetchStrategicNeighbor(offsetDays) {
     try {
       if (!STRATEGIC_STATE.active) return;
+      if (_strategicUsingRangeUI()) return;
+      const years = _strategicGetSelectedYears();
+      const yearsKey = _strategicYearsKey(years);
+      const mode = _strategicGetMode();
       const base = Math.floor(_clampDOY(STRATEGIC_STATE.doy));
       let d = base + Number(offsetDays || 0);
       while (d < 1) d += 365;
@@ -5133,13 +6244,78 @@
       const latMax = b.getNorth();
       const lonMin = b.getWest();
       const lonMax = b.getEast();
-      const cacheKey = _strategicCacheKey(STRATEGIC_STATE.year, STRATEGIC_STATE.timescale, mmdd, latMin, latMax, lonMin, lonMax);
+      const cacheKey = _strategicCacheKey(
+        yearsKey,
+        mode,
+        STRATEGIC_STATE.timescale,
+        mmdd,
+        latMin,
+        latMax,
+        lonMin,
+        lonMax,
+        _strategicLuckyVariant(),
+      );
       if (_strategicCacheGet(cacheKey)) return;
-      const url = `/api/strategic_grid?year=${encodeURIComponent(String(STRATEGIC_STATE.year))}`
+      const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+      const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
+        + `&years=${encodeURIComponent(String(yearsKey))}`
+        + `&mode=${encodeURIComponent(String(mode))}`
         + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
         + `&date=${encodeURIComponent(String(mmdd))}`
         + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
+        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
+        + _strategicLuckyQueryParams();
+      fetch(url)
+        .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
+        .then(({ ok, status, j }) => {
+          if (!ok) throw new Error((j && j.error) ? j.error : `HTTP ${status}`);
+          _strategicCacheSet(cacheKey, j);
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }
+
+  function _prefetchStrategicRangeNeighbor(offsetDays) {
+    try {
+      if (!STRATEGIC_STATE.active) return;
+      if (!_strategicUsingRangeUI()) return;
+      const years = _strategicGetSelectedYears();
+      const yearsKey = _strategicYearsKey(years);
+      const mode = _strategicGetMode();
+      const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+      const { startDoy, durationDays } = _strategicGetRangeDOY();
+      const maxStart = Math.max(1, 365 - durationDays + 1);
+      let s2 = _clampDOYInt(startDoy + Number(offsetDays || 0));
+      s2 = Math.max(1, Math.min(maxStart, s2));
+      const startIso = _isoDateFromDOY(s2, y);
+
+      const b = map.getBounds();
+      const latMin = b.getSouth();
+      const latMax = b.getNorth();
+      const lonMin = b.getWest();
+      const lonMax = b.getEast();
+      const cacheKey = _strategicCacheKey(
+        yearsKey,
+        mode,
+        'range',
+        `${startIso}|${durationDays}`,
+        latMin,
+        latMax,
+        lonMin,
+        lonMax,
+        _strategicLuckyVariant(),
+      );
+      if (_strategicCacheGet(cacheKey)) return;
+
+      const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+      const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
+        + `&years=${encodeURIComponent(String(yearsKey))}`
+        + `&mode=${encodeURIComponent(String(mode))}`
+        + `&start_date=${encodeURIComponent(startIso)}`
+        + `&duration_days=${encodeURIComponent(String(durationDays))}`
+        + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
+        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
+        + _strategicLuckyQueryParams();
       fetch(url)
         .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
         .then(({ ok, status, j }) => {
@@ -5715,6 +6891,40 @@
     ctx.restore();
   }
 
+  function _applyBinnedEdgeEmphasis(imageDataRgba, w, h, binIdx, opts) {
+    // Subtle boundary contrast between binned regions.
+    // Modifies ImageData RGBA in-place.
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const data = imageDataRgba;
+    const W = Math.max(0, Math.floor(Number(w) || 0));
+    const H = Math.max(0, Math.floor(Number(h) || 0));
+    if (!data || W < 3 || H < 3 || !binIdx) return;
+    const darken = (Number.isFinite(Number(o.darken)) ? Number(o.darken) : 0.88);
+    const alphaAdd = (Number.isFinite(Number(o.alphaAdd)) ? Number(o.alphaAdd) : 0.02);
+    const aAdd255 = Math.max(0, Math.min(32, Math.round(alphaAdd * 255)));
+
+    // Only touch pixels that are inside a region and adjacent to a different region.
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const p = y * W + x;
+        const b = binIdx[p];
+        if (b < 0) continue;
+        const i = p * 4;
+        const a = data[i + 3];
+        if (!(a > 0)) continue;
+        const bL = binIdx[p - 1];
+        const bR = binIdx[p + 1];
+        const bU = binIdx[p - W];
+        const bD = binIdx[p + W];
+        if (bL === b && bR === b && bU === b && bD === b) continue;
+        data[i + 0] = Math.max(0, Math.min(255, Math.round(data[i + 0] * darken)));
+        data[i + 1] = Math.max(0, Math.min(255, Math.round(data[i + 1] * darken)));
+        data[i + 2] = Math.max(0, Math.min(255, Math.round(data[i + 2] * darken)));
+        data[i + 3] = Math.max(0, Math.min(255, a + aAdd255));
+      }
+    }
+  }
+
   function _renderStrategic() {
     if (!STRATEGIC_STATE.active) return;
     const resp = STRATEGIC_STATE.lastResp;
@@ -5725,11 +6935,34 @@
     const tileKm = Number(resp.tile_km || 50);
     const meta = bboxRaw ? { bbox: bboxRaw, tile_km: tileKm } : null;
     const tileMap = _makeTileMap(resp.points);
-    const layer = STRATEGIC_STATE.layer;
+    const layer = _strategicNormalizeLayer(STRATEGIC_STATE.layer);
 
     // Cache for cursor readout + wind sampling.
     STRATEGIC_STATE._meta = meta;
     STRATEGIC_STATE._tileMap = tileMap;
+
+    const yNow = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    const tsNow = String(STRATEGIC_STATE.timescale || 'daily');
+    const pNow = _strategicPeriodForDOY(STRATEGIC_STATE.doy, tsNow, yNow);
+    const daysInPeriodNow = (() => {
+      try {
+        if (resp && String(resp.timescale || '') === 'range') {
+          const d = Math.max(1, Math.round(Number(resp.duration_days) || 1));
+          if (Number.isFinite(d) && d > 0) return d;
+        }
+      } catch (_) {}
+      if (pNow && Number.isFinite(Number(pNow.startDoy)) && Number.isFinite(Number(pNow.endDoy))) {
+        return Math.max(1, Math.round(Number(pNow.endDoy) - Number(pNow.startDoy) + 1));
+      }
+      return 1;
+    })();
+    const sampleDaysNow = (() => {
+      try {
+        const sd = Number(resp && resp.sample_days);
+        if (Number.isFinite(sd) && sd > 0) return Math.round(sd);
+      } catch (_) {}
+      return daysInPeriodNow;
+    })();
 
     STRATEGIC_STATE.isoLayer.drawWith((ctx, size) => {
       const w = size.x;
@@ -5737,100 +6970,180 @@
       ctx.clearRect(0, 0, w, h);
 
       const needLandClip = !(SETTINGS && SETTINGS.includeSea)
-        && (layer === 'temperature_ride' || layer === 'rain_ride' || layer === 'comfort_ride');
+        && (layer === 'temperature_ride' || layer === 'rain_ride' || layer === 'comfort');
       const clipped = needLandClip ? _beginStrategicLandClip(ctx) : false;
 
       if (layer === 'temperature_ride') {
         // Temperature iso-surfaces (riding-hours median temperature)
-        const valueKey = 'temp_day_median';
-        const grid = _gridFromPoints(resp.points, valueKey);
-        // Fill tiles directly (prevents gaps near coasts); isolines still use grid when available.
-
-        // Non-overlapping band fill (transparent so basemap remains readable)
-        const thr = [-10, 0, 10, 20, 30, 40];
-        const _rgbFromTemp = (t) => {
+        const modeRaw = (() => {
           try {
-            const m = String(tempColor(Number(t)) || '').match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-            if (!m) return { r: 150, g: 150, b: 150 };
-            return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+            return (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
           } catch (_) {
-            return { r: 150, g: 150, b: 150 };
+            return _strategicGetMode();
           }
-        };
-        const cols = [
-          _rgbFromTemp(-20), // < -10
-          _rgbFromTemp(-5),  // -10..0
-          _rgbFromTemp(5),   // 0..10
-          _rgbFromTemp(15),  // 10..20
-          _rgbFromTemp(25),  // 20..30
-          _rgbFromTemp(35),  // 30..40
-          _rgbFromTemp(45),  // >=40
-        ];
-        _drawBandedTileFill(ctx, resp.points, meta, valueKey, thr, cols, 0.22);
+        })();
+        const valueKey = (String(modeRaw) === 'full_day') ? 'temperature_c' : 'temp_day_median';
+        const grid = _gridFromPoints(resp.points, valueKey);
+        // Phase 1: post-interpolation binning into discrete colors.
+        // Render into a low-res raster and upscale for speed; keep bins crisp.
+        if (meta) {
+          const sc = (typeof window !== 'undefined') ? window.WM_TEMP_SCALE : null;
+          const bounds = (sc && Array.isArray(sc.TEMP_BOUNDS)) ? sc.TEMP_BOUNDS : [-Infinity, 5, 10, 15, 20, 25, 30, 35, Infinity];
+          const colorsHex = (sc && Array.isArray(sc.TEMP_COLORS)) ? sc.TEMP_COLORS : ['#2c7bb6','#00a6ca','#66c2a5','#1a9850','#66bd63','#fee08b','#f46d43','#7b3294'];
+          const toRgb = (hex) => {
+            try {
+              if (sc && typeof sc.hexToRgb === 'function') return sc.hexToRgb(hex);
+            } catch (_) {}
+            const h = String(hex || '').replace('#', '').trim();
+            if (h.length !== 6) return { r: 150, g: 150, b: 150 };
+            const r = parseInt(h.slice(0, 2), 16);
+            const g = parseInt(h.slice(2, 4), 16);
+            const b = parseInt(h.slice(4, 6), 16);
+            return {
+              r: Number.isFinite(r) ? r : 150,
+              g: Number.isFinite(g) ? g : 150,
+              b: Number.isFinite(b) ? b : 150,
+            };
+          };
+          const colorsRgb = colorsHex.map(toRgb);
+          const binIndex = (t) => {
+            try {
+              if (sc && typeof sc.getTempBinIndex === 'function') return sc.getTempBinIndex(t);
+            } catch (_) {}
+            const v = Number(t);
+            if (!Number.isFinite(v)) return null;
+            for (let i = 0; i < bounds.length - 1; i++) {
+              if (v < bounds[i + 1]) return i;
+            }
+            return bounds.length - 2;
+          };
 
-        // Isolines every 5°C
-        const isoThr = [5,10,15,20,25,30];
-        // No labels; keep lines subtle.
-        if (grid) _drawIsolines(ctx, grid, isoThr, 'rgba(60,60,60,0.60)', 1, null);
+          const z = map.getZoom ? map.getZoom() : 6;
+          const stride = Math.max(2, Math.min(6, Math.round(6 - Math.max(0, Math.min(6, z - 5)))));
+          const w2 = Math.max(1, Math.ceil(w / stride));
+          const h2 = Math.max(1, Math.ceil(h / stride));
+          const off = (STRATEGIC_STATE._tempRideRaster || (STRATEGIC_STATE._tempRideRaster = document.createElement('canvas')));
+          off.width = w2;
+          off.height = h2;
+          const octx = off.getContext('2d');
+          if (octx) {
+            const img = octx.createImageData(w2, h2);
+            const data = img.data;
+            const a255 = Math.max(0, Math.min(255, Math.round(255 * 0.22)));
+            const binArr = new Int16Array(w2 * h2);
+            for (let i = 0; i < binArr.length; i++) binArr[i] = -1;
+
+            // Lon is linear in x at constant y in WebMercator.
+            let lonAtX0 = 0;
+            let lonPerPx = 0;
+            try {
+              const llL = map.containerPointToLatLng([0, h * 0.5]);
+              const llR = map.containerPointToLatLng([w, h * 0.5]);
+              if (llL && llR) {
+                lonAtX0 = Number(llL.lng);
+                let dLon = Number(llR.lng) - lonAtX0;
+                if (dLon > 180) dLon -= 360;
+                if (dLon < -180) dLon += 360;
+                lonPerPx = dLon / Math.max(1, w);
+              }
+            } catch (_) {
+              lonAtX0 = 0;
+              lonPerPx = 0;
+            }
+            const lonByX2 = new Array(w2);
+            for (let x2 = 0; x2 < w2; x2++) {
+              const px = x2 * stride + stride * 0.5;
+              let lon = lonAtX0 + lonPerPx * px;
+              lon = ((lon + 540) % 360) - 180;
+              lonByX2[x2] = lon;
+            }
+
+            for (let y2 = 0; y2 < h2; y2++) {
+              const py = y2 * stride + stride * 0.5;
+              let latRow = NaN;
+              try {
+                const llRow = map.containerPointToLatLng([w * 0.5, py]);
+                latRow = llRow ? Number(llRow.lat) : NaN;
+              } catch (_) {
+                latRow = NaN;
+              }
+              const haveLat = Number.isFinite(latRow);
+
+              for (let x2 = 0; x2 < w2; x2++) {
+                const idxPx = (y2 * w2 + x2) * 4;
+                if (!haveLat) {
+                  data[idxPx + 3] = 0;
+                  continue;
+                }
+                const lon = lonByX2[x2];
+                const s = _sampleInterpolated(tileMap, meta, latRow, lon);
+                const t = s ? Number(s.temp_day_median) : NaN;
+                if (!Number.isFinite(t)) {
+                  data[idxPx + 3] = 0;
+                  continue;
+                }
+                const bi = binIndex(t);
+                if (bi === null) {
+                  data[idxPx + 3] = 0;
+                  continue;
+                }
+                binArr[(y2 * w2 + x2)] = Number(bi);
+                const rgb = colorsRgb[Math.max(0, Math.min(colorsRgb.length - 1, Number(bi)))] || { r: 150, g: 150, b: 150 };
+                data[idxPx + 0] = rgb.r;
+                data[idxPx + 1] = rgb.g;
+                data[idxPx + 2] = rgb.b;
+                data[idxPx + 3] = a255;
+              }
+            }
+
+            _applyBinnedEdgeEmphasis(data, w2, h2, binArr, { darken: 0.90, alphaAdd: 0.02 });
+
+            octx.putImageData(img, 0, 0);
+            ctx.save();
+            try { ctx.imageSmoothingEnabled = false; } catch (_) {}
+            ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
+            ctx.restore();
+          }
+        }
+
+        // Optional thin contours (°C anchors) to help read bins.
+        const isoThr = [10, 20, 30];
+        if (grid) _drawIsolines(ctx, grid, isoThr, 'rgba(40,40,40,0.38)', 0.9, null);
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
         return;
       }
 
       if (layer === 'rain_ride') {
-        // Phase 1 enhancement: meteorological-style precipitation field.
-        // Pipeline: raw rain -> threshold -> log scaling -> gaussian smoothing -> existing interpolation -> rendering
-
-        // Cache the prepared smoothed/scaled map for this resp.points.
-        const sigma = 1.0; // allowed 0.8–1.2; keep stable for now
-        let prep = STRATEGIC_STATE._rainRidePrep;
-        if (!prep || prep._pointsRef !== resp.points) {
-          prep = _prepareStrategicRainRide(resp.points, { sigma });
-          prep._pointsRef = resp.points;
-          STRATEGIC_STATE._rainRidePrep = prep;
-        }
-
-        const rainMapScaled = prep && prep.mapScaled;
-        if (!rainMapScaled || !meta) {
+        // Phase 1 (refinement): perceptually compressed precipitation zones.
+        // Pipeline: interpolate -> (light smooth) -> bin -> render (no gradients).
+        if (!meta) {
           if (clipped) ctx.restore();
           _strokeStrategicShoreline(ctx);
           return;
         }
 
-        // High-contrast precipitation palette (hex -> rgb)
-        const _hexRgb = (hex) => {
-          const h = String(hex || '').replace('#', '').trim();
-          if (h.length !== 6) return { r: 0, g: 0, b: 0 };
-          const r = parseInt(h.slice(0, 2), 16);
-          const g = parseInt(h.slice(2, 4), 16);
-          const b = parseInt(h.slice(4, 6), 16);
-          return {
-            r: Number.isFinite(r) ? r : 0,
-            g: Number.isFinite(g) ? g : 0,
-            b: Number.isFinite(b) ? b : 0,
-          };
+        // Hard threshold + capped discrete bins (mm/day)
+        const RAIN_BINS = [0.5, 2, 5, 10, 20, 50, 999];
+        const RAIN_COLORS = [
+          { r: 180, g: 160, b: 255, a: 0.10 }, // 0.5–2 very subtle
+          { r: 150, g: 120, b: 255, a: 0.18 }, // 2–5 light
+          { r: 120, g: 80,  b: 220, a: 0.30 }, // 5–10 moderate
+          { r: 100, g: 60,  b: 200, a: 0.45 }, // 10–20 strong
+          { r: 80,  g: 40,  b: 160, a: 0.60 }, // 20–50 heavy
+          { r: 70,  g: 30,  b: 140, a: 0.70 }, // >50 extreme (capped max)
+        ];
+        const rainBinIdx = (mm) => {
+          const v = Number(mm);
+          if (!Number.isFinite(v) || v < RAIN_BINS[0]) return -1;
+          if (v < RAIN_BINS[1]) return 0;
+          if (v < RAIN_BINS[2]) return 1;
+          if (v < RAIN_BINS[3]) return 2;
+          if (v < RAIN_BINS[4]) return 3;
+          if (v < RAIN_BINS[5]) return 4;
+          return 5;
         };
-        const PAL = {
-          c0: _hexRgb('#ede7f6'),
-          c1: _hexRgb('#b39ddb'),
-          c2: _hexRgb('#7e57c2'),
-          c3: _hexRgb('#5e35b1'),
-          c4: _hexRgb('#311b92'),
-        };
-        const colorForRawMm = (rawMm) => {
-          const r = Number(rawMm);
-          if (!Number.isFinite(r) || r < 0.5) return null;
-          if (r < 1) return PAL.c0;
-          if (r < 3) return PAL.c1;
-          if (r < 8) return PAL.c2;
-          if (r < 20) return PAL.c3;
-          return PAL.c4;
-        };
-        const darken = (rgb, f) => ({
-          r: Math.max(0, Math.min(255, Math.round(rgb.r * f))),
-          g: Math.max(0, Math.min(255, Math.round(rgb.g * f))),
-          b: Math.max(0, Math.min(255, Math.round(rgb.b * f))),
-        });
+        const RAIN_SMOOTH_SIGMA = 0.75; // ~0.5–1 grid cell
 
         // Render into a low-res raster and upscale for speed + smoothness.
         const z = map.getZoom ? map.getZoom() : 6;
@@ -5846,102 +7159,282 @@
           _strokeStrategicShoreline(ctx);
           return;
         }
-        const img = octx.createImageData(w2, h2);
-        const data = img.data;
+        const field = Array.from({ length: h2 }, () => Array.from({ length: w2 }, () => NaN));
 
-        // Existing interpolation is kept: we sample `precipitation_mm` from the prepared map.
-        // That value is the *smoothed, scaled* rain field (log1p of effective mm).
+        // Existing interpolation is kept: we sample `precipitation_mm` (mm/day equivalent) at each raster pixel.
+        // Performance: avoid calling Leaflet's containerPointToLatLng for every raster pixel.
+        // In WebMercator, longitude is linear in x for a given zoom, and latitude depends only on y.
+        let lonAtX0 = 0;
+        let lonPerPx = 0;
+        try {
+          const llL = map.containerPointToLatLng([0, h * 0.5]);
+          const llR = map.containerPointToLatLng([w, h * 0.5]);
+          if (llL && llR) {
+            lonAtX0 = Number(llL.lng);
+            let dLon = Number(llR.lng) - lonAtX0;
+            // Choose shortest delta across the dateline.
+            if (dLon > 180) dLon -= 360;
+            if (dLon < -180) dLon += 360;
+            lonPerPx = dLon / Math.max(1, w);
+          }
+        } catch (_) {
+          lonAtX0 = 0;
+          lonPerPx = 0;
+        }
+
+        const lonByX2 = new Array(w2);
+        for (let x2 = 0; x2 < w2; x2++) {
+          const px = x2 * stride + stride * 0.5;
+          let lon = lonAtX0 + lonPerPx * px;
+          // Normalize to [-180, 180) for stable tile hashing.
+          lon = ((lon + 540) % 360) - 180;
+          lonByX2[x2] = lon;
+        }
+
         for (let y2 = 0; y2 < h2; y2++) {
           const py = y2 * stride + stride * 0.5;
+          let latRow = NaN;
+          try {
+            const llRow = map.containerPointToLatLng([w * 0.5, py]);
+            latRow = llRow ? Number(llRow.lat) : NaN;
+          } catch (_) {
+            latRow = NaN;
+          }
+          const haveLat = Number.isFinite(latRow);
+
           for (let x2 = 0; x2 < w2; x2++) {
-            const px = x2 * stride + stride * 0.5;
-            let a = 0;
-            let rgb = null;
+            if (!haveLat) continue;
+            const lon = lonByX2[x2];
+            let mm = NaN;
             try {
-              const ll = map.containerPointToLatLng([px, py]);
-              const s = ll ? _sampleInterpolated(rainMapScaled, meta, ll.lat, ll.lng) : null;
-              const scaledSmooth = s ? Number(s.precipitation_mm) : NaN;
-              if (Number.isFinite(scaledSmooth) && scaledSmooth > 1e-9) {
-                const effMm = Math.max(0, (Math.expm1 ? Math.expm1(scaledSmooth) : (Math.exp(scaledSmooth) - 1)));
-                const rawApprox = (effMm > 0) ? (effMm + 0.5) : 0;
-                rgb = colorForRawMm(rawApprox);
-                if (rgb) {
-                  // Opacity based on the same mm/day value that drives color bins.
-                  // This avoids different shades for similar tooltip values.
-                  const u = _clamp01(rawApprox / 20.0);
-                  a = 0.18 + 0.62 * u;
-
-                  // Slight emphasis for solid rain (>=3mm/day).
-                  if (rawApprox >= 3) {
-                    a = Math.min(0.9, a * 1.10);
-                    rgb = darken(rgb, 0.92);
-                  }
-                }
-              }
+              const s = _sampleInterpolated(tileMap, meta, latRow, lon);
+              mm = s ? Number(s.precipitation_mm) : NaN;
             } catch (_) {
-              a = 0;
-              rgb = null;
+              mm = NaN;
             }
+            if (!Number.isFinite(mm) || mm < RAIN_BINS[0]) continue;
+            field[y2][x2] = Math.max(0, mm);
+          }
+        }
 
+        // Light smoothing improves field shape (removes blockiness).
+        const smooth = _gaussianBlur2D_nanAware(field, RAIN_SMOOTH_SIGMA);
+
+        const img = octx.createImageData(w2, h2);
+        const data = img.data;
+        const binArr = new Int16Array(w2 * h2);
+        for (let i = 0; i < binArr.length; i++) binArr[i] = -1;
+
+        for (let y2 = 0; y2 < h2; y2++) {
+          const row = smooth[y2];
+          for (let x2 = 0; x2 < w2; x2++) {
+            const mm = row ? Number(row[x2]) : NaN;
+            const bi = rainBinIdx(mm);
             const i = (y2 * w2 + x2) * 4;
-            if (!rgb || a <= 0) {
-              data[i + 0] = 0;
-              data[i + 1] = 0;
-              data[i + 2] = 0;
+            if (bi < 0) {
               data[i + 3] = 0;
+              continue;
+            }
+            binArr[(y2 * w2 + x2)] = bi;
+            const base = RAIN_COLORS[bi] || { r: 150, g: 150, b: 150, a: 0.2 };
+            data[i + 0] = base.r;
+            data[i + 1] = base.g;
+            data[i + 2] = base.b;
+            data[i + 3] = Math.max(0, Math.min(255, Math.round(_clamp01(base.a) * 255)));
+          }
+        }
+
+        // Subtle core/halo effect for bins >= 10mm (>= index 3):
+        // - interior pixels: slightly higher opacity (core)
+        // - edge pixels: slightly lower opacity (softer edge)
+        for (let y2 = 1; y2 < h2 - 1; y2++) {
+          for (let x2 = 1; x2 < w2 - 1; x2++) {
+            const p = y2 * w2 + x2;
+            const bi = binArr[p];
+            if (bi < 3) continue;
+            const bL = binArr[p - 1];
+            const bR = binArr[p + 1];
+            const bU = binArr[p - w2];
+            const bD = binArr[p + w2];
+            const interior = (bL === bi && bR === bi && bU === bi && bD === bi);
+            const i = p * 4;
+            const a0 = data[i + 3];
+            if (!(a0 > 0)) continue;
+            if (interior) {
+              // +~0.04 alpha, tiny darken
+              data[i + 0] = Math.max(0, Math.min(255, Math.round(data[i + 0] * 0.97)));
+              data[i + 1] = Math.max(0, Math.min(255, Math.round(data[i + 1] * 0.97)));
+              data[i + 2] = Math.max(0, Math.min(255, Math.round(data[i + 2] * 0.97)));
+              data[i + 3] = Math.max(0, Math.min(255, a0 + Math.round(0.04 * 255)));
             } else {
-              data[i + 0] = rgb.r;
-              data[i + 1] = rgb.g;
-              data[i + 2] = rgb.b;
-              data[i + 3] = Math.max(0, Math.min(255, Math.round(_clamp01(a) * 255)));
+              data[i + 3] = Math.max(0, Math.min(255, Math.round(a0 * 0.92)));
             }
           }
         }
 
+        // Edge definition between bins (subtle; no hard outlines).
+        _applyBinnedEdgeEmphasis(data, w2, h2, binArr, { darken: 0.92, alphaAdd: 0.01 });
+
         octx.putImageData(img, 0, 0);
         ctx.save();
-        ctx.imageSmoothingEnabled = true;
+        // Crisp bin edges.
+        try { ctx.imageSmoothingEnabled = false; } catch (_) {}
         ctx.globalAlpha = 1;
         ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
         ctx.restore();
-
-        // Optional subtle contours for readability: 1mm, 5mm, 10mm
-        try {
-          const contourPts = (prep && prep.pointsForContours) ? prep.pointsForContours : [];
-          const grid = _gridFromPoints(contourPts, '__rain_raw_mm_smooth');
-          if (grid) {
-            _drawIsolines(ctx, grid, [1, 5, 10], 'rgba(120,105,150,0.22)', 1, null);
-          }
-        } catch (_) {}
 
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
         return;
       }
 
-      if (layer === 'comfort_ride') {
-        // Bikepacking comfort index (TempScore + RainScore + WindScore)
-        const pts = (resp.points || []).map(p => {
-          if (!p) return null;
-          const s = _bikepackingComfortScore(p);
-          if (s === null) return null;
-          return { ...p, bikepacking_comfort: s };
-        }).filter(Boolean);
-        const valueKey = 'bikepacking_comfort';
-        const grid = _gridFromPoints(pts, valueKey);
-        // Fill tiles directly (prevents gaps near coasts); isolines use grid when available.
+      if (layer === 'comfort' || layer === 'comfort_day' || layer === 'comfort_ride') {
+        // Lucky Days (%) within selected timescale.
+        // - full_day mode: uses 24h temperature for Lucky Days
+        // - active mode: uses ride-hours temperature for Lucky Days
 
-        // ISO-style banded fill + isolines (same rendering approach as temperature/rain)
-        const thr = [-2, 0, 2, 4];
-        const cols = [
-          { r: 220, g: 55,  b: 55 },  // < -2 red
-          { r: 245, g: 155, b: 60 },  // -2..0 orange
-          { r: 240, g: 220, b: 80 },  // 0..2 yellow
-          { r: 40,  g: 160, b: 80 },  // 2..4 green
-          { r: 0,   g: 120, b: 70 },  // >= 4 deep green
+        const modeRaw = (() => {
+          try {
+            return (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+          } catch (_) {
+            return _strategicGetMode();
+          }
+        })();
+        const countKey = (String(modeRaw) === 'full_day') ? 'lucky_day_count' : 'lucky_ride_count';
+        const pctFn = (p) => {
+          try {
+            const n = Number(p && p[countKey]);
+            if (!Number.isFinite(n)) return null;
+            const pct = 100.0 * Math.max(0, n) / Math.max(1, sampleDaysNow);
+            if (!Number.isFinite(pct)) return null;
+            return Math.max(0, Math.min(100, pct));
+          } catch (_) {
+            return null;
+          }
+        };
+        if (!meta) {
+          if (clipped) ctx.restore();
+          _strokeStrategicShoreline(ctx);
+          return;
+        }
+
+        // Render as an interpolated raster (like temperature) to remove tile artifacts.
+        // Pipeline: interpolate -> (micro-smooth) -> bin -> render.
+        const LUCKY_BINS = [0, 20, 40, 60, 80, 100];
+        const LUCKY_COLS = [
+          { r: 0xd7, g: 0x30, b: 0x27 }, // #d73027
+          { r: 0xf4, g: 0x6d, b: 0x43 }, // #f46d43
+          { r: 0xfe, g: 0xe0, b: 0x8b }, // #fee08b
+          { r: 0xa6, g: 0xd9, b: 0x6a }, // #a6d96a
+          { r: 0x1a, g: 0x98, b: 0x50 }, // #1a9850
         ];
-        _drawBandedTileFill(ctx, pts, meta, valueKey, thr, cols, 0.22);
-        if (grid) _drawIsolines(ctx, grid, thr, 'rgba(60,60,60,0.45)', 1, null);
+        const luckyBinIdx = (pct) => {
+          const v = Number(pct);
+          if (!Number.isFinite(v)) return -1;
+          if (v < LUCKY_BINS[1]) return 0;
+          if (v < LUCKY_BINS[2]) return 1;
+          if (v < LUCKY_BINS[3]) return 2;
+          if (v < LUCKY_BINS[4]) return 3;
+          return 4;
+        };
+
+        const z = map.getZoom ? map.getZoom() : 6;
+        const stride = Math.max(2, Math.min(6, Math.round(6 - Math.max(0, Math.min(6, z - 5)))));
+        const w2 = Math.max(1, Math.ceil(w / stride));
+        const h2 = Math.max(1, Math.ceil(h / stride));
+        const off = (STRATEGIC_STATE._luckyRaster || (STRATEGIC_STATE._luckyRaster = document.createElement('canvas')));
+        off.width = w2;
+        off.height = h2;
+        const octx = off.getContext('2d');
+        if (!octx) {
+          if (clipped) ctx.restore();
+          _strokeStrategicShoreline(ctx);
+          return;
+        }
+
+        // Lon linear in x, lat depends only on y.
+        let lonAtX0 = 0;
+        let lonPerPx = 0;
+        try {
+          const llL = map.containerPointToLatLng([0, h * 0.5]);
+          const llR = map.containerPointToLatLng([w, h * 0.5]);
+          if (llL && llR) {
+            lonAtX0 = Number(llL.lng);
+            let dLon = Number(llR.lng) - lonAtX0;
+            if (dLon > 180) dLon -= 360;
+            if (dLon < -180) dLon += 360;
+            lonPerPx = dLon / Math.max(1, w);
+          }
+        } catch (_) {
+          lonAtX0 = 0;
+          lonPerPx = 0;
+        }
+        const lonByX2 = new Array(w2);
+        for (let x2 = 0; x2 < w2; x2++) {
+          const px = x2 * stride + stride * 0.5;
+          let lon = lonAtX0 + lonPerPx * px;
+          lon = ((lon + 540) % 360) - 180;
+          lonByX2[x2] = lon;
+        }
+
+        // Build interpolated percent field in raster space.
+        const field = Array.from({ length: h2 }, () => Array.from({ length: w2 }, () => NaN));
+        for (let y2 = 0; y2 < h2; y2++) {
+          const py = y2 * stride + stride * 0.5;
+          let latRow = NaN;
+          try {
+            const llRow = map.containerPointToLatLng([w * 0.5, py]);
+            latRow = llRow ? Number(llRow.lat) : NaN;
+          } catch (_) {
+            latRow = NaN;
+          }
+          if (!Number.isFinite(latRow)) continue;
+          for (let x2 = 0; x2 < w2; x2++) {
+            const lon = lonByX2[x2];
+            const s = _sampleInterpolated(tileMap, meta, latRow, lon);
+            const n = s ? Number(s[countKey]) : NaN;
+            if (!Number.isFinite(n)) continue;
+            const pctRaw = 100.0 * Math.max(0, n) / Math.max(1, sampleDaysNow);
+            const pct = Math.max(0, Math.min(100, pctRaw));
+            field[y2][x2] = pct;
+          }
+        }
+
+        // Optional micro-smoothing to remove blockiness (sigma ~ 0.5–1 grid units).
+        const smooth = _gaussianBlur2D_nanAware(field, 0.85);
+
+        const img = octx.createImageData(w2, h2);
+        const data = img.data;
+        const binArr = new Int16Array(w2 * h2);
+        for (let i = 0; i < binArr.length; i++) binArr[i] = -1;
+        const a255 = Math.max(0, Math.min(255, Math.round(255 * 0.24)));
+
+        for (let y2 = 0; y2 < h2; y2++) {
+          const row = smooth[y2];
+          for (let x2 = 0; x2 < w2; x2++) {
+            const v = row ? Number(row[x2]) : NaN;
+            const bi = luckyBinIdx(v);
+            const i = (y2 * w2 + x2) * 4;
+            if (bi < 0) {
+              data[i + 3] = 0;
+              continue;
+            }
+            binArr[(y2 * w2 + x2)] = bi;
+            const rgb = LUCKY_COLS[bi] || { r: 150, g: 150, b: 150 };
+            data[i + 0] = rgb.r;
+            data[i + 1] = rgb.g;
+            data[i + 2] = rgb.b;
+            data[i + 3] = a255;
+          }
+        }
+
+        _applyBinnedEdgeEmphasis(data, w2, h2, binArr, { darken: 0.90, alphaAdd: 0.02 });
+        octx.putImageData(img, 0, 0);
+        ctx.save();
+        try { ctx.imageSmoothingEnabled = false; } catch (_) {}
+        ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
+        ctx.restore();
+
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
         return;
@@ -5972,28 +7465,157 @@
     }
   }
 
-  function _scheduleStrategicFetch() {
+  function _scheduleStrategicFetch(reason) {
     if (!STRATEGIC_STATE.active) return;
     const now = Date.now();
-    if (STRATEGIC_STATE.pendingFetch) return;
+    // If a fetch is already pending, just record the most important reason.
+    // Timeline scrubbing should retain neighbor-prefetch; viewport fetches should not.
+    if (STRATEGIC_STATE.pendingFetch) {
+      try {
+        const r = String(reason || '');
+        if (r === 'doy' || r === 'range') STRATEGIC_STATE.pendingFetchReason = r;
+      } catch (_) {}
+      return;
+    }
     const dt = now - (STRATEGIC_STATE.lastFetchAt || 0);
     const delay = Math.max(0, STRATEGIC_FETCH_THROTTLE_MS - dt);
+    try { STRATEGIC_STATE.pendingFetchReason = String(reason || ''); } catch (_) { STRATEGIC_STATE.pendingFetchReason = ''; }
     STRATEGIC_STATE.pendingFetch = setTimeout(async () => {
+      const why = String(STRATEGIC_STATE.pendingFetchReason || '');
       STRATEGIC_STATE.pendingFetch = null;
+      STRATEGIC_STATE.pendingFetchReason = '';
       try {
         await _fetchStrategicGrid();
         _renderStrategic();
 
-        // Best-effort prefetch for smooth next/prev scrubbing.
-        setTimeout(() => {
-          _prefetchStrategicNeighbor(-1);
-          _prefetchStrategicNeighbor(+1);
-        }, 0);
+        // Best-effort prefetch only for timeline scrubbing (not for pan/zoom).
+        if (why === 'doy' || why === 'range') {
+          setTimeout(() => {
+            try {
+              if (_strategicUsingRangeUI()) {
+                _prefetchStrategicRangeNeighbor(-1);
+                _prefetchStrategicRangeNeighbor(+1);
+                return;
+              }
+              const ts = String(STRATEGIC_STATE.timescale || 'daily');
+              if (ts !== 'daily') return;
+              _prefetchStrategicNeighbor(-1);
+              _prefetchStrategicNeighbor(+1);
+            } catch (_) {}
+          }, 0);
+        }
       } catch (e) {
         // Ignore abort noise during scrubbing.
         if (!(e && (e.name === 'AbortError'))) console.error('strategic fetch', e);
       }
     }, delay);
+  }
+
+  function _cancelStrategicPendingFetch() {
+    try {
+      if (STRATEGIC_STATE && STRATEGIC_STATE.pendingFetch) {
+        try { clearTimeout(STRATEGIC_STATE.pendingFetch); } catch (_) {}
+        STRATEGIC_STATE.pendingFetch = null;
+        STRATEGIC_STATE.pendingFetchReason = '';
+      }
+    } catch (_) {}
+  }
+
+  async function _strategicFlushNow(reason) {
+    if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return;
+    // Ensure we don't have a delayed fetch queued that would redraw old state later.
+    _cancelStrategicPendingFetch();
+    try {
+      await _fetchStrategicGrid();
+      _renderStrategic();
+    } catch (e) {
+      // Ignore abort noise during scrubbing/playback.
+      if (!(e && (e.name === 'AbortError'))) throw e;
+    }
+  }
+
+  function _strategicViewNeedsFetch() {
+    try {
+      if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return false;
+      const resp = STRATEGIC_STATE.lastResp;
+      if (!resp || !resp.points || !resp.points.length) return true;
+
+      // If the response doesn't match current strategic parameters, we must refetch.
+      try {
+        const wantYears = _strategicGetSelectedYears();
+        const wantKey = _strategicYearsKey(wantYears);
+        const gotYears = (resp && Array.isArray(resp.years_selected) && resp.years_selected.length)
+          ? resp.years_selected
+          : [Number(resp && resp.year)];
+        const gotKey = _strategicYearsKey(gotYears);
+        if (wantKey && gotKey && wantKey !== gotKey) return true;
+      } catch (_) {}
+      try {
+        const wantMode = _strategicGetMode();
+        const gotMode = (resp && typeof resp.mode === 'string') ? String(resp.mode) : STRATEGIC_DEFAULT_MODE;
+        if (wantMode && gotMode && String(wantMode) !== String(gotMode)) return true;
+      } catch (_) {}
+      try {
+        const gotTs = String(resp.timescale || 'daily');
+        if (_strategicUsingRangeUI()) {
+          if (gotTs !== 'range') return true;
+          const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+          const { startDoy, durationDays } = _strategicGetRangeDOY();
+          const wantStart = _isoDateFromDOY(startDoy, y);
+          const gotStart = String(resp.start_date || '');
+          const wantDur = Math.max(1, Math.round(Number(durationDays) || 1));
+          const gotDur = Math.max(1, Math.round(Number(resp.duration_days) || 1));
+          if (wantStart && gotStart && wantStart !== gotStart) return true;
+          if (Number.isFinite(gotDur) && gotDur !== wantDur) return true;
+        } else {
+          const wantTs = String(STRATEGIC_STATE.timescale || ((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily'));
+          if (wantTs && gotTs && wantTs !== gotTs) return true;
+        }
+      } catch (_) {}
+
+      if (!map || !map.getBounds) return true;
+      const vb = map.getBounds();
+      if (!vb) return true;
+      const view = {
+        latMin: Number(vb.getSouth()),
+        latMax: Number(vb.getNorth()),
+        lonMin: Number(vb.getWest()),
+        lonMax: Number(vb.getEast()),
+      };
+      if (![view.latMin, view.latMax, view.lonMin, view.lonMax].every(Number.isFinite)) return true;
+      // Use the actual coverage of the returned points (not the DB's global bbox).
+      const outer = (resp && resp._coverage_bbox) ? resp._coverage_bbox : _coverageBBoxFromPoints(resp.points);
+      if (!outer) return true;
+      // Expand the coverage bbox by ~half a tile to compensate for
+      // point centers vs tile edges and avoid re-fetching on small zoom changes.
+      const tileKm = Math.max(10, Number(resp.tile_km || 50));
+      const stepLat = tileKm / 111.32;
+      const midLat = (Number.isFinite(outer.latMin) && Number.isFinite(outer.latMax))
+        ? (0.5 * (outer.latMin + outer.latMax))
+        : 45.0;
+      const c = Math.max(0.05, Math.cos(midLat * Math.PI / 180));
+      const stepLon = tileKm / (111.32 * c);
+
+      const jitter = 0.08;
+      const padLat = Math.min(1.5, Math.max(jitter, stepLat * 0.75));
+      const padLon = Math.min(2.0, Math.max(jitter, stepLon * 0.75));
+
+      const cov = {
+        latMin: outer.latMin - padLat,
+        latMax: outer.latMax + padLat,
+        lonMin: outer.lonMin - padLon,
+        lonMax: outer.lonMax + padLon,
+      };
+
+      return !(
+        view.latMin >= cov.latMin &&
+        view.latMax <= cov.latMax &&
+        view.lonMin >= cov.lonMin &&
+        view.lonMax <= cov.lonMax
+      );
+    } catch (_) {
+      return true;
+    }
   }
 
   function strategicSetActive(active) {
@@ -6009,7 +7631,17 @@
     _updateStrategicTimelineCssVar();
 
     if (on) {
-      _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR));
+      try {
+        const years = _strategicGetSelectedYears();
+        STRATEGIC_STATE.years = years;
+        STRATEGIC_STATE.year = Number(years[0] || SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR);
+        STRATEGIC_STATE.mode = _strategicGetMode();
+      } catch (_) {
+        STRATEGIC_STATE.years = [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)];
+        STRATEGIC_STATE.year = Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR);
+        STRATEGIC_STATE.mode = STRATEGIC_DEFAULT_MODE;
+      }
+      _strategicSetYear(Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR));
 
       // Coastline uses the higher-res (50m) dataset when available.
       // Load it eagerly so it doesn't appear to "drop" after toggling includeSea.
@@ -6027,18 +7659,35 @@
 
       try { _strategicApplyTimescaleUI(); } catch (_) {}
 
-      // Default DOY: today (UTC) mapped into 1..365
+      // Default selection: center around today (UTC) mapped into 1..365
       try {
         const today = new Date();
         const y = 2021; // non-leap reference
         const d0 = new Date(Date.UTC(y, today.getUTCMonth(), today.getUTCDate()));
         const start = new Date(Date.UTC(y, 0, 1));
         const doy = 1 + Math.floor((d0 - start) / (24 * 3600 * 1000));
-        _strategicSetDOY(Math.max(1, Math.min(365, doy)));
+        const d = Math.max(1, Math.min(365, doy));
+        if (_strategicUsingRangeUI()) {
+          const cur = _strategicGetRangeDOY();
+          const dur = Math.max(1, Math.round(Number(cur.durationDays) || 14));
+          const maxStart = Math.max(1, 365 - dur + 1);
+          const s2 = Math.max(1, Math.min(maxStart, d));
+          const e2 = Math.max(s2, Math.min(365, s2 + dur - 1));
+          _strategicSetRange(s2, e2, { skipFetch: true });
+        } else {
+          _strategicSetDOY(d);
+        }
       } catch (_) {
-        _strategicSetDOY(1);
+        if (_strategicUsingRangeUI()) {
+          _strategicSetRange(1, 14, { skipFetch: true });
+        } else {
+          _strategicSetDOY(1);
+        }
       }
-      if (strategicLayerSelect) STRATEGIC_STATE.layer = strategicLayerSelect.value;
+      if (strategicLayerSelect) {
+        STRATEGIC_STATE.layer = _strategicNormalizeLayer(strategicLayerSelect.value);
+        try { strategicLayerSelect.value = STRATEGIC_STATE.layer; } catch (_) {}
+      }
       if (strategicWindMode) STRATEGIC_STATE.windMode = strategicWindMode.value;
       if (strategicWindOn) {
         // Default: wind overlay on for wind layer, off otherwise
@@ -6080,7 +7729,36 @@
           return;
         }
 
-        const s = _strategicSampleAt(ll.lat, ll.lng);
+        const layerNow = _strategicNormalizeLayer(STRATEGIC_STATE.layer);
+
+        // For Lucky Days layers, use nearest-tile sampling so we can report
+        // absolute counts (integers) instead of interpolated fractions.
+        const _nearestStrategicTile = (lat, lon) => {
+          try {
+            const meta = STRATEGIC_STATE._meta;
+            const tileMap = STRATEGIC_STATE._tileMap;
+            if (!meta || !tileMap) return null;
+            const bbox = meta.bbox;
+            const tileKm = Number(meta.tile_km || 50);
+            if (!bbox || !Number.isFinite(tileKm)) return null;
+            const latMin = Number(bbox.latMin);
+            const lonMin = Number(bbox.lonMin);
+            const stepLat = tileKm / 111.32;
+            const row = Math.floor((Number(lat) - latMin) / stepLat);
+            const latC = latMin + (row + 0.5) * stepLat;
+            const c = Math.max(0.05, Math.cos(latC * Math.PI / 180));
+            const stepLon = tileKm / (111.32 * c);
+            const col = Math.floor((Number(lon) - lonMin) / stepLon);
+            const id = `r${row}_c${col}`;
+            return tileMap.get(id) || null;
+          } catch (_) {
+            return null;
+          }
+        };
+
+        const s = (layerNow === 'comfort' || layerNow === 'comfort_day' || layerNow === 'comfort_ride')
+          ? _nearestStrategicTile(ll.lat, ll.lng)
+          : _strategicSampleAt(ll.lat, ll.lng);
         if (!s) {
           if (!dbg) {
             _hideStrategicCursorReadout();
@@ -6112,49 +7790,148 @@
         const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
         const ts = String(STRATEGIC_STATE.timescale || 'daily');
         const p = _strategicPeriodForDOY(STRATEGIC_STATE.doy, ts, y);
-        const dateStr = (p && p.monitorLabel) ? String(p.monitorLabel) : `${y}-${_mmddFromDOY(STRATEGIC_STATE.doy)}`;
 
-        const daysInPeriod = (p && Number.isFinite(Number(p.startDoy)) && Number.isFinite(Number(p.endDoy)))
-          ? Math.max(1, Math.round(Number(p.endDoy) - Number(p.startDoy) + 1))
-          : 1;
-
-        const t = Number(s.temp_day_median);
-
-        // For rain_ride, the map rendering uses a smoothed precipitation field.
-        // Use the same field value in the tooltip so color and numbers match.
-        let r = Number(s.precipitation_mm);
-        try {
-          if (String(STRATEGIC_STATE.layer || '') === 'rain_ride') {
-            const prep = STRATEGIC_STATE._rainRidePrep;
-            const meta2 = STRATEGIC_STATE._meta;
-            if (prep && prep.mapScaled && meta2 && ll) {
-              const ss = _sampleInterpolated(prep.mapScaled, meta2, ll.lat, ll.lng);
-              const scaledSmooth = ss ? Number(ss.precipitation_mm) : NaN;
-              if (Number.isFinite(scaledSmooth) && scaledSmooth > 1e-9) {
-                const effMm = Math.max(0, (Math.expm1 ? Math.expm1(scaledSmooth) : (Math.exp(scaledSmooth) - 1)));
-                const rawApprox = (effMm > 0) ? (effMm + 0.5) : 0;
-                r = rawApprox;
-              } else {
-                r = 0;
-              }
+        const dateStr = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            if (resp && String(resp.timescale || '') === 'range') {
+              const s = String(resp.start_date || '');
+              const e = String(resp.end_date || '');
+              const d = Math.max(1, Math.round(Number(resp.duration_days) || 1));
+              if (s && e) return `Range: ${_fmtISODayMonth(s)} – ${_fmtISODayMonth(e)} (${d}d)`;
+              if (s) return `Range: ${_fmtISODayMonth(s)} (${d}d)`;
             }
+          } catch (_) {}
+          if (_strategicUsingRangeUI()) {
+            const lp = _strategicRangeLabelParts();
+            if (lp && lp.monitorLabel) return String(lp.monitorLabel);
           }
-        } catch (_) {}
+          return (p && p.monitorLabel) ? String(p.monitorLabel) : `${y}-${_mmddFromDOY(STRATEGIC_STATE.doy)}`;
+        })();
+
+        const periodDays = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            if (resp && String(resp.timescale || '') === 'range') {
+              const d = Math.max(1, Math.round(Number(resp.duration_days) || 1));
+              if (Number.isFinite(d) && d > 0) return d;
+            }
+          } catch (_) {}
+          if (_strategicUsingRangeUI()) {
+            const r = _strategicGetRangeDOY();
+            return Math.max(1, Math.round(Number(r.durationDays) || 1));
+          }
+          if (p && Number.isFinite(Number(p.startDoy)) && Number.isFinite(Number(p.endDoy))) {
+            return Math.max(1, Math.round(Number(p.endDoy) - Number(p.startDoy) + 1));
+          }
+          return 1;
+        })();
+
+        const sampleDays = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            const sd = Number(resp && resp.sample_days);
+            if (Number.isFinite(sd) && sd > 0) return Math.round(sd);
+          } catch (_) {}
+          return periodDays;
+        })();
+
+        const t = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            const m = (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+            const k = (String(m) === 'full_day') ? 'temperature_c' : 'temp_day_median';
+            const v = Number(s && s[k]);
+            return v;
+          } catch (_) {
+            return Number(s && s.temp_day_median);
+          }
+        })();
+
+        // Rain overlay and readout both use the same interpolated precipitation_mm.
+        let r = Number(s.precipitation_mm);
+        if (!Number.isFinite(r) || r < 0) r = 0;
         const w = Number(s.wind_speed_ms);
         const wdFrom = Number(s.wind_dir_deg);
         const wdTo = Number.isFinite(wdFrom) ? ((wdFrom + 180) % 360) : null;
-        const comfort = ([t, r, w].every(Number.isFinite))
-          ? (_bikepackingTempScore(t) + _bikepackingRainScore(r) + _bikepackingWindScore(w))
-          : null;
+        const wdFromCard = Number.isFinite(wdTo) ? degToCardinal((wdTo + 180) % 360) : null;
+        // Lucky Days: absolute counts provided by backend when lucky_* params are passed.
+        let luckyDayCount = null;
+        let luckyRideCount = null;
+        try {
+          const a = Number(s.lucky_day_count);
+          const b = Number(s.lucky_ride_count);
+          luckyDayCount = Number.isFinite(a) ? Math.max(0, Math.round(a)) : null;
+          luckyRideCount = Number.isFinite(b) ? Math.max(0, Math.round(b)) : null;
+        } catch (_) {}
+        const luckyDayPct = (luckyDayCount === null) ? null : (100.0 * luckyDayCount / Math.max(1, sampleDays));
+        const luckyRidePct = (luckyRideCount === null) ? null : (100.0 * luckyRideCount / Math.max(1, sampleDays));
+
+        // The backend count is over sample-days (= years × days). For the tooltip, show
+        // an expected count over the selected visible period (periodDays) so the time span
+        // matches the Range label. Percentage stays based on sample-days.
+        const luckyDayCountPerPeriod = (luckyDayCount === null)
+          ? null
+          : (Number(luckyDayCount) * Math.max(1, periodDays) / Math.max(1, sampleDays));
+        const luckyRideCountPerPeriod = (luckyRideCount === null)
+          ? null
+          : (Number(luckyRideCount) * Math.max(1, periodDays) / Math.max(1, sampleDays));
+
+        const _fmtLuckyDays = (countPerPeriod, days, pct, expandedSamples) => {
+          if (countPerPeriod === null) return '—';
+          const d = Math.max(1, Math.round(Number(days) || 1));
+          const p = (pct === null) ? null : Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+          const v = Math.max(0, Number(countPerPeriod) || 0);
+          const cTxt = expandedSamples ? _fmtNum(v, 1) : String(Math.round(v));
+          return `${cTxt}/${d}${(p === null) ? '' : ` (=${p}%)`}`;
+        };
+
+        const yearsTxt = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            const ys = (resp && Array.isArray(resp.years_selected) && resp.years_selected.length)
+              ? resp.years_selected
+              : _strategicGetSelectedYears();
+            return _uniqYearsDesc(ys).join(', ');
+          } catch (_) {
+            return _strategicGetSelectedYears().join(', ');
+          }
+        })();
+        const modeTxt = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            const m = (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+            return _strategicModeLabel(m);
+          } catch (_) {
+            return _strategicModeLabel(_strategicGetMode());
+          }
+        })();
 
         const lines = [
           `${dateStr}`,
+          `Years: ${yearsTxt || '—'}`,
+          `Mode: ${modeTxt || '—'}`,
           `Temp: ${_fmtNum(t, 1)} °C`,
           `Rain: ${_fmtNum(r, 1)} mm/day`,
-          `Rain sum: ${_fmtNum((Number.isFinite(r) ? (r * daysInPeriod) : NaN), 1)} mm (${daysInPeriod}d)`,
-          `Wind: ${_fmtNum(w, 1)} m/s${Number.isFinite(wdTo) ? ` (to ${Math.round(wdTo)}°)` : ''}`,
-          `Comfort: ${Number.isFinite(comfort) ? String(Math.round(comfort)) : '—'}${Number.isFinite(comfort) ? ` (${_comfortLabel(comfort)})` : ''}`,
+          `Rain sum: ${_fmtNum((Number.isFinite(r) ? (r * periodDays) : NaN), 1)} mm (${periodDays}d)`,
+          `Wind: ${_fmtNum(w, 1)} m/s${wdFromCard ? ` from ${wdFromCard}` : ''}`,
         ];
+
+        const luckyMode = (() => {
+          try {
+            const resp = STRATEGIC_STATE.lastResp;
+            const m = (resp && typeof resp.mode === 'string') ? String(resp.mode) : _strategicGetMode();
+            return (String(m) === 'full_day') ? 'full_day' : 'active';
+          } catch (_) {
+            return (String(_strategicGetMode()) === 'full_day') ? 'full_day' : 'active';
+          }
+        })();
+        const expandedSamples = (Math.round(Number(sampleDays) || 0) !== Math.round(Number(periodDays) || 0));
+        if (luckyMode === 'full_day') {
+          lines.push(`Lucky Days: ${_fmtLuckyDays(luckyDayCountPerPeriod, periodDays, luckyDayPct, expandedSamples)}`);
+        } else {
+          lines.push(`Lucky Days: ${_fmtLuckyDays(luckyRideCountPerPeriod, periodDays, luckyRidePct, expandedSamples)}`);
+        }
         el.textContent = lines.join('\n');
         el.style.display = 'block';
 
@@ -6192,7 +7969,7 @@
         c.addEventListener('mouseleave', STRATEGIC_STATE._cursorLeaveHandler);
       } catch (_) {}
 
-      _scheduleStrategicFetch();
+      _scheduleStrategicFetch('init');
       _updateStrategicLegend();
       _syncStrategicQuickLayer();
     } else {
@@ -6255,11 +8032,7 @@
   // UI wiring
   if (strategicTimescaleSelect) {
     strategicTimescaleSelect.addEventListener('change', () => {
-      const ts = String(strategicTimescaleSelect.value || 'daily');
-      STRATEGIC_STATE.timescale = ts;
-      try { SETTINGS.climateTimescale = ts; saveSettings(SETTINGS); } catch (_) {}
-      try { _strategicApplyTimescaleUI(); } catch (_) {}
-      _scheduleStrategicFetch();
+      _strategicApplyTimescaleSelection(String(strategicTimescaleSelect.value || 'daily'));
     });
   }
   if (strategicLayerSelect) {
@@ -6297,9 +8070,92 @@
       const ts = String(STRATEGIC_STATE.timescale || 'daily');
       const doy = _strategicSliderValueToDOY(strategicDaySlider.value, ts);
       _strategicSetDOY(doy);
-      _scheduleStrategicFetch();
+      _scheduleStrategicFetch('doy');
     });
   }
+
+  // Range slider: the native <input type="range"> elements are hidden and kept
+  // only as state holders. Interactions are handled by explicit L/C/R elements.
+
+  try {
+    if (strategicRangeWrap && (strategicRangeThumbStart || strategicRangeHandle || strategicRangeThumbEnd)) {
+      let drag = null;
+
+      const begin = (mode, ev) => {
+        ev.preventDefault();
+        const { startDoy, endDoy, durationDays } = _strategicGetRangeDOY();
+        const rect = strategicRangeWrap.getBoundingClientRect();
+        drag = {
+          mode,
+          pointerId: ev.pointerId,
+          x0: ev.clientX,
+          w: Math.max(1, rect.width),
+          start0: startDoy,
+          end0: endDoy,
+          dur: durationDays,
+        };
+        _strategicSetActiveRangeElement(mode === 'start' ? 'L' : (mode === 'end' ? 'R' : 'C'));
+        try { _strategicShowRangeTooltip(); } catch (_) {}
+        try {
+          if (mode === 'center' && strategicRangeHandle) strategicRangeHandle.classList.add('wm-dragging');
+        } catch (_) {}
+      };
+
+      const move = (ev) => {
+        if (!drag) return;
+        ev.preventDefault();
+        if (drag.mode === 'start') {
+          const d = _strategicDoyFromClientX(ev.clientX);
+          const s2 = Math.min(drag.end0, d);
+          _strategicSetRange(s2, drag.end0, { skipFetch: true });
+          return;
+        }
+        if (drag.mode === 'end') {
+          const d = _strategicDoyFromClientX(ev.clientX);
+          const e2 = Math.max(drag.start0, d);
+          _strategicSetRange(drag.start0, e2, { skipFetch: true });
+          return;
+        }
+        // center: keep duration and shift by mouse delta so the cursor stays over C.
+        const dx = Number(ev.clientX) - Number(drag.x0);
+        const deltaDaysFloat = (dx * 365) / Math.max(1, Number(drag.w));
+        const deltaDays = Math.round(deltaDaysFloat);
+        const maxStart = Math.max(1, 365 - drag.dur + 1);
+        const s2 = Math.max(1, Math.min(maxStart, _clampDOYInt(drag.start0 + deltaDays)));
+        const e2 = Math.max(s2, Math.min(365, s2 + drag.dur - 1));
+        _strategicSetRange(s2, e2, { skipFetch: true });
+      };
+
+      const end = (ev) => {
+        if (!drag) return;
+        ev.preventDefault();
+        drag = null;
+        try { if (strategicRangeHandle) strategicRangeHandle.classList.remove('wm-dragging'); } catch (_) {}
+        _strategicSetActiveRangeElement('');
+        try { _strategicShowRangeTooltip(); } catch (_) {}
+        try {
+          const { startDoy, endDoy } = _strategicGetRangeDOY();
+          _strategicSetRange(startDoy, endDoy, { skipFetch: false });
+        } catch (_) {}
+      };
+
+      const attach = (el, mode) => {
+        if (!el) return;
+        el.addEventListener('pointerdown', (ev) => {
+          try { el.setPointerCapture(ev.pointerId); } catch (_) {}
+          begin(mode, ev);
+        });
+        el.addEventListener('pointermove', move);
+        el.addEventListener('pointerup', end);
+        el.addEventListener('pointercancel', end);
+      };
+
+      attach(strategicRangeThumbStart, 'start');
+      attach(strategicRangeThumbEnd, 'end');
+      attach(strategicRangeHandle, 'center');
+    }
+  } catch (_) {}
+
   if (strategicPlayBtn) {
     strategicPlayBtn.addEventListener('click', () => {
       STRATEGIC_STATE.playing = !STRATEGIC_STATE.playing;
@@ -6309,20 +8165,48 @@
         STRATEGIC_STATE.playTimer = null;
       }
       if (STRATEGIC_STATE.playing) {
-        const tick = () => {
+        const tick = async () => {
           if (!STRATEGIC_STATE.playing) return;
-          const ts = String(STRATEGIC_STATE.timescale || 'daily');
-          const spec = _strategicSliderSpec(ts);
-          const cur = _strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts);
-          let next = Number(cur) + 1;
-          if (next > spec.max) next = spec.min;
-          const doy = _strategicSliderValueToDOY(next, ts);
-          _strategicSetDOY(doy);
-          _scheduleStrategicFetch();
-          const delay = 200;
-          STRATEGIC_STATE.playTimer = setTimeout(tick, delay);
+          const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+          if (_strategicUsingRangeUI()) {
+            const step = 1;
+            const { startDoy, durationDays } = _strategicGetRangeDOY();
+            const maxStart = Math.max(1, 365 - durationDays + 1);
+            let s2 = startDoy + step;
+            if (s2 > maxStart) s2 = 1;
+            const e2 = Math.max(s2, Math.min(365, s2 + durationDays - 1));
+            // Avoid queuing a delayed fetch; we fetch+render immediately below.
+            _strategicSetRange(s2, e2, { skipFetch: true });
+          } else {
+            const ts = String(STRATEGIC_STATE.timescale || 'daily');
+            const spec = _strategicSliderSpec(ts);
+            const cur = _strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts);
+            let next = Number(cur) + 1;
+            if (next > spec.max) next = spec.min;
+            const doy = _strategicSliderValueToDOY(next, ts);
+            _strategicSetDOY(doy);
+          }
+
+          try {
+            await _strategicFlushNow('play');
+          } catch (e) {
+            console.error('strategic play tick', e);
+          }
+
+          const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+          const elapsed = Math.max(0, Number(t1) - Number(t0));
+          // Pace the loop so we never build a backlog: next tick only after the
+          // previous fetch+render finished, with a small breathing gap.
+          const minPeriod = 220;
+          const gap = 20;
+          const delay = Math.max(gap, Math.round(minPeriod - elapsed + gap));
+          if (STRATEGIC_STATE.playing) STRATEGIC_STATE.playTimer = setTimeout(tick, delay);
         };
-        STRATEGIC_STATE.playTimer = setTimeout(tick, 200);
+        STRATEGIC_STATE.playTimer = setTimeout(tick, 0);
+      } else {
+        // Fallback: ensure we end on a fully rendered frame.
+        _strategicFlushNow('pause').catch(() => {});
       }
     });
   }
@@ -6337,6 +8221,19 @@
         try { clearTimeout(STRATEGIC_STATE.playTimer); } catch (_) {}
         STRATEGIC_STATE.playTimer = null;
       }
+      // Ensure we don't leave a queued/partial frame behind.
+      try { _cancelStrategicPendingFetch(); } catch (_) {}
+    }
+    if (_strategicUsingRangeUI()) {
+      const d = Math.sign(Number(delta || 0)) * 1;
+      const { startDoy, durationDays } = _strategicGetRangeDOY();
+      const maxStart = Math.max(1, 365 - durationDays + 1);
+      let s2 = startDoy + d;
+      if (s2 > maxStart) s2 = 1;
+      if (s2 < 1) s2 = maxStart;
+      const e2 = Math.max(s2, Math.min(365, s2 + durationDays - 1));
+      _strategicSetRange(s2, e2, { skipFetch: false });
+      return;
     }
     const ts = String(STRATEGIC_STATE.timescale || 'daily');
     const spec = _strategicSliderSpec(ts);
@@ -6347,7 +8244,7 @@
     if (next < spec.min) next = spec.max;
     const doy = _strategicSliderValueToDOY(next, ts);
     _strategicSetDOY(doy);
-    _scheduleStrategicFetch();
+    _scheduleStrategicFetch('doy');
   }
 
   if (strategicStepBackBtn) {
@@ -6360,7 +8257,10 @@
 
   map.on('moveend zoomend', () => {
     if (!STRATEGIC_STATE.active) return;
-    _scheduleStrategicFetch();
+    // Always redraw immediately; Leaflet resets canvases on zoom/pan.
+    _renderStrategic();
+    // Fetch only when the new viewport isn't covered by the last response.
+    if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('viewport');
   });
 
   // Settings view wiring
@@ -6390,7 +8290,14 @@
     if (setGlyphType) setGlyphType.value = s.glyphType || (s.useClassicWeatherIcons ? 'classic' : 'svg');
     if (setWeatherVisualizationMode) setWeatherVisualizationMode.value = String(s.weatherVisualizationMode || 'glyphs');
 
-    if (setStrategicYear) setStrategicYear.value = String(s.strategicYear || 2025);
+    try {
+      if (setStrategicYears) {
+        const yrs = (Array.isArray(s.strategicYears) && s.strategicYears.length)
+          ? s.strategicYears
+          : [Number(s.strategicYear || STRATEGIC_DEFAULT_YEAR)];
+        _renderStrategicYearsButtons(setStrategicYears, yrs, _setStrategicYears, { includeAll: true });
+      }
+    } catch (_) {}
     if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
     if (setInterpolation) setInterpolation.checked = Boolean(s.interpolation);
     if (setWindDensity) setWindDensity.value = String(Number(s.windDensity || 40));
@@ -6440,7 +8347,17 @@
       : 'glyphs';
     if (base.weatherVisualizationMode !== 'glyphs' && base.weatherVisualizationMode !== 'bands') base.weatherVisualizationMode = 'glyphs';
 
-    base.strategicYear = Number(setStrategicYear && setStrategicYear.value) || 2025;
+    // Strategic years/mode are controlled via toggle buttons (not standard form elements).
+    try {
+      const yrs = _uniqYearsDesc(base.strategicYears || [base.strategicYear || STRATEGIC_DEFAULT_YEAR]);
+      base.strategicYears = yrs.length ? yrs : [STRATEGIC_DEFAULT_YEAR];
+      base.strategicYear = Math.round(Number(base.strategicYears[0] || STRATEGIC_DEFAULT_YEAR));
+      const m = (String(base.strategicMode || '') === 'full_day') ? 'full_day' : 'active';
+      base.strategicMode = m;
+    } catch (_) {
+      base.strategicYears = [Number(base.strategicYear || STRATEGIC_DEFAULT_YEAR)];
+      base.strategicMode = (String(base.strategicMode || '') === 'full_day') ? 'full_day' : 'active';
+    }
     base.includeSea = Boolean(setIncludeSea && setIncludeSea.checked);
     base.interpolation = Boolean(setInterpolation && setInterpolation.checked);
     base.windDensity = Number(setWindDensity && setWindDensity.value) || 40;
@@ -6469,8 +8386,16 @@
     // Strategic overlay reacts to includeSea/interpolation/etc.
     try {
       if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
-        _scheduleStrategicFetch();
+        // Preferences should be the single source of truth for strategic years/mode.
+        try {
+          const years = _uniqYearsDesc((SETTINGS && SETTINGS.strategicYears) ? SETTINGS.strategicYears : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)]);
+          STRATEGIC_STATE.years = years.length ? years : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)];
+          STRATEGIC_STATE.year = Number(STRATEGIC_STATE.years[0] || SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR);
+          STRATEGIC_STATE.mode = (String(SETTINGS && SETTINGS.strategicMode || '') === 'full_day') ? 'full_day' : 'active';
+        } catch (_) {}
+        try { _strategicSetYear(Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
         _renderStrategic();
+        if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('prefs');
       }
     } catch (_) {}
   }
@@ -6816,10 +8741,8 @@
             const xa = xAt(dA);
             const xb = xAt(dB);
             if (!(xb > xa + 0.5)) continue;
-            const grad = profileCtx.createLinearGradient(xa, 0, xb, 0);
-            grad.addColorStop(0, tempColor(tA));
-            grad.addColorStop(1, tempColor(tB));
-            profileCtx.fillStyle = grad;
+            const tMid = 0.5 * (tA + tB);
+            profileCtx.fillStyle = tempColor(tMid);
             profileCtx.fillRect(xa, tempY, xb - xa, tempH);
           }
         }
@@ -8122,6 +10045,20 @@
   }
 
   async function loadMap(opts) {
+    // In Climatic Map mode, *never* fetch route/weather along GPX.
+    if (!_tourIsActive()) {
+      try { if (evtSource) evtSource.close(); } catch (_) {}
+      try { if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close(); } catch (_) {}
+      try { if (evtSourceProfile) evtSourceProfile.close(); } catch (_) {}
+      PRIME_IN_PROGRESS = false;
+      MAIN_IN_PROGRESS = false;
+      try { stopProgressAnim(); } catch (_) {}
+      try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
+      try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
+      try { if (sseStatus) sseStatus.textContent = 'Stream: idle (Climatic Map mode)'; } catch (_) {}
+      return;
+    }
+
     const loadOpts = (opts && typeof opts === 'object') ? opts : {};
     LAST_LOAD_OPTS = loadOpts;
     const forceRestart = !!loadOpts.forceRestart;
@@ -8160,10 +10097,9 @@
     }
     const selected = startDateInput.value ? new Date(startDateInput.value) : new Date();
     const mmdd = getMMDD(selected);
-    const isTourMode = (document.body && document.body.dataset && document.body.dataset.mode)
-      ? (document.body.dataset.mode === 'tour')
-      : true;
-    const tourPlanningParam = isTourMode ? '1' : '0';
+    // loadMap is TOUR-only (climate mode returns at the top). Keep params consistent and
+    // prevent accidental SSE calls with tour_planning=0 during mode-switch races.
+    const tourPlanningParam = '1';
     // Subscribe to streaming map data (route + per-station glyphs)
     const tourDays = Number(tourDaysInput?.value || 7);
     const startDateStr = startDateInput && startDateInput.value ? startDateInput.value : new Date().toISOString().slice(0,10);
@@ -8272,6 +10208,20 @@
     }
       if (MAIN_IN_PROGRESS) return;
       MAIN_IN_PROGRESS = true;
+
+      // Mode may change while async/session restore is running. Abort if we are no longer in TOUR.
+      if (!_tourIsActive()) {
+        MAIN_IN_PROGRESS = false;
+        try { evtSource && evtSource.close(); } catch (_) {}
+        try { if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close(); } catch (_) {}
+        try { evtSourceProfile && evtSourceProfile.close(); } catch (_) {}
+        try { stopProgressAnim(); } catch (_) {}
+        try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
+        try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
+        try { if (sseStatus) sseStatus.textContent = 'Stream: idle (Climatic Map mode)'; } catch (_) {}
+        return;
+      }
+
       const qsComfort = `&temp_cold=${encodeURIComponent(SETTINGS.tempCold)}&temp_hot=${encodeURIComponent(SETTINGS.tempHot)}&rain_high=${encodeURIComponent(SETTINGS.rainHigh)}&wind_head_comfort=${encodeURIComponent(SETTINGS.windHeadComfort)}&wind_tail_comfort=${encodeURIComponent(SETTINGS.windTailComfort)}`;
       evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${forceOnlineParam}${gpxParam}${revParam}${qsComfort}`);
     let stationCount = 0;
@@ -9031,58 +10981,62 @@
     // EventSource opens automatically; no additional fetch needed.
 
     // Lightweight profile refresh on zoom changes (dry-run stream)
-    let evtSourceProfile = null;
-    map.on('zoomend', () => {
-      // Skip dry-run refresh while a prime or main stream is active
-      if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return;
-      try { evtSourceProfile && evtSourceProfile.close(); } catch(_){ }
-      const z = map.getZoom();
-      const profileStep = (function(zoom){
-        if (zoom >= 13) return 2;
-        if (zoom >= 12) return 3;
-        if (zoom >= 11) return 4;
-        if (zoom >= 10) return 5;
-        if (zoom >= 9) return 6;
-        if (zoom >= 8) return 8;
-        if (zoom >= 7) return 10;
-        return 15;
-      })(z);
-      const selected = startDateInput.value ? new Date(startDateInput.value) : new Date();
-      const mmdd = getMMDD(selected);
-      const isTourMode = (document.body && document.body.dataset && document.body.dataset.mode)
-        ? (document.body.dataset.mode === 'tour')
-        : true;
-      const tourPlanningParam = isTourMode ? '1' : '0';
-      const tourDays = Number(tourDaysInput?.value || 7);
-      const startDateStr = startDateInput && startDateInput.value ? startDateInput.value : new Date().toISOString().slice(0,10);
-      const gpxParam = LAST_GPX_PATH ? `&gpx_path=${encodeURIComponent(LAST_GPX_PATH)}` : '';
-      const revParam = REVERSED ? '&reverse=1' : '';
-
-      const histLast = Number(SETTINGS.histLastYear);
-      const histN = Math.max(1, Math.round(Number(SETTINGS.histYears) || 10));
-      const histEnd = (Number.isFinite(histLast) && histLast >= 1970) ? Math.round(histLast) : ((new Date()).getFullYear() - 1);
-      const histStart = histEnd - histN + 1;
-
-      const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${gpxParam}${revParam}`;
-      evtSourceProfile = new EventSource(url);
-      evtSourceProfile.addEventListener('profile', (ev) => {
-        try {
-          const payload = JSON.parse(ev.data);
-          if (payload && payload.profile) {
-            drawProfile(payload.profile);
-          }
-        } catch (e) { console.error('profile zoom refresh error', e); }
-      });
-      evtSourceProfile.addEventListener('done', () => {
+    // Bound once; Tour mode only (never in Climatic Map).
+    if (!PROFILE_ZOOM_REFRESH_BOUND) {
+      PROFILE_ZOOM_REFRESH_BOUND = true;
+      map.on('zoomend', () => {
+        if (!_tourIsActive()) {
+          try { evtSourceProfile && evtSourceProfile.close(); } catch (_) {}
+          return;
+        }
+        // Skip dry-run refresh while a prime or main stream is active
+        if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return;
         try { evtSourceProfile && evtSourceProfile.close(); } catch(_){ }
+        const z = map.getZoom();
+        const profileStep = (function(zoom){
+          if (zoom >= 13) return 2;
+          if (zoom >= 12) return 3;
+          if (zoom >= 11) return 4;
+          if (zoom >= 10) return 5;
+          if (zoom >= 9) return 6;
+          if (zoom >= 8) return 8;
+          if (zoom >= 7) return 10;
+          return 15;
+        })(z);
+        const selected = startDateInput.value ? new Date(startDateInput.value) : new Date();
+        const mmdd = getMMDD(selected);
+        const tourDays = Number(tourDaysInput?.value || 7);
+        const startDateStr = startDateInput && startDateInput.value ? startDateInput.value : new Date().toISOString().slice(0,10);
+        const gpxParam = LAST_GPX_PATH ? `&gpx_path=${encodeURIComponent(LAST_GPX_PATH)}` : '';
+        const revParam = REVERSED ? '&reverse=1' : '';
+
+        const histLast = Number(SETTINGS.histLastYear);
+        const histN = Math.max(1, Math.round(Number(SETTINGS.histYears) || 10));
+        const histEnd = (Number.isFinite(histLast) && histLast >= 1970) ? Math.round(histLast) : ((new Date()).getFullYear() - 1);
+        const histStart = histEnd - histN + 1;
+
+        const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=1&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${gpxParam}${revParam}`;
+        evtSourceProfile = new EventSource(url);
+        evtSourceProfile.addEventListener('profile', (ev) => {
+          try {
+            const payload = JSON.parse(ev.data);
+            if (payload && payload.profile) {
+              drawProfile(payload.profile);
+            }
+          } catch (e) { console.error('profile zoom refresh error', e); }
+        });
+        evtSourceProfile.addEventListener('done', () => {
+          try { evtSourceProfile && evtSourceProfile.close(); } catch(_){ }
+        });
+        evtSourceProfile.onerror = () => {
+          try { evtSourceProfile && evtSourceProfile.close(); } catch(_){ }
+        };
       });
-      evtSourceProfile.onerror = () => {
-        try { evtSourceProfile && evtSourceProfile.close(); } catch(_){ }
-      };
-    });
+    }
   }
 
   fetchWeatherBtn.addEventListener('click', () => {
+    if (!_tourIsActive()) return;
     if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return; // Stop button handles abort now
     OFFLINE_FALLBACK_ACTIVE = false;
     try { applyPrefsFromFormAndPersist(); } catch (_) {}
@@ -9101,6 +11055,7 @@
     try { 
       if (evtSource) evtSource.close();
       if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close();
+      if (evtSourceProfile) evtSourceProfile.close();
     } catch(_) {}
     PRIME_IN_PROGRESS = false;
     MAIN_IN_PROGRESS = false;
@@ -9165,7 +11120,7 @@
         { icon: '🌧', text: `Expect ${Number(summary.rain_days||0)} Rain days`, label: 'Rain days' },
         { icon: '🌬', text: `${headPct}% Headwind`, label: 'Wind' },
         { icon: '🌡', text: `${fmt(summary.median_temperature,0)}°C Median Temperature`, label: 'Temperature' },
-        { icon: '⭐', text: `Expect ${Number(summary.comfort_days||0)} Comfort days`, label: 'Comfort' },
+        { icon: '⭐', text: `Expect ${Number(summary.comfort_days||0)} Lucky Days`, label: 'Lucky Days' },
         (typeof summary.sunny_days === 'number') ? { icon: '☀️', text: `Expect ${Number(summary.sunny_days||0)} Sunny days`, label: 'Sun' } : null,
         (typeof summary.sun_hours_total === 'number') ? { icon: '⏱', text: `${Number(summary.sun_hours_total||0)} h Sun`, label: 'Sun hours' } : null,
       ].filter(Boolean);
@@ -9191,10 +11146,10 @@
         if (it.label === 'Rain days') tip = 'Rain prob ≥ 60% or typical rain ≥ 3 mm';
         else if (it.label === 'Wind') tip = 'Share of tour days with effective headwind (cos(to-wind vs route) < −0.33).';
         else if (it.label === 'Temperature') tip = 'Median daytime temperature (10–16h) across matched stations.';
-        else if (it.label === 'Comfort') {
+        else if (it.label === 'Lucky Days') {
           const wHead = Number(SETTINGS.windHeadComfort||4);
           const wTail = Number(SETTINGS.windTailComfort||10);
-          tip = `Comfort: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind: head < ${wHead} m/s, tail < ${wTail} m/s.`;
+          tip = `Lucky Days: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind: head < ${wHead} m/s, tail < ${wTail} m/s.`;
         }
         else if (it.label === 'Sun') tip = 'Estimated sunny days';
         else if (it.label === 'Sun hours') tip = 'Total estimated sun hours';
@@ -9345,7 +11300,7 @@
         // Pure display/strategic toggles → redraw locally.
         if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
           try { _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
-          try { _scheduleStrategicFetch(); } catch (_) {}
+          try { if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('prefs'); } catch (_) {}
           // Some strategic settings (e.g. includeSea land clipping) don't change the fetch key.
           // Force a local redraw so the toggle has an immediate effect.
           try { _renderStrategic(); } catch (_) {}

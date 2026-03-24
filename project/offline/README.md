@@ -1,8 +1,13 @@
 # Offline Open‑Meteo tile store (design + build strategy)
 
-Last updated: 2026-02-23
+Last updated: 2026-03-23
 
 Goal: build a fully offline weather dataset for Europe (no offline OSM), using **Open‑Meteo archive** as the source, but store only **processed/derived statistics** per tile and calendar day.
+
+Default region: Europe + nearby seas **including Iceland (Reykjavik)**.
+The builder defaults are:
+- `lat_min=34`, `lat_max=72`
+- `lon_min=-28`, `lon_max=33`
 
 This builder is **Open‑Meteo only** by design (no Meteostat fallback/mixing).
 
@@ -106,6 +111,9 @@ At the moment, the main Flask app does **not** automatically use the offline sto
 When/if you wire it in, the intended environment variables are:
 - `OFFLINE_WEATHER_DB`: SQLite path (default: `project/cache/offline_weather.sqlite`)
 - `OFFLINE_STRICT=1`: disable any online API fallback
+
+Note: tile IDs (and therefore DB contents) depend on the chosen bbox. If you built older DBs with a different bbox
+(e.g. `lon_min=-11` without Iceland), keep them as separate files and build a new DB for the wider bbox.
 
 ### Builder
 
