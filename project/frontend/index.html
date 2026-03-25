@@ -11,6 +11,8 @@
     /* App shell layout: fixed left sidebar + main content */
     body {
       --wm-sidebar-w: 340px;
+      --wm-sidebar-w-min: 300px;
+      --wm-sidebar-w-max: 760px;
       --wm-sidebar-w-collapsed: calc(52px * 0.7);
       --wm-sidebar-w-active: var(--wm-sidebar-w);
     }
@@ -28,6 +30,11 @@
       box-sizing: border-box;
       transition: width 220ms ease;
       font-family: system-ui, -apple-system, sans-serif;
+    }
+    body.wm-sidebar-resizing #wmSidebar,
+    body.wm-sidebar-resizing #mainPane,
+    body.wm-sidebar-resizing #strategicTimeline {
+      transition: none;
     }
     #wmSidebarHeader {
       display: flex;
@@ -62,6 +69,34 @@
       box-sizing: border-box;
     }
     body.wm-sidebar-collapsed #wmSidebarScroll { display: none; }
+    #wmSidebarResizeHandle {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 10px;
+      height: 100%;
+      cursor: col-resize;
+      z-index: 2205;
+      touch-action: none;
+      background: transparent;
+    }
+    #wmSidebarResizeHandle::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      right: 2px;
+      width: 4px;
+      height: 44px;
+      transform: translateY(-50%);
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.45);
+      transition: background 160ms ease;
+    }
+    #wmSidebarResizeHandle:hover::after,
+    body.wm-sidebar-resizing #wmSidebarResizeHandle::after {
+      background: rgba(59, 130, 246, 0.7);
+    }
+    body.wm-sidebar-collapsed #wmSidebarResizeHandle { display: none; }
 
     .wm-section {
       border: 1px solid rgba(0,0,0,0.08);
@@ -93,6 +128,76 @@
     .wm-pref-group { padding-top: 10px; margin-top: 10px; border-top: 1px solid rgba(0,0,0,0.08); }
     .wm-pref-group:first-child { padding-top: 0; margin-top: 0; border-top: none; }
     .wm-pref-title { font-size: 12px; font-weight: 800; color: #0f172a; margin: 0 0 8px 0; }
+
+    .wm-calc-intro {
+      margin: 0 0 10px 0;
+      color: #334155;
+      line-height: 1.4;
+      border-radius: 10px;
+      background: #f8fafc;
+      padding: 10px;
+     }
+    body[data-wm-context="tour"] .wm-calc-card[data-wm-mode="climate"] { display: none; }
+    body[data-wm-context="climate"] .wm-calc-card[data-wm-mode="tour"] { display: none; }
+
+     .wm-calc-card {
+      margin-top: 10px;
+    }
+    .wm-calc-card:first-of-type { margin-top: 0; }
+    .wm-calc-title {
+      margin: 0 0 6px 0;
+      font-size: 12px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .wm-calc-note {
+      margin: 0 0 8px 0;
+      color: #475569;
+      line-height: 1.4;
+    }
+    .wm-calc-table-wrap {
+      overflow-x: auto;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .wm-calc-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .wm-calc-table th,
+    .wm-calc-table td {
+      border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+      border-right: 1px solid rgba(15, 23, 42, 0.06);
+      padding: 7px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .wm-calc-table th:last-child,
+    .wm-calc-table td:last-child { border-right: none; }
+    .wm-calc-table tr:last-child td { border-bottom: none; }
+    .wm-calc-table thead th {
+      background: #eff6ff;
+      color: #0f172a;
+      font-weight: 800;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    .wm-calc-table td:first-child,
+    .wm-calc-table th:first-child {
+      background: #f8fafc;
+      font-weight: 700;
+      min-width: 112px;
+    }
+    .wm-calc-foot {
+      margin: 8px 0 0 0;
+      color: #475569;
+      line-height: 1.4;
+    }
 
     /* Preferences visibility per mode */
     body[data-mode="tour"] .wm-pref-group[data-wm-scope="climate"] { display: none; }
@@ -173,7 +278,7 @@
     }
     /* In Climate mode, lift legend above the fixed timeline */
     body[data-mode="climate"] #map .wm-map-legend {
-      bottom: calc(8px + var(--wm-strategic-timeline-h, 0px));
+      bottom: calc(20px + var(--wm-strategic-timeline-h, 0px) + env(safe-area-inset-bottom, 0px));
     }
     .wm-map-legend.hidden { display: none; }
     .wm-map-legend .row {
@@ -911,6 +1016,9 @@
                       <option value="25">25</option>
                       <option value="100">100</option>
                     </select>
+
+                    <label for="setClimateActiveTime">Active time</label>
+                    <input type="text" id="setClimateActiveTime" placeholder="10-16" />
                   </div>
                 </div>
 
@@ -933,10 +1041,8 @@
                 <div class="wm-pref-group" data-wm-scope="tour">
                   <div class="wm-pref-title">Tour Planning</div>
                   <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setRideHours">Ride hours (start-end)</label>
-                    <input type="text" id="setRideHours" placeholder="10-16" />
-                    <label for="setTentHours">Tent hours (start-end)</label>
-                    <input type="text" id="setTentHours" placeholder="18-08" />
+                    <label for="setTourActiveTime">Active time</label>
+                    <input type="text" id="setTourActiveTime" placeholder="10-16" />
 
                     <label for="setWindWeighting">Wind weighting (tactical)</label>
                     <select id="setWindWeighting">
@@ -949,7 +1055,153 @@
             </div>
           </div>
         </details>
+
+        <details class="wm-section" id="wmSectionCalcGuide">
+          <summary>How Values Are Calculated</summary>
+          <div class="wm-section-body">
+            <p class="wm-calc-intro">Use this as the quick reference for what the app is actually showing. Start with the window, then the selected years, then the mode where applicable.</p>
+
+            <div class="wm-calc-card" data-wm-mode="climate">
+              <div class="wm-calc-title">Climatic Map</div>
+              <p class="wm-calc-note">The climate raster and the climate cursor tooltip read from the same aggregated tile payload. In this view, <strong>Rain</strong> means <strong>mm/day</strong>, and <strong>Rain sum</strong> is the visible-period total derived from that daily value.</p>
+              <div class="wm-calc-table-wrap">
+                <table class="wm-calc-table" aria-label="Climatic Map value reference">
+                  <thead>
+                    <tr>
+                      <th>Years</th>
+                      <th>Mode</th>
+                      <th>Temp</th>
+                      <th>Rain</th>
+                      <th>Rain sum</th>
+                      <th>Wind</th>
+                      <th>Lucky Days</th>
+                      <th>Shown in</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Single year</td>
+                      <td>24h</td>
+                      <td><strong>temperature_c</strong> from the selected yearly store, aggregated over the chosen day, timescale, or custom range.</td>
+                      <td><strong>precipitation_mm</strong> averaged over valid sample-days in the selected window.</td>
+                      <td><strong>precipitation_mm × visible days</strong>.</td>
+                      <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean.</td>
+                      <td><strong>lucky_day_count / sample_days</strong>.</td>
+                      <td>Climate raster + climate cursor tooltip.</td>
+                    </tr>
+                    <tr>
+                      <td>Single year</td>
+                      <td>Active</td>
+                      <td><strong>temp_day_median</strong> from the selected yearly store, aggregated over the chosen window.</td>
+                      <td><strong>precipitation_mm</strong> averaged over valid sample-days in the selected window.</td>
+                      <td><strong>precipitation_mm × visible days</strong>.</td>
+                      <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean.</td>
+                      <td><strong>lucky_ride_count / sample_days</strong>.</td>
+                      <td>Climate raster + climate cursor tooltip.</td>
+                    </tr>
+                    <tr>
+                      <td>Multiple years</td>
+                      <td>24h</td>
+                      <td>Median of full-day samples across <strong>selected years × selected calendar days</strong>. Uses <strong>temp_24h_c</strong> when available, otherwise <strong>temperature_c</strong>.</td>
+                      <td><strong>precipitation_mm</strong> mean across valid samples. <strong>rain_probability</strong> is recomputed from precipitation samples.</td>
+                      <td><strong>precipitation_mm × visible days</strong>.</td>
+                      <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean across all samples.</td>
+                      <td><strong>lucky_day_count / sample_days</strong>.</td>
+                      <td>Climate raster + climate cursor tooltip.</td>
+                    </tr>
+                    <tr>
+                      <td>Multiple years</td>
+                      <td>Active</td>
+                      <td>Median of active-hour samples across <strong>selected years × selected calendar days</strong>. Uses <strong>temp_day_median</strong> when available, otherwise <strong>temperature_c</strong>.</td>
+                      <td><strong>precipitation_mm</strong> mean across valid samples. <strong>rain_probability</strong> is recomputed from precipitation samples.</td>
+                      <td><strong>precipitation_mm × visible days</strong>.</td>
+                      <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean across all samples.</td>
+                      <td><strong>lucky_ride_count / sample_days</strong>.</td>
+                      <td>Climate raster + climate cursor tooltip.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="wm-calc-foot">Climate tooltip lines currently show <strong>Temp</strong>, <strong>Rain</strong>, <strong>Rain sum</strong>, <strong>Wind</strong>, and the mode-matching <strong>Lucky Days</strong> value.</p>
+            </div>
+
+            <div class="wm-calc-card" data-wm-mode="tour">
+              <div class="wm-calc-title">Tour Planning</div>
+              <p class="wm-calc-note">Tour Planning has no single 24h/Active switch. The station payload carries historical and daytime fields in parallel, and the tooltip, glyph, and profile each use different subsets of that same payload.</p>
+              <div class="wm-calc-table-wrap">
+                <table class="wm-calc-table" aria-label="Tour Planning value reference">
+                  <thead>
+                    <tr>
+                      <th>Years</th>
+                      <th>Surface</th>
+                      <th>Temp</th>
+                      <th>Rain</th>
+                      <th>Rain sum</th>
+                      <th>Wind</th>
+                      <th>Lucky Days</th>
+                      <th>Shown in</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Single historical year</td>
+                      <td>Glyph + tooltip</td>
+                      <td><strong>temp_hist_median</strong> plus <strong>temp_hist_min/max</strong>; daytime spread still shown separately via <strong>temp_day_typical_min/max</strong>.</td>
+                      <td><strong>rain_probability</strong> and <strong>rain_typical_mm</strong>.</td>
+                      <td>Not shown as a dedicated Tour tooltip line.</td>
+                      <td><strong>wind_speed_ms</strong>, <strong>wind_dir_deg</strong>, <strong>wind_var_deg</strong>.</td>
+                      <td>Not shown as a per-glyph metric.</td>
+                      <td>Route glyphs + hover tooltip.</td>
+                    </tr>
+                    <tr>
+                      <td>Multiple historical years</td>
+                      <td>Glyph + tooltip</td>
+                      <td>Same fields, but the selected historical span now changes <strong>temp_hist_*</strong> and daytime spread values.</td>
+                      <td>Same fields, span-sensitive across the selected years.</td>
+                      <td>Not shown as a dedicated Tour tooltip line.</td>
+                      <td>Same fields, span-sensitive across the selected years.</td>
+                      <td>Not shown as a per-glyph metric.</td>
+                      <td>Route glyphs + hover tooltip.</td>
+                    </tr>
+                    <tr>
+                      <td>Any span</td>
+                      <td>Profile: Temperature</td>
+                      <td>Reference line uses the Tour temperature median; spread uses legacy profile fields <strong>temp_day_p25/temp_day_p75</strong>.</td>
+                      <td>Not used.</td>
+                      <td>Not used.</td>
+                      <td>Not used.</td>
+                      <td>Not used.</td>
+                      <td>Profile overlay.</td>
+                    </tr>
+                    <tr>
+                      <td>Any span</td>
+                      <td>Profile: Rain</td>
+                      <td>Not used.</td>
+                      <td>Bars use <strong>rain_typical_mm</strong>; the filled area uses <strong>rain_typical_mm × rain_probability</strong>.</td>
+                      <td>No separate profile sum label.</td>
+                      <td>Not used.</td>
+                      <td>Not used.</td>
+                      <td>Profile overlay.</td>
+                    </tr>
+                    <tr>
+                      <td>Any span</td>
+                      <td>Profile: Wind</td>
+                      <td>Not used.</td>
+                      <td>Not used.</td>
+                      <td>Not used.</td>
+                      <td>Effective wind along the route, computed from <strong>wind_speed_ms</strong>, <strong>wind_dir_deg</strong>, and local route heading. The grey tolerance band comes from <strong>wind_var_deg</strong>.</td>
+                      <td>Not used.</td>
+                      <td>Profile overlay.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="wm-calc-foot">Tour tooltips intentionally separate <strong>Historical median</strong>, <strong>Historical range</strong>, and <strong>Typical daytime variation</strong> so the numbers stay explicit even when the map rendering is visually simplified.</p>
+            </div>
+          </div>
+        </details>
       </div>
+      <div id="wmSidebarResizeHandle" aria-hidden="true"></div>
     </aside>
 
   <div id="strategicTimeline" aria-label="Strategic time slider">

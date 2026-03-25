@@ -9,10 +9,9 @@ Touracle is an interactive tool for planning long-distance bikepacking or cyclin
 - Visualize route on an interactive map (Leaflet-based UI)
 - See weather glyphs (temperature, rain, wind) at sampled points along the route
 - Select any day-of-year to view typical and historical weather (uses Open-Meteo/Meteostat)
+- Resize the sidebar and inspect a mode-specific “How Values Are Calculated” guide directly in the UI
 - Download and share weather summaries
 - Works locally—no private data leaves your machine
-
-## Quick Start
 
 ## Quick Start
 
@@ -99,6 +98,7 @@ More detailed documentation lives in `docs/`:
 - `docs/USER_MANUAL.md` — how to use Tour Planning + Climatic Map
 - `docs/ARCHITECTURE.md` — components and data flows
 - `docs/DATABASE_OFFLINE_TILE_STORE.md` — offline SQLite tile store schema and usage
+- `docs/WEATHER_VALUE_REFERENCE.md` — how map, tooltip, glyph, and profile weather values are derived
 - `docs/DEVELOPMENT_TESTING.md` — development notes and running tests
 
 

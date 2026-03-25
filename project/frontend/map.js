@@ -215,8 +215,8 @@
   const setWindDensity = document.getElementById('setWindDensity');
   const setAnimSpeed = document.getElementById('setAnimSpeed');
   const setGridKm = document.getElementById('setGridKm');
-  const setRideHours = document.getElementById('setRideHours');
-  const setTentHours = document.getElementById('setTentHours');
+  const setTourActiveTime = document.getElementById('setTourActiveTime');
+  const setClimateActiveTime = document.getElementById('setClimateActiveTime');
   const setWindWeighting = document.getElementById('setWindWeighting');
   const setOverlayMode = document.getElementById('setOverlayMode');
 
@@ -1347,8 +1347,7 @@
       windDensity: 40,
       animSpeed: 1.0,
       gridKm: 50,
-      rideHours: '10-16',
-      tentHours: '18-08',
+      activeHours: '10-16',
       windWeighting: 'relative',
     };
     if (!s) return defaults;
@@ -1426,8 +1425,9 @@
         windDensity: Number(j.windDensity) || defaults.windDensity,
         animSpeed: Number(j.animSpeed) || defaults.animSpeed,
         gridKm: Number(j.gridKm) || defaults.gridKm,
-        rideHours: (typeof j.rideHours === 'string') ? j.rideHours : defaults.rideHours,
-        tentHours: (typeof j.tentHours === 'string') ? j.tentHours : defaults.tentHours,
+        activeHours: (typeof j.activeHours === 'string')
+          ? j.activeHours
+          : ((typeof j.rideHours === 'string') ? j.rideHours : defaults.activeHours),
         windWeighting: (typeof j.windWeighting === 'string') ? j.windWeighting : defaults.windWeighting,
       };
     } catch {
@@ -1457,6 +1457,31 @@
   let CURSOR_X_SCALE = 1;     // unified scale (no DPR correction)
   let CURSOR_X_OFFSET = 0;    // no offset fudge
   let CURSOR_OFFSET_LOCKED = true; // lock to prevent heuristic changes
+
+  function _getActiveHoursValue(source) {
+    if (source && typeof source.activeHours === 'string' && source.activeHours) return String(source.activeHours);
+    if (source && typeof source.rideHours === 'string' && source.rideHours) return String(source.rideHours);
+    return '10-16';
+  }
+
+  function _syncActiveTimeInputs(source) {
+    try {
+      const next = String((source && source.value) ? source.value : _getActiveHoursValue(SETTINGS));
+      if (setTourActiveTime && setTourActiveTime !== source) setTourActiveTime.value = next;
+      if (setClimateActiveTime && setClimateActiveTime !== source) setClimateActiveTime.value = next;
+    } catch (_) {}
+  }
+
+  try {
+    if (setTourActiveTime) {
+      setTourActiveTime.addEventListener('input', () => _syncActiveTimeInputs(setTourActiveTime));
+      setTourActiveTime.addEventListener('change', () => _syncActiveTimeInputs(setTourActiveTime));
+    }
+    if (setClimateActiveTime) {
+      setClimateActiveTime.addEventListener('input', () => _syncActiveTimeInputs(setClimateActiveTime));
+      setClimateActiveTime.addEventListener('change', () => _syncActiveTimeInputs(setClimateActiveTime));
+    }
+  } catch (_) {}
 
   // -------------------- Mode side effects --------------------
   // Tab selection + pill positioning is handled by the inlined script in index.html.
@@ -1647,7 +1672,7 @@
     host.innerHTML = '';
     const m = (String(selectedMode || '') === 'full_day') ? 'full_day' : 'active';
     _renderMiniBtn(host, '24h', m === 'full_day', () => { onChange && onChange('full_day'); }, 'Full day (24h)');
-    _renderMiniBtn(host, 'Active', m === 'active', () => { onChange && onChange('active'); }, 'Active / ride hours');
+    _renderMiniBtn(host, 'Active', m === 'active', () => { onChange && onChange('active'); }, 'Active time');
   }
 
   function _setStrategicYears(nextYears) {
@@ -2207,7 +2232,7 @@
     if (layer === 'rain_tent') {
       _setLegend('Rain (typical, mm/day)', PAL_RAIN, ['0', '3', '6', '12'], null);
       _setLegendTooltips(
-        'Typical rain during tent hours (mm/day equivalent).',
+        'Typical rain for the full-day view (mm/day equivalent).',
         'Color encodes typical rain (mm/day).',
         'Tick labels are mm/day anchors.'
       );
@@ -2251,7 +2276,7 @@
       const rainHigh = Number(SETTINGS.rainHigh || 10);
       const wAbs = Number(SETTINGS.windHeadComfort || 4);
       _setLegendTooltips(
-        'Lucky Days score combines temperature, rain and wind for tent hours.',
+        'Lucky Days score combines temperature, rain and wind for the full-day view.',
         `Thresholds: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind < ${wAbs} m/s (absolute).`,
         'Tick labels are score anchors (0..1).'
       );
@@ -4912,6 +4937,7 @@
 
   // --- Strategic cursor readout (tooltip) ---
   let STRATEGIC_CURSOR_EL = null;
+  let STRATEGIC_CURSOR_MARKER = null;
 
   function _ensureStrategicCursorReadout() {
     if (STRATEGIC_CURSOR_EL) return STRATEGIC_CURSOR_EL;
@@ -4948,8 +4974,69 @@
 
   function _hideStrategicCursorReadout() {
     const el = STRATEGIC_CURSOR_EL;
-    if (!el) return;
-    el.style.display = 'none';
+    if (el) el.style.display = 'none';
+    try {
+      if (STRATEGIC_CURSOR_MARKER && STRATEGIC_CURSOR_MARKER._map) {
+        STRATEGIC_CURSOR_MARKER._map.removeLayer(STRATEGIC_CURSOR_MARKER);
+      }
+    } catch (_) {}
+    STRATEGIC_CURSOR_MARKER = null;
+  }
+
+  function _ensureStrategicCursorMarker(latlng) {
+    try {
+      if (!latlng || !map) return null;
+      if (!STRATEGIC_CURSOR_MARKER) {
+        try {
+          if (!map.getPane('wmStrategicCursorPane')) {
+            map.createPane('wmStrategicCursorPane');
+            map.getPane('wmStrategicCursorPane').style.zIndex = '701';
+          }
+        } catch (_) {}
+        STRATEGIC_CURSOR_MARKER = L.circleMarker(latlng, {
+          pane: 'wmStrategicCursorPane',
+          radius: 8,
+          color: 'rgba(15, 23, 42, 0.88)',
+          weight: 2,
+          fillColor: 'rgba(255,255,255,0.95)',
+          fillOpacity: 0.9,
+        });
+        STRATEGIC_CURSOR_MARKER.addTo(map);
+      } else {
+        STRATEGIC_CURSOR_MARKER.setLatLng(latlng);
+      }
+      try { STRATEGIC_CURSOR_MARKER.bringToFront(); } catch (_) {}
+      return STRATEGIC_CURSOR_MARKER;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _strategicEventLatLngAndPoint(ev) {
+    let ll = null;
+    let pt = null;
+    try {
+      const touch = ev && ev.touches && ev.touches[0]
+        ? ev.touches[0]
+        : (ev && ev.changedTouches && ev.changedTouches[0] ? ev.changedTouches[0] : null);
+      if (touch) {
+        const rect = map && map.getContainer ? map.getContainer().getBoundingClientRect() : null;
+        const clientX = Number(touch.clientX);
+        const clientY = Number(touch.clientY);
+        if (rect && Number.isFinite(clientX) && Number.isFinite(clientY)) {
+          const cp = L.point(clientX - rect.left, clientY - rect.top);
+          pt = cp;
+          ll = map.containerPointToLatLng ? map.containerPointToLatLng(cp) : null;
+        }
+      } else {
+        ll = map.mouseEventToLatLng ? map.mouseEventToLatLng(ev) : null;
+        pt = map.mouseEventToContainerPoint ? map.mouseEventToContainerPoint(ev) : (ll ? map.latLngToContainerPoint(ll) : null);
+      }
+    } catch (_) {
+      ll = null;
+      pt = null;
+    }
+    return { ll, pt };
   }
 
   function _fmtNum(v, digits) {
@@ -7715,19 +7802,17 @@
         if (!el) return;
         let dbg = false;
         try { dbg = (String(localStorage.getItem('wm_debug_strategic_tooltip') || '') === '1'); } catch (_) { dbg = false; }
-        let ll = null;
-        let pt = null;
-        try {
-          ll = map.mouseEventToLatLng ? map.mouseEventToLatLng(ev) : null;
-          pt = map.mouseEventToContainerPoint ? map.mouseEventToContainerPoint(ev) : (ll ? map.latLngToContainerPoint(ll) : null);
-        } catch (_) {
-          ll = null;
-          pt = null;
-        }
+        const coords = _strategicEventLatLngAndPoint(ev);
+        const ll = coords.ll;
+        const pt = coords.pt;
         if (!ll || !pt) {
           if (!dbg) _hideStrategicCursorReadout();
           return;
         }
+        try {
+          const isTouch = !!(ev && ((ev.touches && ev.touches.length) || (ev.changedTouches && ev.changedTouches.length)));
+          if (isTouch) _ensureStrategicCursorMarker(ll);
+        } catch (_) {}
 
         const layerNow = _strategicNormalizeLayer(STRATEGIC_STATE.layer);
 
@@ -7958,6 +8043,8 @@
       try {
         const c = map.getContainer();
         if (c) c.addEventListener('mousemove', STRATEGIC_STATE._cursorMoveHandler, true);
+        if (c) c.addEventListener('touchstart', STRATEGIC_STATE._cursorMoveHandler, { capture: true, passive: true });
+        if (c) c.addEventListener('touchmove', STRATEGIC_STATE._cursorMoveHandler, { capture: true, passive: true });
       } catch (_) {}
 
       try {
@@ -7967,6 +8054,7 @@
           _hideStrategicCursorReadout();
         };
         c.addEventListener('mouseleave', STRATEGIC_STATE._cursorLeaveHandler);
+        c.addEventListener('touchcancel', STRATEGIC_STATE._cursorLeaveHandler, { passive: true });
       } catch (_) {}
 
       _scheduleStrategicFetch('init');
@@ -7993,11 +8081,14 @@
       try {
         const c = map.getContainer();
         if (c && STRATEGIC_STATE._cursorMoveHandler) c.removeEventListener('mousemove', STRATEGIC_STATE._cursorMoveHandler, true);
+        if (c && STRATEGIC_STATE._cursorMoveHandler) c.removeEventListener('touchstart', STRATEGIC_STATE._cursorMoveHandler, true);
+        if (c && STRATEGIC_STATE._cursorMoveHandler) c.removeEventListener('touchmove', STRATEGIC_STATE._cursorMoveHandler, true);
       } catch (_) {}
       STRATEGIC_STATE._cursorMoveHandler = null;
       try {
         const c = map.getContainer();
         if (c && STRATEGIC_STATE._cursorLeaveHandler) c.removeEventListener('mouseleave', STRATEGIC_STATE._cursorLeaveHandler);
+        if (c && STRATEGIC_STATE._cursorLeaveHandler) c.removeEventListener('touchcancel', STRATEGIC_STATE._cursorLeaveHandler);
       } catch (_) {}
       STRATEGIC_STATE._cursorLeaveHandler = null;
       _hideStrategicCursorReadout();
@@ -8303,8 +8394,9 @@
     if (setWindDensity) setWindDensity.value = String(Number(s.windDensity || 40));
     if (setAnimSpeed) setAnimSpeed.value = String(Number(s.animSpeed || 1.0));
     if (setGridKm) setGridKm.value = String(Number(s.gridKm || 50));
-    if (setRideHours) setRideHours.value = String(s.rideHours || '10-16');
-    if (setTentHours) setTentHours.value = String(s.tentHours || '18-08');
+    const activeHours = _getActiveHoursValue(s);
+    if (setTourActiveTime) setTourActiveTime.value = activeHours;
+    if (setClimateActiveTime) setClimateActiveTime.value = activeHours;
     if (setWindWeighting) setWindWeighting.value = String(s.windWeighting || 'relative');
 
     if (setOverlayMode) setOverlayMode.value = String(s.overlayMode || 'temperature');
@@ -8363,8 +8455,13 @@
     base.windDensity = Number(setWindDensity && setWindDensity.value) || 40;
     base.animSpeed = Number(setAnimSpeed && setAnimSpeed.value) || 1.0;
     base.gridKm = Number(setGridKm && setGridKm.value) || 50;
-    base.rideHours = String(setRideHours && setRideHours.value ? setRideHours.value : '10-16');
-    base.tentHours = String(setTentHours && setTentHours.value ? setTentHours.value : '18-08');
+    base.activeHours = String(
+      (setTourActiveTime && setTourActiveTime.value)
+        ? setTourActiveTime.value
+        : ((setClimateActiveTime && setClimateActiveTime.value) ? setClimateActiveTime.value : '10-16')
+    );
+    base.rideHours = base.activeHours;
+    try { delete base.tentHours; } catch (_) {}
     base.windWeighting = String(setWindWeighting && setWindWeighting.value ? setWindWeighting.value : 'relative');
     base.overlayMode = String(setOverlayMode && setOverlayMode.value ? setOverlayMode.value : 'temperature');
     return base;

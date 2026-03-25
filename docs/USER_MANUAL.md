@@ -18,6 +18,9 @@ Typical controls you can adjust (names may vary slightly in the UI):
 - **Start date**: first day of the tour
 - **Tour days**: how many days are visualized
 - **Weather stations separation / sampling step**: distance between sampled route points for weather symbols and summary statistics
+- **Active time**: the daytime window used where the app distinguishes activity-focused values from all-day values
+
+The sidebar can be resized by dragging its right edge. The same **Active time** value is available in both the Tour Planning and Climatic Map preference groups so the two modes stay aligned.
 
 ### 4) Fetch / refresh weather
 - Click the main **Fetch Weather** button.
@@ -52,10 +55,14 @@ The Tour hover tooltip labels these separately, so even a single-year selection 
 ### 1) Switch to Climatic Map
 Use the top mode switch (segmented control) to enter **Climatic Map**.
 
+If you want a compact explanation of how each displayed value is derived, open the **How Values Are Calculated** fold-out below Preferences in the sidebar, or see `docs/WEATHER_VALUE_REFERENCE.md`.
+
 ### 2) Choose layer + year
 A climate control box appears (bottom-right inside the map). It typically lets you choose:
 - **Layer** (e.g., Temperature (Ride), Rain (Ride), Wind, Comfort)
 - **Year** (selects which offline DB to query if you have per-year stores)
+
+The Preferences section also exposes **Active time** for Climatic Map. That setting matches the Tour Planning sidebar field, so changing it in one place updates the other.
 
 ### 3) Choose calendar day
 A timeline/slider at the bottom of the map lets you pick a day-of-year (month/day). The app then visualizes climatology for that day.
@@ -65,6 +72,8 @@ A timeline/slider at the bottom of the map lets you pick a day-of-year (month/da
 - Rain layers emphasize probability and typical precipitation.
 - Wind layers show wind direction and speed.
 - Comfort layers combine thresholds into a “ride comfort” heuristic.
+
+If you open **How Values Are Calculated**, the sidebar shows only the explanation that matches the current mode: the Climatic Map table in Climatic Map mode, and the Tour Planning table in Tour Planning mode.
 
 ## Troubleshooting (user-facing)
 - If the app shows missing data in Climate mode, confirm you have an offline DB available (see Installation Guide).
