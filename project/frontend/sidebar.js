@@ -62,15 +62,15 @@
     _currentMode() {
       try {
         const m = document.body && document.body.dataset ? String(document.body.dataset.mode || '') : '';
-        return m || 'tour';
+        return m || 'climate';
       } catch (_) {
-        return 'tour';
+        return 'climate';
       }
     }
 
     _applyContext(mode) {
       try {
-        const next = (mode === 'climate' || mode === 'tour') ? mode : (document.body.dataset.wmContext || 'tour');
+        const next = (mode === 'climate' || mode === 'tour') ? mode : (document.body.dataset.wmContext || 'climate');
         document.body.dataset.wmContext = next;
       } catch (_) {}
     }

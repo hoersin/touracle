@@ -6,6 +6,8 @@ import time
 import threading
 import pandas as pd
 import datetime as _dt
+import math
+import requests
 
 
 def _json_default(obj: Any):
@@ -154,6 +156,10 @@ _OFFLINE_STORE: Optional[Any] = None
 _OFFLINE_STORE_TRIED = False
 _OFFLINE_STORES_BY_YEAR: Dict[int, Any] = {}
 _OFFLINE_STORES_BY_YEAR_LOCK = threading.Lock()
+_OFFLINE_STORES_BY_PATH: Dict[str, Any] = {}
+_OFFLINE_STORES_BY_PATH_LOCK = threading.Lock()
+_REVERSE_GEOCODE_CACHE: Dict[tuple[float, float], dict[str, str]] = {}
+_REVERSE_GEOCODE_CACHE_LOCK = threading.Lock()
 
 
 def _offline_strict_enabled() -> bool:
@@ -256,6 +262,196 @@ def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
     return _get_offline_store()
 
 
+def _get_offline_store_for_path(path: Path | str | None) -> Optional[Any]:
+    if path is None or OfflineWeatherStore is None:
+        return None
+    try:
+        p = Path(path)
+    except Exception:
+        return None
+    key = str(p.resolve())
+    with _OFFLINE_STORES_BY_PATH_LOCK:
+        if key in _OFFLINE_STORES_BY_PATH:
+            return _OFFLINE_STORES_BY_PATH[key]
+    try:
+        if not p.exists():
+            return None
+        cfg = OfflineWeatherStore._load_config(p)  # type: ignore[attr-defined]
+        if cfg is None:
+            return None
+        store = OfflineWeatherStore(cfg)
+        with _OFFLINE_STORES_BY_PATH_LOCK:
+            _OFFLINE_STORES_BY_PATH[key] = store
+        return store
+    except Exception:
+        return None
+
+
+def _store_bbox(store: Any) -> tuple[float, float, float, float] | None:
+    try:
+        cfg = getattr(store, 'cfg', None)
+        bbox = getattr(cfg, 'bbox', None) if cfg is not None else None
+        if not bbox or len(bbox) != 4:
+            return None
+        return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    except Exception:
+        return None
+
+
+def _store_supports_year(store: Any, year: int) -> bool:
+    try:
+        cfg = getattr(store, 'cfg', None)
+        yrs = getattr(cfg, 'years', None) if cfg is not None else None
+        if yrs is None:
+            return True
+        ys, ye = yrs
+        return int(ys) <= int(year) <= int(ye)
+    except Exception:
+        return True
+
+
+def _store_covers_point(store: Any, lat: float, lon: float) -> bool:
+    bbox = _store_bbox(store)
+    if bbox is None:
+        return False
+    lat_min, lat_max, lon_min, lon_max = bbox
+    return lat_min <= float(lat) <= lat_max and lon_min <= float(lon) <= lon_max
+
+
+def _store_intersects_bbox(store: Any, lat_min: float, lat_max: float, lon_min: float, lon_max: float) -> bool:
+    bbox = _store_bbox(store)
+    if bbox is None:
+        return False
+    s_lat_min, s_lat_max, s_lon_min, s_lon_max = bbox
+    q_lat_min, q_lat_max = sorted((float(lat_min), float(lat_max)))
+    q_lon_min, q_lon_max = sorted((float(lon_min), float(lon_max)))
+    return not (
+        q_lat_max < s_lat_min
+        or q_lat_min > s_lat_max
+        or q_lon_max < s_lon_min
+        or q_lon_min > s_lon_max
+    )
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    try:
+        lat1r = math.radians(float(lat1))
+        lon1r = math.radians(float(lon1))
+        lat2r = math.radians(float(lat2))
+        lon2r = math.radians(float(lon2))
+        d_lat = lat2r - lat1r
+        d_lon = lon2r - lon1r
+        a = math.sin(d_lat / 2.0) ** 2 + math.cos(lat1r) * math.cos(lat2r) * math.sin(d_lon / 2.0) ** 2
+        return 6371.0 * (2.0 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a))))
+    except Exception:
+        return float('inf')
+
+
+def _distance_point_to_bbox_km(store: Any, lat: float, lon: float) -> float:
+    bbox = _store_bbox(store)
+    if bbox is None:
+        return float('inf')
+    lat_min, lat_max, lon_min, lon_max = bbox
+    clamped_lat = min(max(float(lat), lat_min), lat_max)
+    clamped_lon = min(max(float(lon), lon_min), lon_max)
+    return _haversine_km(float(lat), float(lon), clamped_lat, clamped_lon)
+
+
+def _resolve_offline_store_for_year(year: int | None, *, point: tuple[float, float] | None = None, bounds: tuple[float, float, float, float] | None = None) -> Optional[Any]:
+    primary = _get_offline_store_for_year(year)
+    explicit_candidates: list[Any] = []
+    try:
+        if year is not None:
+            y = int(year)
+            cache_dir = BASE_DIR / 'cache'
+            explicit_candidates.extend([
+                _get_offline_store_for_path(cache_dir / f'offline_weather_{y}.sqlite'),
+                _get_offline_store_for_path(cache_dir / f'offline_weather_{y}_wide.sqlite'),
+                _get_offline_store_for_path(cache_dir / 'offline_weather.sqlite'),
+            ])
+    except Exception:
+        pass
+    fallback = _get_offline_store()
+    candidates: list[Any] = []
+    seen: set[int] = set()
+    for store in [primary, *explicit_candidates, fallback]:
+        if store is None:
+            continue
+        try:
+            key = id(store)
+        except Exception:
+            key = 0
+        if key in seen:
+            continue
+        seen.add(key)
+        if year is not None and not _store_supports_year(store, int(year)):
+            continue
+        candidates.append(store)
+
+    if point is not None:
+      for store in candidates:
+          if _store_covers_point(store, float(point[0]), float(point[1])):
+              return store
+    if bounds is not None:
+      for store in candidates:
+          if _store_intersects_bbox(store, *bounds):
+              return store
+    return candidates[0] if candidates else None
+
+
+def _tile_id_for_point_or_edge(store: Any, lat: float, lon: float, *, max_distance_km: float = 1400.0) -> str | None:
+    try:
+        tile_id = store._tile_id_for_point(float(lat), float(lon))  # type: ignore[attr-defined]
+    except Exception:
+        tile_id = None
+    if tile_id:
+        return str(tile_id)
+    bbox = _store_bbox(store)
+    if bbox is None:
+        return None
+    if _distance_point_to_bbox_km(store, float(lat), float(lon)) > float(max_distance_km):
+        return None
+    lat_min, lat_max, lon_min, lon_max = bbox
+    try:
+        cfg = getattr(store, 'cfg', None)
+        tile_km = float(getattr(cfg, 'tile_km', 50.0)) if cfg is not None else 50.0
+    except Exception:
+        tile_km = 50.0
+    step_lat = max(1e-6, float(tile_km) / 111.32)
+    inner_lat_min = min(lat_max, lat_min + 0.5 * step_lat)
+    inner_lat_max = max(lat_min, lat_max - 0.5 * step_lat)
+    clamped_lat = min(max(float(lat), inner_lat_min), inner_lat_max)
+    c = max(0.05, math.cos(math.radians(clamped_lat)))
+    step_lon = max(1e-6, float(tile_km) / (111.32 * c))
+    inner_lon_min = min(lon_max, lon_min + 0.5 * step_lon)
+    inner_lon_max = max(lon_min, lon_max - 0.5 * step_lon)
+    clamped_lon = min(max(float(lon), inner_lon_min), inner_lon_max)
+    try:
+        tile_id = store._tile_id_for_point(clamped_lat, clamped_lon)  # type: ignore[attr-defined]
+    except Exception:
+        tile_id = None
+    return str(tile_id) if tile_id else None
+
+
+def _stores_union_bbox(stores: list[tuple[int, Any]]) -> tuple[float, float, float, float] | None:
+    lat_min = None
+    lat_max = None
+    lon_min = None
+    lon_max = None
+    for _year, store in stores or []:
+        bbox = _store_bbox(store)
+        if bbox is None:
+            continue
+        b_lat_min, b_lat_max, b_lon_min, b_lon_max = bbox
+        lat_min = b_lat_min if lat_min is None else min(lat_min, b_lat_min)
+        lat_max = b_lat_max if lat_max is None else max(lat_max, b_lat_max)
+        lon_min = b_lon_min if lon_min is None else min(lon_min, b_lon_min)
+        lon_max = b_lon_max if lon_max is None else max(lon_max, b_lon_max)
+    if None in (lat_min, lat_max, lon_min, lon_max):
+        return None
+    return (float(lat_min), float(lat_max), float(lon_min), float(lon_max))
+
+
 def _parse_mmdd_or_date(raw: str) -> tuple[int, int]:
     s = str(raw).strip()
     if len(s) == 10 and s[4] == '-' and s[7] == '-':
@@ -265,6 +461,255 @@ def _parse_mmdd_or_date(raw: str) -> tuple[int, int]:
         m, d = s.split('-', 1)
         return int(m), int(d)
     raise ValueError('Invalid date; expected YYYY-MM-DD or MM-DD')
+
+
+def _parse_years_csv(raw: str | None) -> list[int]:
+    if raw is None:
+        return []
+    out: list[int] = []
+    for part in str(raw).split(','):
+        s = str(part).strip()
+        if not s:
+            continue
+        try:
+            y = int(s)
+        except Exception:
+            continue
+        if 1900 <= y <= 2200:
+            out.append(int(y))
+    seen: set[int] = set()
+    uniq: list[int] = []
+    for y in out:
+        if y in seen:
+            continue
+        seen.add(y)
+        uniq.append(y)
+    return uniq
+
+
+def _normalize_climate_mode(raw: str | None) -> str:
+    mode_raw = str(raw or 'active').strip().lower()
+    if mode_raw in ('24h', 'full', 'full-day', 'full_day', 'day'):
+        return 'full_day'
+    return 'active'
+
+
+def _opt_float_arg(name: str) -> float | None:
+    v = request.args.get(name)
+    if v is None or str(v).strip() == '':
+        return None
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        x = float(value)
+    except Exception:
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _percentile(values: list[float], q: float) -> float | None:
+    xs = sorted(v for v in values if math.isfinite(v))
+    if not xs:
+        return None
+    if len(xs) == 1:
+        return float(xs[0])
+    qq = max(0.0, min(100.0, float(q))) / 100.0
+    pos = qq * (len(xs) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return float(xs[lo])
+    frac = pos - lo
+    return float(xs[lo] + (xs[hi] - xs[lo]) * frac)
+
+
+def _median_value(values: list[float]) -> float | None:
+    return _percentile(values, 50.0)
+
+
+def _mean_value(values: list[float]) -> float | None:
+    xs = [v for v in values if math.isfinite(v)]
+    if not xs:
+        return None
+    return float(sum(xs) / len(xs))
+
+
+def _circular_mean_deg(values: list[float]) -> float | None:
+    xs = [v for v in values if math.isfinite(v)]
+    if not xs:
+        return None
+    sum_cos = 0.0
+    sum_sin = 0.0
+    for deg in xs:
+        rad = math.radians(float(deg))
+        sum_cos += math.cos(rad)
+        sum_sin += math.sin(rad)
+    if abs(sum_cos) < 1e-12 and abs(sum_sin) < 1e-12:
+        return None
+    out = math.degrees(math.atan2(sum_sin, sum_cos))
+    if out < 0:
+        out += 360.0
+    return float(out)
+
+
+def _lookup_tile_center(store: Any, tile_id: str) -> tuple[float | None, float | None]:
+    try:
+        lock = getattr(store, '_lock', None)
+        conn = getattr(store, '_conn', None)
+        if conn is None:
+            return (None, None)
+        sql = 'SELECT lat, lon FROM tiles WHERE tile_id = ? LIMIT 1'
+        if lock is None:
+            row = conn.execute(sql, (str(tile_id),)).fetchone()
+        else:
+            with lock:
+                row = conn.execute(sql, (str(tile_id),)).fetchone()
+        if not row:
+            return (None, None)
+        return (_finite_float(row[0]), _finite_float(row[1]))
+    except Exception:
+        return (None, None)
+
+
+def _format_location_label(lat: float | None, lon: float | None) -> str:
+    if lat is None or lon is None:
+        return 'selected location'
+    return f'near {lat:.2f}, {lon:.2f}'
+
+
+def _normalize_location_country(code: Any) -> str | None:
+    try:
+        s = str(code or '').strip().upper()
+        return s[:2] if s else None
+    except Exception:
+        return None
+
+
+def _pick_reverse_geocode_name(payload: Any) -> tuple[str | None, str | None]:
+    try:
+        if not isinstance(payload, dict):
+            return (None, None)
+        address = payload.get('address') if isinstance(payload.get('address'), dict) else {}
+        keys = (
+            'city',
+            'town',
+            'municipality',
+            'village',
+            'suburb',
+            'city_district',
+            'county',
+            'state_district',
+        )
+        for key in keys:
+            raw = address.get(key)
+            if raw:
+                name = str(raw).strip()
+                if name:
+                    return (name, _normalize_location_country(address.get('country_code')))
+        display_name = str(payload.get('name') or payload.get('display_name') or '').strip()
+        if display_name:
+            first = display_name.split(',')[0].strip()
+            if first:
+                return (first, _normalize_location_country(address.get('country_code')))
+        return (None, _normalize_location_country(address.get('country_code')))
+    except Exception:
+        return (None, None)
+
+
+def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str, str] | None:
+    try:
+        if lat is None or lon is None:
+            return None
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except Exception:
+        return None
+
+    cache_key = (round(lat_f, 3), round(lon_f, 3))
+    with _REVERSE_GEOCODE_CACHE_LOCK:
+        cached = _REVERSE_GEOCODE_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
+    try:
+        resp = requests.get(
+            'https://nominatim.openstreetmap.org/reverse',
+            params={
+                'format': 'jsonv2',
+                'lat': f'{lat_f:.6f}',
+                'lon': f'{lon_f:.6f}',
+                'zoom': '10',
+                'addressdetails': '1',
+            },
+            headers={
+                'User-Agent': 'WeatherMap/1.0 (weather profile reverse geocoding)'
+            },
+            timeout=3.5,
+        )
+        if not resp.ok:
+            return None
+        payload = resp.json()
+        name, country = _pick_reverse_geocode_name(payload)
+        if not name:
+            return None
+        out = {
+            'name': str(name),
+            'country': str(country or ''),
+            'label': f'{name} ({country})' if country else str(name),
+        }
+        with _REVERSE_GEOCODE_CACHE_LOCK:
+            if len(_REVERSE_GEOCODE_CACHE) >= 512:
+                try:
+                    first_key = next(iter(_REVERSE_GEOCODE_CACHE.keys()))
+                    del _REVERSE_GEOCODE_CACHE[first_key]
+                except Exception:
+                    pass
+            _REVERSE_GEOCODE_CACHE[cache_key] = dict(out)
+        return out
+    except Exception:
+        return None
+
+
+def _is_lucky_profile_day(temp_c: float | None, rain_mm: float | None, wind_ms: float | None, *, temp_cold: float, temp_hot: float, rain_max: float, wind_max: float) -> bool:
+    if temp_c is None or rain_mm is None or wind_ms is None:
+        return False
+    return (
+        float(temp_cold) <= float(temp_c) <= float(temp_hot)
+        and float(rain_mm) <= float(rain_max)
+        and float(wind_ms) <= float(wind_max)
+    )
+
+
+@app.route('/api/location_label')
+def api_location_label():
+    try:
+        lat = float(request.args.get('lat', ''))
+        lon = float(request.args.get('lon', ''))
+    except Exception:
+        return jsonify({'error': 'Invalid lat/lon'}), 400
+
+    resolved = _reverse_geocode_location(lat, lon)
+    if not resolved:
+        return jsonify({
+            'lat': lat,
+            'lon': lon,
+            'location': None,
+            'location_name': None,
+            'location_country': None,
+        })
+
+    return jsonify({
+        'lat': lat,
+        'lon': lon,
+        'location': str(resolved.get('label') or ''),
+        'location_name': str(resolved.get('name') or ''),
+        'location_country': str(resolved.get('country') or ''),
+    })
 
 
 @app.route('/api/strategic_grid')
@@ -421,7 +866,10 @@ def api_strategic_grid():
     stores_by_year: list[tuple[int, Any]] = []
     for y in years_selected:
         try:
-            st = _get_offline_store_for_year(int(y))
+            st = _resolve_offline_store_for_year(
+                int(y),
+                bounds=(float(lat_min_q), float(lat_max_q), float(lon_min_q), float(lon_max_q)),
+            )
         except Exception:
             st = None
         if st is not None:
@@ -435,11 +883,11 @@ def api_strategic_grid():
 
     try:
         cfg = getattr(store, 'cfg', None)
-        bbox = cfg.bbox if cfg is not None else None
+        bbox = _stores_union_bbox(stores_by_year) or (cfg.bbox if cfg is not None else None)
         tile_km = float(cfg.tile_km) if cfg is not None else 50.0
         years = cfg.years if cfg is not None else None
     except Exception:
-        bbox = None
+        bbox = _stores_union_bbox(stores_by_year)
         tile_km = 50.0
         years = None
 
@@ -638,6 +1086,244 @@ def api_strategic_grid():
             } if stores_by_year else ({"start": int(years[0]), "end": int(years[1])} if years else None),
             "count": int(len(pts)),
             "points": pts,
+        }
+    )
+
+
+@app.route('/api/weather_profile')
+def api_weather_profile():
+    if OfflineWeatherStore is None:
+        return jsonify({"error": "Offline store unavailable"}), 400
+
+    try:
+        lat = float(request.args.get('lat', ''))
+        lon = float(request.args.get('lon', ''))
+    except Exception:
+        return jsonify({"error": "Missing or invalid lat/lon"}), 400
+
+    years_selected = _parse_years_csv(request.args.get('years'))
+    if not years_selected:
+        try:
+            year_raw = request.args.get('year')
+            years_selected = [int(year_raw)] if year_raw is not None else [2025]
+        except Exception:
+            years_selected = [2025]
+
+    mode = _normalize_climate_mode(request.args.get('mode'))
+    start_date_raw = str(request.args.get('start_date') or '').strip()
+    end_date_raw = str(request.args.get('end_date') or '').strip()
+    if not start_date_raw or not end_date_raw:
+        return jsonify({"error": "Missing start_date/end_date"}), 400
+
+    try:
+        start_in = _dt.date.fromisoformat(start_date_raw)
+        end_in = _dt.date.fromisoformat(end_date_raw)
+    except Exception:
+        return jsonify({"error": "Invalid start_date/end_date"}), 400
+
+    anchor_year = int(max(years_selected))
+    try:
+        start_date = _dt.date(anchor_year, int(start_in.month), int(start_in.day))
+        end_date = _dt.date(anchor_year, int(end_in.month), int(end_in.day))
+    except Exception:
+        return jsonify({"error": "Date range is not valid for selected years"}), 400
+    if end_date < start_date:
+        return jsonify({"error": "end_date must be on or after start_date"}), 400
+
+    temp_cold = _opt_float_arg('lucky_temp_cold')
+    temp_hot = _opt_float_arg('lucky_temp_hot')
+    rain_max = _opt_float_arg('lucky_rain_max')
+    wind_max = _opt_float_arg('lucky_wind_max')
+    if temp_cold is None:
+        temp_cold = 5.0
+    if temp_hot is None:
+        temp_hot = 30.0
+    if rain_max is None:
+        rain_max = 10.0
+    if wind_max is None:
+        wind_max = 4.0
+
+    stores_by_year: list[tuple[int, Any, str]] = []
+    tile_center_lat = None
+    tile_center_lon = None
+    for y in years_selected:
+        try:
+            store = _resolve_offline_store_for_year(int(y), point=(float(lat), float(lon)))
+        except Exception:
+            store = None
+        if store is None:
+            continue
+        tile_id = _tile_id_for_point_or_edge(store, float(lat), float(lon))
+        if not tile_id:
+            continue
+        if tile_center_lat is None or tile_center_lon is None:
+            tlat, tlon = _lookup_tile_center(store, str(tile_id))
+            tile_center_lat = tlat if tlat is not None else tile_center_lat
+            tile_center_lon = tlon if tlon is not None else tile_center_lon
+        stores_by_year.append((int(y), store, str(tile_id)))
+
+    if not stores_by_year:
+        return jsonify({"error": "Selected point is outside offline weather coverage"}), 400
+
+    total_days = (end_date - start_date).days + 1
+    series: list[dict[str, Any]] = []
+    summary_temps: list[float] = []
+    summary_rains: list[float] = []
+    summary_winds: list[float] = []
+    summary_dirs: list[float] = []
+    summary_temp_p25s: list[float] = []
+    summary_temp_p75s: list[float] = []
+    lucky_days = 0
+    rain_days = 0
+    calm_days = 0
+
+    for idx in range(total_days):
+        d = start_date + _dt.timedelta(days=idx)
+        day_temp_vals: list[float] = []
+        day_temp_low_vals: list[float] = []
+        day_temp_high_vals: list[float] = []
+        day_rain_vals: list[float] = []
+        day_wind_vals: list[float] = []
+        day_dir_vals: list[float] = []
+        day_lucky_votes = 0
+        day_samples = 0
+
+        for _year, store, tile_id in stores_by_year:
+            try:
+                stats = store.get_stats_for_tile(tile_id, int(d.month), int(d.day))
+            except Exception:
+                stats = None
+            if not stats:
+                continue
+
+            if mode == 'full_day':
+                temp_val = _finite_float(stats.get('temperature_c'))
+                temp_low = _finite_float(stats.get('temp_hist_p25'))
+                temp_high = _finite_float(stats.get('temp_hist_p75'))
+            else:
+                temp_val = _finite_float(stats.get('temp_day_median'))
+                temp_low = _finite_float(stats.get('temp_day_p25'))
+                temp_high = _finite_float(stats.get('temp_day_p75'))
+                if temp_low is None:
+                    temp_low = _finite_float(stats.get('temp_hist_p25'))
+                if temp_high is None:
+                    temp_high = _finite_float(stats.get('temp_hist_p75'))
+            if temp_val is None and temp_low is not None and temp_high is not None:
+                temp_val = 0.5 * (temp_low + temp_high)
+
+            rain_val = _finite_float(stats.get('precipitation_mm'))
+            if rain_val is None:
+                rain_val = _finite_float(stats.get('rain_typical_mm'))
+            wind_speed = _finite_float(stats.get('wind_speed_ms'))
+            wind_dir = _finite_float(stats.get('wind_dir_deg'))
+
+            if temp_val is not None:
+                day_temp_vals.append(temp_val)
+            if temp_low is not None:
+                day_temp_low_vals.append(temp_low)
+            if temp_high is not None:
+                day_temp_high_vals.append(temp_high)
+            if rain_val is not None:
+                day_rain_vals.append(max(0.0, rain_val))
+            if wind_speed is not None:
+                day_wind_vals.append(max(0.0, wind_speed))
+            if wind_dir is not None:
+                day_dir_vals.append(wind_dir)
+
+            if _is_lucky_profile_day(
+                temp_val,
+                rain_val,
+                wind_speed,
+                temp_cold=float(temp_cold),
+                temp_hot=float(temp_hot),
+                rain_max=float(rain_max),
+                wind_max=float(wind_max),
+            ):
+                day_lucky_votes += 1
+            day_samples += 1
+
+        temp_series = _median_value(day_temp_vals)
+        temp_p25 = _percentile(day_temp_vals, 25.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_low_vals)
+        temp_p75 = _percentile(day_temp_vals, 75.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_high_vals)
+        rain_series = _mean_value(day_rain_vals)
+        wind_speed_series = _mean_value(day_wind_vals)
+        wind_dir_series = _circular_mean_deg(day_dir_vals)
+        lucky = bool(day_samples > 0 and day_lucky_votes >= max(1, math.ceil(day_samples / 2.0)))
+
+        if temp_series is not None:
+            summary_temps.append(temp_series)
+        if rain_series is not None:
+            summary_rains.append(rain_series)
+            if rain_series >= 1.0:
+                rain_days += 1
+        if wind_speed_series is not None:
+            summary_winds.append(wind_speed_series)
+            if wind_speed_series <= 2.0:
+                calm_days += 1
+        if wind_dir_series is not None:
+            summary_dirs.append(wind_dir_series)
+        if temp_p25 is not None:
+            summary_temp_p25s.append(temp_p25)
+        if temp_p75 is not None:
+            summary_temp_p75s.append(temp_p75)
+        if lucky:
+            lucky_days += 1
+
+        series.append(
+            {
+                "day_index": int(idx + 1),
+                "date": d.isoformat(),
+                "temp": temp_series,
+                "temp_p25": temp_p25,
+                "temp_p75": temp_p75,
+                "rain": rain_series,
+                "wind_speed": wind_speed_series,
+                "wind_dir": wind_dir_series,
+                "lucky": lucky,
+            }
+        )
+
+    if not series:
+        return jsonify({"error": "No profile data available for selected point"}), 404
+
+    resolved_location = _reverse_geocode_location(float(lat), float(lon))
+    resolved_label = resolved_location.get('label') if isinstance(resolved_location, dict) else None
+
+    summary = {
+        "temp_mean": _mean_value(summary_temps),
+        "temp_min": min(summary_temps) if summary_temps else None,
+        "temp_max": max(summary_temps) if summary_temps else None,
+        "rain_mean": _mean_value(summary_rains),
+        "rain_sum": float(sum(summary_rains)) if summary_rains else 0.0,
+        "rain_days": int(rain_days),
+        "wind_speed": _mean_value(summary_winds),
+        "wind_dir": _circular_mean_deg(summary_dirs),
+        "calm_days": int(calm_days),
+        "lucky_days": int(lucky_days),
+        "total_days": int(total_days),
+        "typical_temp_min": _mean_value(summary_temp_p25s),
+        "typical_temp_max": _mean_value(summary_temp_p75s),
+        "typical_rain": _median_value(summary_rains),
+    }
+
+    return jsonify(
+        {
+            "meta": {
+                "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
+                "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
+                "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
+                "point": {"lat": float(lat), "lon": float(lon)},
+                "tile_center": {
+                    "lat": tile_center_lat,
+                    "lon": tile_center_lon,
+                },
+                "years": [int(y) for (y, _store, _tile) in stores_by_year],
+                "mode": str(mode),
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat(),
+            },
+            "summary": summary,
+            "series": series,
         }
     )
 

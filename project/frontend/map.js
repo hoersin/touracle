@@ -35,6 +35,9 @@
   });
   let _activeBaseLayer = _osmTiles;
   _activeBaseLayer.addTo(map);
+  try {
+    map.setView([48.2, 11.6], 5);
+  } catch (_) {}
 
   function fmt(num, digits = 1) {
     return (num === null || num === undefined) ? '-' : Number(num).toFixed(digits);
@@ -43,9 +46,9 @@
   function _getAppMode() {
     try {
       const m = document.body && document.body.dataset ? String(document.body.dataset.mode || '') : '';
-      return (m === 'climate' || m === 'tour' || m === 'settings') ? m : 'tour';
+      return (m === 'climate' || m === 'tour' || m === 'settings') ? m : 'climate';
     } catch (_) {
-      return 'tour';
+      return 'climate';
     }
   }
 
@@ -215,8 +218,8 @@
   const setWindDensity = document.getElementById('setWindDensity');
   const setAnimSpeed = document.getElementById('setAnimSpeed');
   const setGridKm = document.getElementById('setGridKm');
-  const setTourActiveTime = document.getElementById('setTourActiveTime');
-  const setClimateActiveTime = document.getElementById('setClimateActiveTime');
+  const setActiveHourStart = document.getElementById('setActiveHourStart');
+  const setActiveHourEnd = document.getElementById('setActiveHourEnd');
   const setWindWeighting = document.getElementById('setWindWeighting');
   const setOverlayMode = document.getElementById('setOverlayMode');
 
@@ -258,12 +261,174 @@
   let profileCursorCtx = profileCursorCanvas ? profileCursorCanvas.getContext('2d') : null;
   const profileTooltip = document.getElementById('profileTooltip');
   const profilePanel = document.getElementById('profilePanel');
+  const tourSummaryPanel = document.getElementById('tourSummary');
   const tourSummaryBadges = document.getElementById('tourSummaryBadges');
+  const tourSummaryBadgesItems = document.getElementById('tourSummaryBadgesItems');
+  const tourSummaryTooltip = document.getElementById('tourSummaryTooltip');
   const profileLegendHost = document.getElementById('profileLegendHost');
   const mapEl = document.getElementById('map');
   const overlayContainer = document.getElementById('overlayContainer');
   const resizeHandle = document.getElementById('profileResizeHandle');
   let LAST_PROFILE = null;
+  let LAST_CLIMATE_PROFILE = null;
+  const CLIMATE_PROFILE_HEIGHT = 280;
+  const CLIMATE_CLICK_DEBOUNCE_MS = 100;
+  const CLIMATE_PROFILE_FETCH_TIMEOUT_MS = 15000;
+  const CLIMATE_PROFILE_CACHE_MAX = 128;
+  const CLIMATE_PROFILE_CACHE = new Map();
+  const CLIMATE_PROFILE_STATE = {
+    selectedPoint: null,
+    clickTimer: null,
+    fetchAbort: null,
+    selectedMarker: null,
+  };
+  let CLIMATE_PROFILE_TOOLTIP = null;
+  let CLIMATE_PROFILE_GEOMETRY = null;
+  const CLIMATE_PLACE_CANDIDATES = [
+    { name: 'Reykjavik', country: 'IS', lat: 64.1466, lon: -21.9426 },
+    { name: 'Akureyri', country: 'IS', lat: 65.6885, lon: -18.1262 },
+    { name: 'Dublin', country: 'IE', lat: 53.3498, lon: -6.2603 },
+    { name: 'Cork', country: 'IE', lat: 51.8985, lon: -8.4756 },
+    { name: 'Galway', country: 'IE', lat: 53.2707, lon: -9.0568 },
+    { name: 'Belfast', country: 'UK', lat: 54.5973, lon: -5.9301 },
+    { name: 'Glasgow', country: 'UK', lat: 55.8642, lon: -4.2518 },
+    { name: 'Edinburgh', country: 'UK', lat: 55.9533, lon: -3.1883 },
+    { name: 'Manchester', country: 'UK', lat: 53.4808, lon: -2.2426 },
+    { name: 'Birmingham', country: 'UK', lat: 52.4862, lon: -1.8904 },
+    { name: 'London', country: 'UK', lat: 51.5072, lon: -0.1276 },
+    { name: 'Southampton', country: 'UK', lat: 50.9097, lon: -1.4044 },
+    { name: 'Prague', country: 'CZ', lat: 50.0755, lon: 14.4378 },
+    { name: 'Plzen', country: 'CZ', lat: 49.7384, lon: 13.3736 },
+    { name: 'Vienna', country: 'AT', lat: 48.2082, lon: 16.3738 },
+    { name: 'Linz', country: 'AT', lat: 48.3069, lon: 14.2858 },
+    { name: 'Salzburg', country: 'AT', lat: 47.8095, lon: 13.055 },
+    { name: 'Innsbruck', country: 'AT', lat: 47.2692, lon: 11.4041 },
+    { name: 'Brno', country: 'CZ', lat: 49.1951, lon: 16.6068 },
+    { name: 'Ostrava', country: 'CZ', lat: 49.8209, lon: 18.2625 },
+    { name: 'Ceske Budejovice', country: 'CZ', lat: 48.9747, lon: 14.4749 },
+    { name: 'Bratislava', country: 'SK', lat: 48.1486, lon: 17.1077 },
+    { name: 'Kosice', country: 'SK', lat: 48.7164, lon: 21.2611 },
+    { name: 'Budapest', country: 'HU', lat: 47.4979, lon: 19.0402 },
+    { name: 'Debrecen', country: 'HU', lat: 47.5316, lon: 21.6273 },
+    { name: 'Pecs', country: 'HU', lat: 46.0727, lon: 18.2323 },
+    { name: 'Krakow', country: 'PL', lat: 50.0647, lon: 19.945 },
+    { name: 'Warsaw', country: 'PL', lat: 52.2297, lon: 21.0122 },
+    { name: 'Wroclaw', country: 'PL', lat: 51.1079, lon: 17.0385 },
+    { name: 'Gdansk', country: 'PL', lat: 54.352, lon: 18.6466 },
+    { name: 'Poznan', country: 'PL', lat: 52.4064, lon: 16.9252 },
+    { name: 'Lodz', country: 'PL', lat: 51.7592, lon: 19.456 },
+    { name: 'Katowice', country: 'PL', lat: 50.2649, lon: 19.0238 },
+    { name: 'Berlin', country: 'DE', lat: 52.52, lon: 13.405 },
+    { name: 'Munich', country: 'DE', lat: 48.1374, lon: 11.5755 },
+    { name: 'Nuremberg', country: 'DE', lat: 49.4521, lon: 11.0767 },
+    { name: 'Dresden', country: 'DE', lat: 51.0504, lon: 13.7373 },
+    { name: 'Augsburg', country: 'DE', lat: 48.3705, lon: 10.8978 },
+    { name: 'Regensburg', country: 'DE', lat: 49.0134, lon: 12.1016 },
+    { name: 'Passau', country: 'DE', lat: 48.5667, lon: 13.4319 },
+    { name: 'Ulm', country: 'DE', lat: 48.4011, lon: 9.9876 },
+    { name: 'Hamburg', country: 'DE', lat: 53.5511, lon: 9.9937 },
+    { name: 'Cologne', country: 'DE', lat: 50.9375, lon: 6.9603 },
+    { name: 'Milan', country: 'IT', lat: 45.4642, lon: 9.19 },
+    { name: 'Turin', country: 'IT', lat: 45.0703, lon: 7.6869 },
+    { name: 'Bologna', country: 'IT', lat: 44.4949, lon: 11.3426 },
+    { name: 'Rome', country: 'IT', lat: 41.9028, lon: 12.4964 },
+    { name: 'Florence', country: 'IT', lat: 43.7696, lon: 11.2558 },
+    { name: 'Genoa', country: 'IT', lat: 44.4056, lon: 8.9463 },
+    { name: 'Verona', country: 'IT', lat: 45.4384, lon: 10.9916 },
+    { name: 'Padua', country: 'IT', lat: 45.4064, lon: 11.8768 },
+    { name: 'Trieste', country: 'IT', lat: 45.6495, lon: 13.7768 },
+    { name: 'Bolzano', country: 'IT', lat: 46.4983, lon: 11.3548 },
+    { name: 'Pisa', country: 'IT', lat: 43.7228, lon: 10.4017 },
+    { name: 'Rimini', country: 'IT', lat: 44.0678, lon: 12.5695 },
+    { name: 'Ancona', country: 'IT', lat: 43.6158, lon: 13.5189 },
+    { name: 'Naples', country: 'IT', lat: 40.8518, lon: 14.2681 },
+    { name: 'Bari', country: 'IT', lat: 41.1171, lon: 16.8719 },
+    { name: 'Cagliari', country: 'IT', lat: 39.2238, lon: 9.1217 },
+    { name: 'Palermo', country: 'IT', lat: 38.1157, lon: 13.3615 },
+    { name: 'Ajaccio', country: 'FR', lat: 41.9192, lon: 8.7386 },
+    { name: 'Bastia', country: 'FR', lat: 42.6973, lon: 9.4509 },
+    { name: 'Nice', country: 'FR', lat: 43.7102, lon: 7.262 },
+    { name: 'Marseille', country: 'FR', lat: 43.2965, lon: 5.3698 },
+    { name: 'Toulon', country: 'FR', lat: 43.1242, lon: 5.928 },
+    { name: 'Montpellier', country: 'FR', lat: 43.6119, lon: 3.8772 },
+    { name: 'Perpignan', country: 'FR', lat: 42.6887, lon: 2.8948 },
+    { name: 'Toulouse', country: 'FR', lat: 43.6047, lon: 1.4442 },
+    { name: 'Pau', country: 'FR', lat: 43.2951, lon: -0.3708 },
+    { name: 'Biarritz', country: 'FR', lat: 43.4832, lon: -1.5586 },
+    { name: 'Bayonne', country: 'FR', lat: 43.4929, lon: -1.4748 },
+    { name: 'Lyon', country: 'FR', lat: 45.764, lon: 4.8357 },
+    { name: 'Grenoble', country: 'FR', lat: 45.1885, lon: 5.7245 },
+    { name: 'Clermont-Ferrand', country: 'FR', lat: 45.7772, lon: 3.087 },
+    { name: 'Bordeaux', country: 'FR', lat: 44.8378, lon: -0.5792 },
+    { name: 'Paris', country: 'FR', lat: 48.8566, lon: 2.3522 },
+    { name: 'Logrono', country: 'ES', lat: 42.4627, lon: -2.4449 },
+    { name: 'Pamplona', country: 'ES', lat: 42.8125, lon: -1.6458 },
+    { name: 'Barcelona', country: 'ES', lat: 41.3874, lon: 2.1686 },
+    { name: 'Girona', country: 'ES', lat: 41.9794, lon: 2.8214 },
+    { name: 'Tarragona', country: 'ES', lat: 41.1189, lon: 1.2445 },
+    { name: 'Valencia', country: 'ES', lat: 39.4699, lon: -0.3763 },
+    { name: 'Alicante', country: 'ES', lat: 38.3452, lon: -0.481 },
+    { name: 'Zaragoza', country: 'ES', lat: 41.6488, lon: -0.8891 },
+    { name: 'Burgos', country: 'ES', lat: 42.3439, lon: -3.6969 },
+    { name: 'Leon', country: 'ES', lat: 42.5987, lon: -5.5671 },
+    { name: 'San Sebastian', country: 'ES', lat: 43.3183, lon: -1.9812 },
+    { name: 'Madrid', country: 'ES', lat: 40.4168, lon: -3.7038 },
+    { name: 'Bilbao', country: 'ES', lat: 43.263, lon: -2.935 },
+    { name: 'Seville', country: 'ES', lat: 37.3891, lon: -5.9845 },
+    { name: 'Lisbon', country: 'PT', lat: 38.7223, lon: -9.1393 },
+    { name: 'Porto', country: 'PT', lat: 41.1579, lon: -8.6291 },
+    { name: 'Coimbra', country: 'PT', lat: 40.2033, lon: -8.4103 },
+    { name: 'Faro', country: 'PT', lat: 37.0194, lon: -7.9304 },
+    { name: 'Ljubljana', country: 'SI', lat: 46.0569, lon: 14.5058 },
+    { name: 'Zagreb', country: 'HR', lat: 45.815, lon: 15.9819 },
+    { name: 'Rijeka', country: 'HR', lat: 45.3271, lon: 14.4422 },
+    { name: 'Split', country: 'HR', lat: 43.5081, lon: 16.4402 },
+    { name: 'Zadar', country: 'HR', lat: 44.1194, lon: 15.2314 },
+    { name: 'Dubrovnik', country: 'HR', lat: 42.6507, lon: 18.0944 },
+    { name: 'Sarajevo', country: 'BA', lat: 43.8563, lon: 18.4131 },
+    { name: 'Mostar', country: 'BA', lat: 43.3438, lon: 17.8078 },
+    { name: 'Belgrade', country: 'RS', lat: 44.7866, lon: 20.4489 },
+    { name: 'Novi Sad', country: 'RS', lat: 45.2671, lon: 19.8335 },
+    { name: 'Nis', country: 'RS', lat: 43.3209, lon: 21.8958 },
+    { name: 'Skopje', country: 'MK', lat: 41.9981, lon: 21.4254 },
+    { name: 'Tirana', country: 'AL', lat: 41.3275, lon: 19.8187 },
+    { name: 'Athens', country: 'GR', lat: 37.9838, lon: 23.7275 },
+    { name: 'Thessaloniki', country: 'GR', lat: 40.6401, lon: 22.9444 },
+    { name: 'Sofia', country: 'BG', lat: 42.6977, lon: 23.3219 },
+    { name: 'Varna', country: 'BG', lat: 43.2141, lon: 27.9147 },
+    { name: 'Bucharest', country: 'RO', lat: 44.4268, lon: 26.1025 },
+    { name: 'Cluj-Napoca', country: 'RO', lat: 46.7712, lon: 23.6236 },
+    { name: 'Brasov', country: 'RO', lat: 45.6579, lon: 25.6012 },
+    { name: 'Timisoara', country: 'RO', lat: 45.7489, lon: 21.2087 },
+    { name: 'Iasi', country: 'RO', lat: 47.1585, lon: 27.6014 },
+    { name: 'Lviv', country: 'UA', lat: 49.8397, lon: 24.0297 },
+    { name: 'Uzhhorod', country: 'UA', lat: 48.6208, lon: 22.2879 },
+    { name: 'Chernivtsi', country: 'UA', lat: 48.2915, lon: 25.9403 },
+    { name: 'Odessa', country: 'UA', lat: 46.4825, lon: 30.7233 },
+    { name: 'Vilnius', country: 'LT', lat: 54.6872, lon: 25.2797 },
+    { name: 'Kaunas', country: 'LT', lat: 54.8985, lon: 23.9036 },
+    { name: 'Riga', country: 'LV', lat: 56.9496, lon: 24.1052 },
+    { name: 'Tallinn', country: 'EE', lat: 59.437, lon: 24.7536 },
+    { name: 'Helsinki', country: 'FI', lat: 60.1699, lon: 24.9384 },
+    { name: 'Turku', country: 'FI', lat: 60.4518, lon: 22.2666 },
+    { name: 'Tampere', country: 'FI', lat: 61.4978, lon: 23.761 },
+    { name: 'Oslo', country: 'NO', lat: 59.9139, lon: 10.7522 },
+    { name: 'Bergen', country: 'NO', lat: 60.3913, lon: 5.3221 },
+    { name: 'Stockholm', country: 'SE', lat: 59.3293, lon: 18.0686 },
+    { name: 'Gothenburg', country: 'SE', lat: 57.7089, lon: 11.9746 },
+    { name: 'Malmo', country: 'SE', lat: 55.605, lon: 13.0038 },
+    { name: 'Zurich', country: 'CH', lat: 47.3769, lon: 8.5417 },
+    { name: 'Geneva', country: 'CH', lat: 46.2044, lon: 6.1432 },
+    { name: 'Lausanne', country: 'CH', lat: 46.5197, lon: 6.6323 },
+    { name: 'Freiburg', country: 'DE', lat: 47.999, lon: 7.8421 },
+    { name: 'Basel', country: 'CH', lat: 47.5596, lon: 7.5886 },
+    { name: 'Amsterdam', country: 'NL', lat: 52.3676, lon: 4.9041 },
+    { name: 'Brussels', country: 'BE', lat: 50.8503, lon: 4.3517 },
+    { name: 'Antwerp', country: 'BE', lat: 51.2194, lon: 4.4025 },
+    { name: 'Luxembourg', country: 'LU', lat: 49.6116, lon: 6.1319 },
+    { name: 'Copenhagen', country: 'DK', lat: 55.6761, lon: 12.5683 },
+    { name: 'Andorra la Vella', country: 'AD', lat: 42.5063, lon: 1.5218 },
+  ];
 
   function _updateStrategicTimelineCssVar() {
     try {
@@ -636,6 +801,825 @@
       const mode = getWeatherQualityMode();
       fetchWeatherBtn.textContent = (mode === 'best') ? 'Get Multi-year Weather Data' : 'Get Weather Data';
     } catch (_) {}
+  }
+
+  function _cacheClimateProfileSet(key, value) {
+    try {
+      if (CLIMATE_PROFILE_CACHE.has(key)) CLIMATE_PROFILE_CACHE.delete(key);
+      CLIMATE_PROFILE_CACHE.set(key, value);
+      while (CLIMATE_PROFILE_CACHE.size > CLIMATE_PROFILE_CACHE_MAX) {
+        const oldest = CLIMATE_PROFILE_CACHE.keys().next().value;
+        if (oldest === undefined) break;
+        CLIMATE_PROFILE_CACHE.delete(oldest);
+      }
+    } catch (_) {}
+  }
+
+  function _cacheClimateProfileGet(key) {
+    try {
+      if (!CLIMATE_PROFILE_CACHE.has(key)) return null;
+      const value = CLIMATE_PROFILE_CACHE.get(key);
+      CLIMATE_PROFILE_CACHE.delete(key);
+      CLIMATE_PROFILE_CACHE.set(key, value);
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _climateProfileIsActive() {
+    return _getAppMode() === 'climate';
+  }
+
+  function _reflowBottomLayout() {
+    try {
+      const tsdbH = tourSummaryPanel ? (tourSummaryPanel.offsetHeight || 64) : 64;
+      const currentProfileH = profilePanel ? (profilePanel.offsetHeight || CLIMATE_PROFILE_HEIGHT) : CLIMATE_PROFILE_HEIGHT;
+      if (mapEl) {
+        mapEl.style.height = `calc(100% - ${currentProfileH + tsdbH}px)`;
+        const rect = mapEl.getBoundingClientRect();
+        if (!rect.height || rect.height < 200) {
+          mapEl.style.height = `${Math.max(220, window.innerHeight - (currentProfileH + tsdbH))}px`;
+        }
+      }
+      try { if (map && map.invalidateSize) map.invalidateSize(true); } catch (_) {}
+    } catch (_) {}
+  }
+
+  function _setBottomPanelUiMode(mode) {
+    const climate = (String(mode || '') === 'climate');
+    try {
+      if (profileTooltip) {
+        profileTooltip.style.display = climate ? 'none' : 'block';
+        if (climate) {
+          profileTooltip.style.visibility = 'hidden';
+          profileTooltip.style.opacity = '0';
+        }
+      }
+    } catch (_) {}
+    try {
+      if (profileOverlaySelect) {
+        profileOverlaySelect.style.display = climate ? 'none' : '';
+      }
+    } catch (_) {}
+    try {
+      if (profileLegendHost && !climate) {
+        profileLegendHost.style.alignItems = '';
+        profileLegendHost.style.gap = '';
+        profileLegendHost.style.padding = '';
+        profileLegendHost.style.border = '';
+        profileLegendHost.style.background = '';
+        profileLegendHost.style.boxShadow = '';
+        profileLegendHost.style.fontSize = '';
+        profileLegendHost.style.marginLeft = '';
+      }
+    } catch (_) {}
+    try {
+      if (tourSummaryTooltip) tourSummaryTooltip.style.display = 'none';
+    } catch (_) {}
+  }
+
+  function _fmtIsoDayMonthCompact(iso) {
+    try {
+      const s = String(iso || '');
+      if (s.length >= 10) return `${s.slice(8, 10)}.${s.slice(5, 7)}`;
+    } catch (_) {}
+    return '—';
+  }
+
+  function _fmtPercent(numer, denom) {
+    const a = Number(numer);
+    const b = Number(denom);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= 0) return '0%';
+    return `${Math.round((100 * a) / b)}%`;
+  }
+
+  function _climateHaversineKm(lat1, lon1, lat2, lon2) {
+    const toRad = (v) => Number(v) * Math.PI / 180;
+    const dLat = toRad(Number(lat2) - Number(lat1));
+    const dLon = toRad(Number(lon2) - Number(lon1));
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return 6371 * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a))));
+  }
+
+  function _fmtLatLonClimate(lat, lon) {
+    const latN = Number(lat);
+    const lonN = Number(lon);
+    if (!Number.isFinite(latN) || !Number.isFinite(lonN)) return '—';
+    const latAbs = Math.abs(latN).toFixed(2);
+    const lonAbs = Math.abs(lonN).toFixed(2);
+    const latHem = latN >= 0 ? 'N' : 'S';
+    const lonHem = lonN >= 0 ? 'E' : 'W';
+    return `${latAbs}°${latHem}, ${lonAbs}°${lonHem}`;
+  }
+
+  function _getNearestPlace(lat, lon) {
+    const latN = Number(lat);
+    const lonN = Number(lon);
+    if (!Number.isFinite(latN) || !Number.isFinite(lonN)) return null;
+    let best = null;
+    let bestKm = Infinity;
+    for (const place of CLIMATE_PLACE_CANDIDATES) {
+      const distKm = _climateHaversineKm(latN, lonN, place.lat, place.lon);
+      if (distKm < bestKm) {
+        bestKm = distKm;
+        best = place;
+      }
+    }
+    if (!best || !(bestKm <= 50)) return null;
+    return { ...best, distanceKm: bestKm };
+  }
+
+  function _climateLocationInfo(meta) {
+    const point = (meta && meta.point) ? meta.point : {};
+    const lat = Number(point.lat);
+    const lon = Number(point.lon);
+    const exactName = meta && meta.location_name ? String(meta.location_name).trim() : '';
+    const exactCountry = meta && meta.location_country ? String(meta.location_country).trim() : '';
+    if (exactName) {
+      return {
+        title: `📍 ${exactName}${exactCountry ? ` (${exactCountry})` : ''}`,
+        coords: _fmtLatLonClimate(lat, lon),
+      };
+    }
+    const locationLabel = meta && meta.location ? String(meta.location).trim() : '';
+    if (locationLabel && !/^near\s/i.test(locationLabel) && locationLabel !== 'selected location') {
+      return {
+        title: `📍 ${locationLabel}`,
+        coords: _fmtLatLonClimate(lat, lon),
+      };
+    }
+    const place = _getNearestPlace(lat, lon);
+    if (place) {
+      return {
+        title: `📍 ${place.name} (${place.country})`,
+        coords: _fmtLatLonClimate(lat, lon),
+      };
+    }
+    return {
+      title: `📍 near ${_fmtLatLonClimate(lat, lon)}`,
+      coords: _fmtLatLonClimate(lat, lon),
+    };
+  }
+
+  function _climateRainLegendMarkup() {
+    const stops = [0.2, 2, 7, 15, 30, 60].map(v => `<div style="flex:1 1 0%; background:${_climateRainStepColor(v)};"></div>`).join('');
+    return `
+      <div class="wm-climate-legend">
+        <div class="wm-climate-legend-label">Rain</div>
+        <div class="wm-climate-legend-bar is-stepped">${stops}</div>
+        <div class="wm-climate-legend-ticks"><span>0</span><span>1</span><span>5</span><span>10</span><span>20</span><span>50+</span></div>
+      </div>
+    `;
+  }
+
+  function _climateTempLegendMarkup() {
+    const tempData = _tempLegendData(-5, 35);
+    const tempSegs = (tempData && Array.isArray(tempData.segments) && tempData.segments.length)
+      ? tempData.segments.map(s => `<div style="background:${s.color};flex:${Number(s.flex) || 1} 1 0%;height:100%;"></div>`).join('')
+      : '';
+    return `
+      <div class="wm-climate-legend">
+        <div class="wm-climate-legend-label">Temperature</div>
+        <div class="wm-climate-legend-bar">${tempSegs}</div>
+        <div class="wm-climate-legend-ticks"><span>-5</span><span>0</span><span>10</span><span>20</span><span>30</span><span>35°C</span></div>
+      </div>
+    `;
+  }
+
+  function _climateCurrentRangeIso() {
+    const year = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    if (_strategicUsingRangeUI()) {
+      const r = _strategicGetRangeDOY();
+      return {
+        start: _isoDateFromDOY(r.startDoy, year),
+        end: _isoDateFromDOY(r.endDoy, year),
+      };
+    }
+    const period = _strategicPeriodForDOY(STRATEGIC_STATE.doy, STRATEGIC_STATE.timescale, year);
+    if (period && Number.isFinite(Number(period.startDoy)) && Number.isFinite(Number(period.endDoy))) {
+      return {
+        start: _isoDateFromDOY(Number(period.startDoy), year),
+        end: _isoDateFromDOY(Number(period.endDoy), year),
+      };
+    }
+    const one = _isoDateFromDOY(STRATEGIC_STATE.doy, year);
+    return { start: one, end: one };
+  }
+
+  function _climateProfileRequestKey(point) {
+    const p = point || {};
+    const yearsKey = _strategicYearsKey(_strategicGetSelectedYears());
+    const mode = _strategicGetMode();
+    const range = _climateCurrentRangeIso();
+    const q3 = (x) => {
+      const v = Number(x);
+      return Number.isFinite(v) ? (Math.round(v * 1000) / 1000).toFixed(3) : 'nan';
+    };
+    return [
+      q3(p.lat),
+      q3(p.lon),
+      yearsKey,
+      mode,
+      String(range.start || ''),
+      String(range.end || ''),
+      String(Number(SETTINGS && SETTINGS.tempCold)),
+      String(Number(SETTINGS && SETTINGS.tempHot)),
+      String(Number(SETTINGS && SETTINGS.rainHigh)),
+      String(Number(SETTINGS && SETTINGS.windHeadComfort)),
+    ].join('|');
+  }
+
+  function _climateRainStepColor(mm) {
+    const v = Number(mm);
+    if (!Number.isFinite(v) || v < 1) return 'rgba(201, 190, 255, 0.26)';
+    if (v < 5) return 'rgba(171, 149, 252, 0.42)';
+    if (v < 10) return 'rgba(138, 106, 232, 0.56)';
+    if (v < 20) return 'rgba(112, 76, 207, 0.72)';
+    if (v < 50) return 'rgba(85, 52, 175, 0.84)';
+    return 'rgba(58, 32, 134, 0.92)';
+  }
+
+  function _renderClimateSummaryLegends() {
+    if (!profileLegendHost) return;
+    profileLegendHost.style.display = 'block';
+    profileLegendHost.style.padding = '0';
+    profileLegendHost.style.border = '0';
+    profileLegendHost.style.background = 'transparent';
+    profileLegendHost.style.boxShadow = 'none';
+    profileLegendHost.style.marginLeft = '0';
+    profileLegendHost.innerHTML = `${_climateTempLegendMarkup()}${_climateRainLegendMarkup()}`;
+  }
+
+  function _ensureClimateProfileTooltip() {
+    if (CLIMATE_PROFILE_TOOLTIP) return CLIMATE_PROFILE_TOOLTIP;
+    try {
+      if (!profilePanel) return null;
+      const el = document.createElement('div');
+      el.className = 'wm-climate-profile-tooltip';
+      profilePanel.appendChild(el);
+      CLIMATE_PROFILE_TOOLTIP = el;
+      return el;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _hideClimateProfileTooltip() {
+    try {
+      const el = _ensureClimateProfileTooltip();
+      if (el) el.style.display = 'none';
+    } catch (_) {}
+  }
+
+  function _drawClimateProfilePlaceholder(message) {
+    if (!profileCanvas || !profileCtx) return;
+    resizeProfileCanvas();
+    const rect = profileCanvas.getBoundingClientRect();
+    const W = Math.max(1, Math.floor(rect.width));
+    const H = Math.max(1, Math.floor(rect.height));
+    profileCtx.clearRect(0, 0, W, H);
+    if (profileCursorCtx) profileCursorCtx.clearRect(0, 0, W, H);
+    profileCtx.fillStyle = '#666';
+    profileCtx.font = '13px system-ui, -apple-system, sans-serif';
+    profileCtx.textAlign = 'center';
+    profileCtx.textBaseline = 'middle';
+    profileCtx.fillText(String(message || 'Click the climatic map to inspect weather at a location.'), W / 2, H / 2);
+  }
+
+  function _drawClimateWindArrow(ctx, x, y, speed, dirFromDeg, maxWind) {
+    const spd = Number(speed);
+    const dirFrom = Number(dirFromDeg);
+    if (!Number.isFinite(spd) || !Number.isFinite(dirFrom)) return;
+    const maxRef = Math.max(4, Number(maxWind) || 8);
+    const len = Math.max(10, Math.min(26, 10 + (16 * Math.max(0, spd)) / maxRef));
+    const dirTo = ((dirFrom + 180) % 360) * Math.PI / 180;
+    const dx = Math.cos(dirTo) * (len * 0.5);
+    const dy = Math.sin(dirTo) * (len * 0.5);
+    ctx.save();
+    const alpha = Math.max(0.38, Math.min(0.92, 0.34 + (0.58 * Math.max(0, spd)) / maxRef));
+    ctx.strokeStyle = `rgba(70,70,70,${alpha.toFixed(3)})`;
+    ctx.fillStyle = `rgba(70,70,70,${alpha.toFixed(3)})`;
+    ctx.lineWidth = 1.35;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x - dx, y - dy);
+    ctx.lineTo(x + dx, y + dy);
+    ctx.stroke();
+    const headX = x + dx;
+    const headY = y + dy;
+    const headLen = 4;
+    const a1 = dirTo + Math.PI * 0.82;
+    const a2 = dirTo - Math.PI * 0.82;
+    ctx.beginPath();
+    ctx.moveTo(headX, headY);
+    ctx.lineTo(headX + Math.cos(a1) * headLen, headY + Math.sin(a1) * headLen);
+    ctx.lineTo(headX + Math.cos(a2) * headLen, headY + Math.sin(a2) * headLen);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawClimateProfile(profileData) {
+    if (!profileCanvas || !profileCtx) return;
+    const series = Array.isArray(profileData && profileData.series) ? profileData.series : [];
+    LAST_CLIMATE_PROFILE = profileData || null;
+    resizeProfileCanvas();
+    const rect = profileCanvas.getBoundingClientRect();
+    const W = Math.max(1, Math.floor(rect.width));
+    const H = Math.max(1, Math.floor(rect.height));
+    profileCtx.clearRect(0, 0, W, H);
+    if (profileCursorCtx) profileCursorCtx.clearRect(0, 0, W, H);
+    if (!series.length) {
+      _drawClimateProfilePlaceholder('No climate profile data available for this point.');
+      return;
+    }
+
+    const padTop = 22;
+    const padBot = 34;
+    const padL = 38;
+    const padR = 52;
+    const innerW = Math.max(1, W - padL - padR);
+    const innerH = Math.max(1, H - padTop - padBot);
+    const axisY = padTop + innerH;
+    const xAtIndex = (index) => {
+      if (series.length <= 1) return padL + innerW * 0.5;
+      const i = Math.max(0, Math.min(series.length - 1, Number(index) || 0));
+      return padL + (innerW * i) / (series.length - 1);
+    };
+
+    const tempVals = [];
+    for (const point of series) {
+      const vals = [point && point.temp, point && point.temp_p25, point && point.temp_p75].map(Number).filter(Number.isFinite);
+      tempVals.push(...vals);
+    }
+    const tmin = -5;
+    const tmax = 40;
+    const yAtTemp = (temp) => {
+      const t = Number(temp);
+      const clamped = Math.max(tmin, Math.min(tmax, Number.isFinite(t) ? t : tmin));
+      return padTop + innerH - Math.round(innerH * ((clamped - tmin) / Math.max(1e-6, tmax - tmin)));
+    };
+
+    const tempRaw = series.map(p => Number(p && p.temp));
+    const tempSmooth = tempRaw.map((_value, index) => {
+      let sum = 0;
+      let count = 0;
+      for (let j = Math.max(0, index - 1); j <= Math.min(tempRaw.length - 1, index + 1); j++) {
+        const v = Number(tempRaw[j]);
+        if (!Number.isFinite(v)) continue;
+        sum += v;
+        count += 1;
+      }
+      return count ? (sum / count) : NaN;
+    });
+
+    const rainVals = series.map(p => Number(p && p.rain)).filter(v => Number.isFinite(v) && v >= 0);
+    const rainAxisMax = (() => {
+      const rawMax = Math.max(5, ...(rainVals.length ? rainVals : [0]));
+      if (rawMax <= 5) return 5;
+      if (rawMax <= 10) return 10;
+      if (rawMax <= 20) return 20;
+      if (rawMax <= 35) return 35;
+      return 50;
+    })();
+    const maxWind = Math.max(6, ...series.map(p => Number(p && p.wind_speed)).filter(Number.isFinite));
+
+    CLIMATE_PROFILE_GEOMETRY = { padTop, padBot, padL, padR, innerW, innerH, axisY, rainAxisMax };
+
+    profileCtx.strokeStyle = '#ddd';
+    profileCtx.lineWidth = 1;
+    profileCtx.setLineDash([4, 4]);
+    for (let tv = Math.ceil(tmin / 5) * 5; tv <= tmax + 1e-6; tv += 5) {
+      const y = yAtTemp(tv);
+      profileCtx.beginPath();
+      profileCtx.moveTo(padL, y);
+      profileCtx.lineTo(padL + innerW, y);
+      profileCtx.stroke();
+    }
+    profileCtx.setLineDash([]);
+
+    const rainGuideValues = [1, 5, 10].filter(v => v < rainAxisMax + 1e-9);
+    profileCtx.save();
+    profileCtx.strokeStyle = 'rgba(126, 92, 225, 0.16)';
+    profileCtx.lineWidth = 1;
+    profileCtx.setLineDash([3, 5]);
+    for (const guide of rainGuideValues) {
+      const y = axisY - (innerH * guide) / Math.max(1e-6, rainAxisMax);
+      profileCtx.beginPath();
+      profileCtx.moveTo(padL, y);
+      profileCtx.lineTo(padL + innerW, y);
+      profileCtx.stroke();
+    }
+    profileCtx.restore();
+
+    const barW = Math.max(4, Math.min(12, Math.round(innerW / Math.max(6, series.length * 1.8))));
+    for (let i = 0; i < series.length; i++) {
+      const point = series[i] || {};
+      const rain = Number(point.rain);
+      if (!Number.isFinite(rain) || rain <= 0) continue;
+      const h = (Math.max(0, Math.min(rainAxisMax, rain)) / Math.max(1, rainAxisMax)) * innerH;
+      const x = xAtIndex(i);
+      profileCtx.fillStyle = _climateRainStepColor(rain);
+      profileCtx.fillRect(Math.round(x - barW / 2), Math.round(axisY - h), barW, Math.round(h));
+    }
+
+    const bandUpper = [];
+    const bandLower = [];
+    for (let i = 0; i < series.length; i++) {
+      const point = series[i] || {};
+      const hi = Number(point.temp_p75);
+      const lo = Number(point.temp_p25);
+      if (!Number.isFinite(hi) || !Number.isFinite(lo)) continue;
+      bandUpper.push({ x: xAtIndex(i), y: yAtTemp(hi) });
+      bandLower.push({ x: xAtIndex(i), y: yAtTemp(lo) });
+    }
+    if (bandUpper.length >= 2 && bandLower.length >= 2) {
+      const segmentCount = Math.min(bandUpper.length, bandLower.length) - 1;
+      for (let i = 0; i < segmentCount; i++) {
+        const upper0 = bandUpper[i];
+        const upper1 = bandUpper[i + 1];
+        const lower1 = bandLower[i + 1];
+        const lower0 = bandLower[i];
+        const t0 = Number(tempSmooth[i]);
+        const t1 = Number(tempSmooth[i + 1]);
+        const color = String(tempColor(Number.isFinite(t0) && Number.isFinite(t1) ? ((t0 + t1) * 0.5) : 15) || 'rgba(26,152,80,1)')
+          .replace(/rgba\(([^)]+),\s*1\)/, 'rgba($1, 0.22)')
+          .replace(/rgb\(([^)]+)\)/, 'rgba($1, 0.22)');
+        profileCtx.beginPath();
+        profileCtx.moveTo(upper0.x, upper0.y);
+        profileCtx.lineTo(upper1.x, upper1.y);
+        profileCtx.lineTo(lower1.x, lower1.y);
+        profileCtx.lineTo(lower0.x, lower0.y);
+        profileCtx.closePath();
+        profileCtx.fillStyle = color;
+        profileCtx.fill();
+      }
+    }
+
+    const drawTempGuide = (key) => {
+      let started = false;
+      profileCtx.beginPath();
+      for (let i = 0; i < series.length; i++) {
+        const point = series[i] || {};
+        const t = Number(point[key]);
+        if (!Number.isFinite(t)) continue;
+        const x = xAtIndex(i);
+        const y = yAtTemp(t);
+        if (!started) {
+          profileCtx.moveTo(x, y);
+          started = true;
+        } else {
+          profileCtx.lineTo(x, y);
+        }
+      }
+      if (started) profileCtx.stroke();
+    };
+
+    profileCtx.strokeStyle = 'rgba(51, 65, 85, 0.72)';
+    profileCtx.lineWidth = 1.2;
+    profileCtx.setLineDash([3, 3]);
+    drawTempGuide('temp_p25');
+    drawTempGuide('temp_p75');
+
+    profileCtx.setLineDash([]);
+    profileCtx.lineWidth = 2.4;
+    profileCtx.lineJoin = 'round';
+    profileCtx.lineCap = 'round';
+    for (let i = 1; i < series.length; i++) {
+      const t0 = Number(tempSmooth[i - 1]);
+      const t1 = Number(tempSmooth[i]);
+      if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
+      const x0 = xAtIndex(i - 1);
+      const x1 = xAtIndex(i);
+      const y0 = yAtTemp(t0);
+      const y1 = yAtTemp(t1);
+      profileCtx.beginPath();
+      profileCtx.moveTo(x0, y0);
+      profileCtx.lineTo(x1, y1);
+      profileCtx.strokeStyle = tempColor((t0 + t1) * 0.5);
+      profileCtx.stroke();
+    }
+
+    const luckyY = padTop + 9;
+    const windY = axisY - 12;
+    for (let i = 0; i < series.length; i++) {
+      const point = series[i] || {};
+      const x = xAtIndex(i);
+      profileCtx.beginPath();
+      profileCtx.arc(x, luckyY, 4.2, 0, Math.PI * 2);
+      profileCtx.fillStyle = point.lucky ? '#47d764' : '#b3b3b3';
+      profileCtx.fill();
+      profileCtx.lineWidth = 1;
+      profileCtx.strokeStyle = point.lucky ? 'rgba(20, 126, 56, 0.95)' : 'rgba(120, 132, 145, 0.72)';
+      profileCtx.stroke();
+      _drawClimateWindArrow(profileCtx, x, windY, point.wind_speed, point.wind_dir, maxWind);
+    }
+
+    profileCtx.strokeStyle = '#666';
+    profileCtx.lineWidth = 1;
+    profileCtx.beginPath();
+    profileCtx.moveTo(padL, axisY);
+    profileCtx.lineTo(padL + innerW, axisY);
+    profileCtx.stroke();
+
+    profileCtx.fillStyle = '#666';
+    profileCtx.font = '10px system-ui, -apple-system, sans-serif';
+    profileCtx.textAlign = 'center';
+    const weeklyStep = (series.length <= 10) ? 2 : 7;
+    for (let i = 0; i < series.length; i += weeklyStep) {
+      const x = xAtIndex(i);
+      profileCtx.beginPath();
+      profileCtx.moveTo(x, axisY);
+      profileCtx.lineTo(x, axisY + 6);
+      profileCtx.stroke();
+      profileCtx.fillText(_fmtIsoDayMonthCompact(series[i] && series[i].date), x, axisY + 18);
+    }
+    if (series.length > 1) {
+      const lastX = xAtIndex(series.length - 1);
+      profileCtx.beginPath();
+      profileCtx.moveTo(lastX, axisY);
+      profileCtx.lineTo(lastX, axisY + 6);
+      profileCtx.stroke();
+      profileCtx.fillText(_fmtIsoDayMonthCompact(series[series.length - 1] && series[series.length - 1].date), lastX, axisY + 18);
+    }
+
+    const xScaleL = padL;
+    const xScaleR = padL + innerW;
+    profileCtx.strokeStyle = '#666';
+    profileCtx.fillStyle = '#666';
+    profileCtx.textAlign = 'right';
+    for (let tv = Math.ceil(tmin / 5) * 5; tv <= tmax + 1e-6; tv += 5) {
+      const y = yAtTemp(tv);
+      profileCtx.beginPath();
+      profileCtx.moveTo(xScaleL, y);
+      profileCtx.lineTo(xScaleL - 6, y);
+      profileCtx.stroke();
+      profileCtx.fillText(`${tv}°C`, xScaleL - 8, y + 3);
+    }
+
+    profileCtx.textAlign = 'left';
+    const rainTicks = [0, rainAxisMax / 2, rainAxisMax].filter((v, idx, arr) => idx === 0 || Math.abs(v - arr[idx - 1]) > 0.5);
+    for (const rv of rainTicks) {
+      const y = axisY - (innerH * rv) / Math.max(1e-6, rainAxisMax);
+      profileCtx.beginPath();
+      profileCtx.moveTo(xScaleR, y);
+      profileCtx.lineTo(xScaleR + 6, y);
+      profileCtx.stroke();
+      profileCtx.fillText(`${Math.round(rv)} mm`, xScaleR + 8, y + 3);
+    }
+
+    profileCtx.textAlign = 'center';
+    profileCtx.fillStyle = '#64748b';
+    profileCtx.font = '10px system-ui, -apple-system, sans-serif';
+    let prevMonth = '';
+    for (let i = 0; i < series.length; i++) {
+      const iso = String(series[i] && series[i].date || '');
+      const monthLabel = iso.length >= 7 ? iso.slice(5, 7) : '';
+      if (!monthLabel || monthLabel === prevMonth) continue;
+      prevMonth = monthLabel;
+      const x = xAtIndex(i);
+      profileCtx.fillText(monthLabel, x, H - 4);
+    }
+
+    PROFILE_XS = series.map((_point, index) => xAtIndex(index));
+  }
+
+  function _renderClimateSummary(payload) {
+    const meta = payload && payload.meta ? payload.meta : {};
+    const summary = payload && payload.summary ? payload.summary : {};
+    const totalDays = Number(summary.total_days || (payload && payload.series && payload.series.length) || 0);
+    const years = Array.isArray(meta.years) ? meta.years : [];
+    const yearsText = years.length ? `${Math.min(...years)}–${Math.max(...years)}` : '—';
+    const startTxt = _fmtIsoDayMonthCompact(meta.start);
+    const endTxt = _fmtIsoDayMonthCompact(meta.end);
+    const windCard = Number.isFinite(Number(summary.wind_dir)) ? degToCardinal(Number(summary.wind_dir)) : '—';
+    const loc = _climateLocationInfo(meta);
+
+    _setBottomPanelUiMode('climate');
+    if (tourSummaryBadges) {
+      tourSummaryBadges.style.minHeight = '70px';
+      tourSummaryBadges.style.padding = '8px 12px';
+    }
+    if (tourSummaryBadgesItems) {
+      tourSummaryBadgesItems.innerHTML = `
+        <div class="wm-climate-strip">
+          <div class="wm-climate-location">
+            <div class="wm-climate-location-title">${loc.title}</div>
+            <div class="wm-climate-location-coords">${loc.coords}</div>
+            <div class="wm-climate-location-meta">${startTxt}–${endTxt} • ${Math.max(1, totalDays)}d • ${yearsText} • ${String(meta.mode || 'active') === 'full_day' ? '24h' : 'Active'}</div>
+          </div>
+          <div class="wm-climate-metrics">
+            <div class="wm-climate-metric">
+              <div class="wm-climate-metric-label">🌡 Temp</div>
+              <div class="wm-climate-metric-main">${fmt(summary.temp_mean, 1)}°C</div>
+              <div class="wm-climate-metric-secondary">${fmt(summary.temp_min, 0)}–${fmt(summary.temp_max, 0)}°</div>
+              <div class="wm-climate-metric-tertiary">typ ${fmt(summary.typical_temp_min, 0)}–${fmt(summary.typical_temp_max, 0)}</div>
+            </div>
+            <div class="wm-climate-metric">
+              <div class="wm-climate-metric-label">🌧 Rain</div>
+              <div class="wm-climate-metric-main">${fmt(summary.rain_mean, 1)} mm/d</div>
+              <div class="wm-climate-metric-secondary">${fmt(summary.rain_sum, 0)} mm</div>
+              <div class="wm-climate-metric-tertiary">${Number(summary.rain_days || 0)} days</div>
+            </div>
+            <div class="wm-climate-metric">
+              <div class="wm-climate-metric-label">🌬 Wind</div>
+              <div class="wm-climate-metric-main">${windCard} ${fmt(summary.wind_speed, 1)} m/s</div>
+              <div class="wm-climate-metric-secondary">calm ${Number(summary.calm_days || 0)}/${Math.max(1, totalDays)}</div>
+              <div class="wm-climate-metric-tertiary">dir ${Number.isFinite(Number(summary.wind_dir)) ? `${Math.round(Number(summary.wind_dir))}°` : '—'}</div>
+            </div>
+            <div class="wm-climate-metric">
+              <div class="wm-climate-metric-label">😊 Lucky</div>
+              <div class="wm-climate-metric-main">${Number(summary.lucky_days || 0)}/${Math.max(1, totalDays)}</div>
+              <div class="wm-climate-metric-secondary">${_fmtPercent(summary.lucky_days, totalDays)}</div>
+              <div class="wm-climate-metric-tertiary">good riding days</div>
+            </div>
+          </div>
+          <div class="wm-climate-legends">${_climateTempLegendMarkup()}${_climateRainLegendMarkup()}</div>
+        </div>
+      `;
+    }
+    try { if (profileLegendHost) profileLegendHost.style.display = 'none'; } catch (_) {}
+    _reflowBottomLayout();
+  }
+
+  function _renderClimateLoading(point) {
+    _setBottomPanelUiMode('climate');
+    _hideClimateProfileTooltip();
+    if (tourSummaryBadgesItems) {
+      tourSummaryBadgesItems.innerHTML = `<div style="font-size:12px; color:#555;">Loading climate profile for ${fmt(point && point.lat, 3)}, ${fmt(point && point.lon, 3)}…</div>`;
+    }
+    try { if (profileLegendHost) profileLegendHost.style.display = 'none'; } catch (_) {}
+    _drawClimateProfilePlaceholder('Loading weather profile…');
+    _reflowBottomLayout();
+  }
+
+  function _renderClimateError(message) {
+    _setBottomPanelUiMode('climate');
+    _hideClimateProfileTooltip();
+    if (tourSummaryBadgesItems) {
+      tourSummaryBadgesItems.innerHTML = `<div style="font-size:12px; color:#8a2d2d;">${String(message || 'Climate profile could not be loaded.')}</div>`;
+    }
+    try { if (profileLegendHost) profileLegendHost.style.display = 'none'; } catch (_) {}
+    _drawClimateProfilePlaceholder(String(message || 'Climate profile could not be loaded.'));
+    _reflowBottomLayout();
+  }
+
+  function _renderClimateEmptyState() {
+    _setBottomPanelUiMode('climate');
+    _hideClimateProfileTooltip();
+    if (tourSummaryBadgesItems) {
+      tourSummaryBadgesItems.innerHTML = '<div style="font-size:12px; color:#555;">Click the climatic map to inspect a location.</div>';
+    }
+    try { if (profileLegendHost) profileLegendHost.style.display = 'none'; } catch (_) {}
+    _drawClimateProfilePlaceholder('Click the climatic map to inspect weather at a location.');
+    _reflowBottomLayout();
+  }
+
+  function _updateClimateProfileCursor(index, displayX) {
+    if (!profileCursorCtx || !profileCanvas || !LAST_CLIMATE_PROFILE) return;
+    const series = Array.isArray(LAST_CLIMATE_PROFILE.series) ? LAST_CLIMATE_PROFILE.series : [];
+    const point = series[index];
+    const geom = CLIMATE_PROFILE_GEOMETRY;
+    if (!point || !geom) return;
+    const rect = profileCanvas.getBoundingClientRect();
+    const W = Math.max(1, Math.floor(rect.width));
+    const H = Math.max(1, Math.floor(rect.height));
+    const x = Number(displayX);
+    profileCursorCtx.clearRect(0, 0, W, H);
+    profileCursorCtx.strokeStyle = 'rgba(51, 65, 85, 0.55)';
+    profileCursorCtx.lineWidth = 1;
+    profileCursorCtx.setLineDash([4, 4]);
+    profileCursorCtx.beginPath();
+    profileCursorCtx.moveTo(x, geom.padTop);
+    profileCursorCtx.lineTo(x, geom.axisY);
+    profileCursorCtx.stroke();
+    profileCursorCtx.setLineDash([]);
+
+    const tip = _ensureClimateProfileTooltip();
+    if (!tip) return;
+    const windCard = Number.isFinite(Number(point.wind_dir)) ? degToCardinal(Number(point.wind_dir)) : '—';
+    tip.innerHTML = `
+      <div class="row"><strong>${_fmtIsoDayMonthCompact(point.date)}</strong><span>${point.lucky ? 'Lucky' : 'Not lucky'}</span></div>
+      <div class="row"><strong>Temp</strong><span>${fmt(point.temp, 1)}°C (${fmt(point.temp_p25, 1)}–${fmt(point.temp_p75, 1)})</span></div>
+      <div class="row"><strong>Rain</strong><span>${fmt(point.rain, 1)} mm</span></div>
+      <div class="row"><strong>Wind</strong><span>${windCard} ${fmt(point.wind_speed, 1)} m/s</span></div>
+    `;
+    tip.style.display = 'block';
+    const panelRect = profilePanel ? profilePanel.getBoundingClientRect() : rect;
+    let left = x + 12;
+    let top = geom.padTop + 10;
+    const tw = tip.offsetWidth || 190;
+    if (left + tw > panelRect.width - 8) left = Math.max(8, x - tw - 12);
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  }
+
+  function _ensureClimateSelectedMarker(point) {
+    if (!point || !map || !window.L) return;
+    try {
+      if (!CLIMATE_PROFILE_STATE.selectedMarker) {
+        CLIMATE_PROFILE_STATE.selectedMarker = L.circleMarker([Number(point.lat), Number(point.lon)], {
+          radius: 6,
+          color: '#1f1f1f',
+          weight: 1.5,
+          fillColor: '#ffffff',
+          fillOpacity: 0.95,
+        }).addTo(map);
+      } else {
+        CLIMATE_PROFILE_STATE.selectedMarker.setLatLng([Number(point.lat), Number(point.lon)]);
+        try { if (!map.hasLayer(CLIMATE_PROFILE_STATE.selectedMarker)) CLIMATE_PROFILE_STATE.selectedMarker.addTo(map); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  async function _requestClimateProfile(point, opts) {
+    if (!point || !_climateProfileIsActive()) return;
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    const key = _climateProfileRequestKey(point);
+    if (!options.force) {
+      const cached = _cacheClimateProfileGet(key);
+      if (cached) {
+        LAST_CLIMATE_PROFILE = cached;
+        _renderClimateSummary(cached);
+        drawClimateProfile(cached);
+        return;
+      }
+    }
+
+    _renderClimateLoading(point);
+    try {
+      if (CLIMATE_PROFILE_STATE.fetchAbort) CLIMATE_PROFILE_STATE.fetchAbort.abort();
+    } catch (_) {}
+    const ac = new AbortController();
+    CLIMATE_PROFILE_STATE.fetchAbort = ac;
+    const timeoutId = setTimeout(() => {
+      try { ac.abort(new Error('climate-profile-timeout')); } catch (_) {}
+    }, CLIMATE_PROFILE_FETCH_TIMEOUT_MS);
+
+    const range = _climateCurrentRangeIso();
+    const yearsKey = _strategicYearsKey(_strategicGetSelectedYears());
+    const mode = _strategicGetMode();
+    const url = `/api/weather_profile?lat=${encodeURIComponent(String(point.lat))}`
+      + `&lon=${encodeURIComponent(String(point.lon))}`
+      + `&years=${encodeURIComponent(String(yearsKey))}`
+      + `&mode=${encodeURIComponent(String(mode))}`
+      + `&start_date=${encodeURIComponent(String(range.start || ''))}`
+      + `&end_date=${encodeURIComponent(String(range.end || ''))}`
+      + `&lucky_temp_cold=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.tempCold)))}`
+      + `&lucky_temp_hot=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.tempHot)))}`
+      + `&lucky_rain_max=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.rainHigh)))}`
+      + `&lucky_wind_max=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.windHeadComfort)))}`;
+
+    try {
+      const resp = await fetch(url, { signal: ac.signal });
+      const payload = await resp.json();
+      if (!resp.ok) {
+        throw new Error(payload && payload.error ? payload.error : `HTTP ${resp.status}`);
+      }
+      if (!_climateProfileIsActive()) return;
+      _cacheClimateProfileSet(key, payload);
+      LAST_CLIMATE_PROFILE = payload;
+      _renderClimateSummary(payload);
+      drawClimateProfile(payload);
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error('Climate profile request timed out. Please try again.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+      if (CLIMATE_PROFILE_STATE.fetchAbort === ac) {
+        CLIMATE_PROFILE_STATE.fetchAbort = null;
+      }
+    }
+  }
+
+  function _scheduleClimateProfileForPoint(point, opts) {
+    if (!point) return;
+    const options = (opts && typeof opts === 'object') ? opts : {};
+    CLIMATE_PROFILE_STATE.selectedPoint = { lat: Number(point.lat), lon: Number(point.lon) };
+    _ensureClimateSelectedMarker(CLIMATE_PROFILE_STATE.selectedPoint);
+    try {
+      if (CLIMATE_PROFILE_STATE.clickTimer) clearTimeout(CLIMATE_PROFILE_STATE.clickTimer);
+    } catch (_) {}
+    const delay = options.immediate ? 0 : CLIMATE_CLICK_DEBOUNCE_MS;
+    CLIMATE_PROFILE_STATE.clickTimer = setTimeout(() => {
+      _requestClimateProfile(CLIMATE_PROFILE_STATE.selectedPoint, options).catch((err) => {
+        if (err && err.name === 'AbortError') return;
+        _renderClimateError(err && err.message ? err.message : 'Climate profile could not be loaded.');
+      });
+    }, delay);
+  }
+
+  function _refreshClimateProfileSelection(opts) {
+    if (!_climateProfileIsActive()) return;
+    if (!CLIMATE_PROFILE_STATE.selectedPoint) {
+      _renderClimateEmptyState();
+      return;
+    }
+    _scheduleClimateProfileForPoint(CLIMATE_PROFILE_STATE.selectedPoint, { ...(opts || {}), immediate: true });
   }
 
   // Bind GPX UI handlers only once (loadMap() runs many times)
@@ -1344,6 +2328,8 @@
       climateTimescale: 'daily',
       includeSea: false,
       interpolation: true,
+      strategicWindOn: false,
+      strategicWindMode: 'flow',
       windDensity: 40,
       animSpeed: 1.0,
       gridKm: 50,
@@ -1422,6 +2408,8 @@
           : ((typeof j.climate_timescale === 'string') ? j.climate_timescale : defaults.climateTimescale),
         includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
         interpolation: (typeof j.interpolation === 'boolean') ? j.interpolation : defaults.interpolation,
+        strategicWindOn: (typeof j.strategicWindOn === 'boolean') ? j.strategicWindOn : defaults.strategicWindOn,
+        strategicWindMode: (typeof j.strategicWindMode === 'string') ? j.strategicWindMode : defaults.strategicWindMode,
         windDensity: Number(j.windDensity) || defaults.windDensity,
         animSpeed: Number(j.animSpeed) || defaults.animSpeed,
         gridKm: Number(j.gridKm) || defaults.gridKm,
@@ -1464,33 +2452,107 @@
     return '10-16';
   }
 
-  function _syncActiveTimeInputs(source) {
+  function _parseActiveHoursRange(raw) {
+    const txt = String(raw || '').trim();
+    const match = txt.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+    let start = match ? Number(match[1]) : 10;
+    let end = match ? Number(match[2]) : 16;
+    if (!Number.isFinite(start)) start = 10;
+    if (!Number.isFinite(end)) end = 16;
+    start = Math.max(0, Math.min(23, Math.round(start)));
+    end = Math.max(0, Math.min(23, Math.round(end)));
+    if (end < start) {
+      const tmp = start;
+      start = end;
+      end = tmp;
+    }
+    return { start, end };
+  }
+
+  function _formatActiveHoursRange(start, end) {
+    const s = Math.max(0, Math.min(23, Math.round(Number(start) || 10)));
+    const e = Math.max(0, Math.min(23, Math.round(Number(end) || 16)));
+    return `${Math.min(s, e)}-${Math.max(s, e)}`;
+  }
+
+  function _syncActiveHourInputs(source) {
     try {
-      const next = String((source && source.value) ? source.value : _getActiveHoursValue(SETTINGS));
-      if (setTourActiveTime && setTourActiveTime !== source) setTourActiveTime.value = next;
-      if (setClimateActiveTime && setClimateActiveTime !== source) setClimateActiveTime.value = next;
+      const current = _parseActiveHoursRange(_getActiveHoursValue(SETTINGS));
+      let start = current.start;
+      let end = current.end;
+      if (source === setActiveHourStart) start = Number(setActiveHourStart && setActiveHourStart.value);
+      if (source === setActiveHourEnd) end = Number(setActiveHourEnd && setActiveHourEnd.value);
+      const next = _parseActiveHoursRange(_formatActiveHoursRange(start, end));
+      if (setActiveHourStart && setActiveHourStart !== source) setActiveHourStart.value = String(next.start);
+      if (setActiveHourEnd && setActiveHourEnd !== source) setActiveHourEnd.value = String(next.end);
+      if (source === setActiveHourStart && setActiveHourStart) setActiveHourStart.value = String(next.start);
+      if (source === setActiveHourEnd && setActiveHourEnd) setActiveHourEnd.value = String(next.end);
+    } catch (_) {}
+  }
+
+  function _enhanceSettingsNumberInputs() {
+    try {
+      if (!settingsView) return;
+      for (const input of Array.from(settingsView.querySelectorAll('input[type="number"]'))) {
+        if (!input || input.closest('.wm-spinbox')) continue;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'wm-spinbox';
+        const minus = document.createElement('button');
+        minus.type = 'button';
+        minus.className = 'wm-spinbox-btn';
+        minus.textContent = '−';
+        const plus = document.createElement('button');
+        plus.type = 'button';
+        plus.className = 'wm-spinbox-btn';
+        plus.textContent = '+';
+        input.classList.add('wm-spinbox-input');
+        const parent = input.parentNode;
+        if (!parent) continue;
+        parent.insertBefore(wrapper, input);
+        wrapper.appendChild(minus);
+        wrapper.appendChild(input);
+        wrapper.appendChild(plus);
+        const step = (dir) => {
+          try {
+            if (dir < 0 && typeof input.stepDown === 'function') input.stepDown();
+            else if (dir > 0 && typeof input.stepUp === 'function') input.stepUp();
+            else {
+              const stepVal = Number(input.step || '1');
+              const base = Number(input.value || 0) + dir * (Number.isFinite(stepVal) && stepVal > 0 ? stepVal : 1);
+              input.value = String(base);
+            }
+          } catch (_) {}
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          try { input.focus({ preventScroll: true }); } catch (_) {}
+        };
+        minus.addEventListener('click', () => step(-1));
+        plus.addEventListener('click', () => step(1));
+      }
     } catch (_) {}
   }
 
   try {
-    if (setTourActiveTime) {
-      setTourActiveTime.addEventListener('input', () => _syncActiveTimeInputs(setTourActiveTime));
-      setTourActiveTime.addEventListener('change', () => _syncActiveTimeInputs(setTourActiveTime));
+    if (setActiveHourStart) {
+      setActiveHourStart.addEventListener('input', () => _syncActiveHourInputs(setActiveHourStart));
+      setActiveHourStart.addEventListener('change', () => _syncActiveHourInputs(setActiveHourStart));
     }
-    if (setClimateActiveTime) {
-      setClimateActiveTime.addEventListener('input', () => _syncActiveTimeInputs(setClimateActiveTime));
-      setClimateActiveTime.addEventListener('change', () => _syncActiveTimeInputs(setClimateActiveTime));
+    if (setActiveHourEnd) {
+      setActiveHourEnd.addEventListener('input', () => _syncActiveHourInputs(setActiveHourEnd));
+      setActiveHourEnd.addEventListener('change', () => _syncActiveHourInputs(setActiveHourEnd));
     }
   } catch (_) {}
+  try { _enhanceSettingsNumberInputs(); } catch (_) {}
 
   // -------------------- Mode side effects --------------------
   // Tab selection + pill positioning is handled by the inlined script in index.html.
   // This function remains as the single place for non-visual side effects.
-  let LAST_NON_SETTINGS_MODE = 'tour';
+  let LAST_NON_SETTINGS_MODE = 'climate';
   function setMode(mode) {
-    const m = (mode === 'climate' || mode === 'tour' || mode === 'settings') ? mode : 'tour';
+    const m = (mode === 'climate' || mode === 'tour' || mode === 'settings') ? mode : 'climate';
     if (m !== 'settings') LAST_NON_SETTINGS_MODE = m;
     try { document.body.dataset.mode = m; } catch (_) {}
+    try { _setBottomPanelUiMode(m); } catch (_) {}
 
     try {
       strategicSetActive && strategicSetActive(m === 'climate');
@@ -1518,6 +2580,24 @@
         if (glyphLayerNew) { try { map.removeLayer(glyphLayerNew); } catch (_) {} }
         if (glyphLayer) { try { map.removeLayer(glyphLayer); } catch (_) {} }
       } catch (_) {}
+      try { PROFILE_XS = []; } catch (_) {}
+      try { if (profileCursorCtx && profileCanvas) {
+        const rect = profileCanvas.getBoundingClientRect();
+        profileCursorCtx.clearRect(0, 0, Math.max(1, Math.floor(rect.width)), Math.max(1, Math.floor(rect.height)));
+      } } catch (_) {}
+      try {
+        const currentH = profilePanel ? Number(profilePanel.offsetHeight || 0) : 0;
+        if (!Number.isFinite(currentH) || currentH < CLIMATE_PROFILE_HEIGHT) {
+          setProfileHeight(CLIMATE_PROFILE_HEIGHT);
+        }
+      } catch (_) {}
+      try {
+        if (CLIMATE_PROFILE_STATE.selectedPoint) {
+          _refreshClimateProfileSelection({ force: false, immediate: true });
+        } else {
+          _renderClimateEmptyState();
+        }
+      } catch (_) {}
     }
     if (m === 'tour') {
       // Restore preferred TOUR visualization when coming back from Climate mode.
@@ -1531,6 +2611,12 @@
           if (glyphLayerNew) { try { map.removeLayer(glyphLayerNew); } catch (_) {} }
           if (glyphLayer) { try { map.removeLayer(glyphLayer); } catch (_) {} }
         }
+      } catch (_) {}
+      try {
+        if (CLIMATE_PROFILE_STATE.selectedMarker) map.removeLayer(CLIMATE_PROFILE_STATE.selectedMarker);
+      } catch (_) {}
+      try {
+        if (LAST_PROFILE) drawProfile(LAST_PROFILE);
       } catch (_) {}
     }
 
@@ -1689,6 +2775,7 @@
     try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears, { includeAll: true }); } catch (_) {}
     try { _updateStrategicLegend(); } catch (_) {}
     try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) { _renderStrategic(); if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('years'); } } catch (_) {}
+    try { _refreshClimateProfileSelection({ force: true, immediate: true }); } catch (_) {}
   }
 
   function _setStrategicMode(nextMode) {
@@ -1700,6 +2787,7 @@
     } catch (_) {}
     try { _updateStrategicLegend(); } catch (_) {}
     try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) { _renderStrategic(); if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('mode'); } } catch (_) {}
+    try { _refreshClimateProfileSelection({ force: true, immediate: true }); } catch (_) {}
   }
 
   // Cache strategic grid responses to keep slider scrubbing smooth.
@@ -4938,6 +6026,78 @@
   // --- Strategic cursor readout (tooltip) ---
   let STRATEGIC_CURSOR_EL = null;
   let STRATEGIC_CURSOR_MARKER = null;
+  const STRATEGIC_LOCATION_LABEL_CACHE = new Map();
+  const STRATEGIC_LOCATION_LABEL_INFLIGHT = new Map();
+  let STRATEGIC_LOCATION_LABEL_TIMER = null;
+  let STRATEGIC_CURSOR_LOCATION_KEY = '';
+
+  function _strategicLocationLabelKey(lat, lon) {
+    const latF = Number(lat);
+    const lonF = Number(lon);
+    if (!Number.isFinite(latF) || !Number.isFinite(lonF)) return '';
+    return `${latF.toFixed(3)},${lonF.toFixed(3)}`;
+  }
+
+  function _strategicLocationFallbackLabel(lat, lon) {
+    return `${_fmtNum(lat, 3)}, ${_fmtNum(lon, 3)}`;
+  }
+
+  function _setStrategicCursorLocationLine(label, key) {
+    try {
+      if (!STRATEGIC_CURSOR_EL || STRATEGIC_CURSOR_EL.style.display === 'none') return;
+      if (!key || STRATEGIC_CURSOR_LOCATION_KEY !== key) return;
+      const lines = String(STRATEGIC_CURSOR_EL.textContent || '').split('\n');
+      if (!lines.length) return;
+      lines[0] = `Location: ${label || '—'}`;
+      STRATEGIC_CURSOR_EL.textContent = lines.join('\n');
+    } catch (_) {}
+  }
+
+  function _queueStrategicLocationLabel(lat, lon) {
+    const key = _strategicLocationLabelKey(lat, lon);
+    if (!key) return key;
+    if (STRATEGIC_LOCATION_LABEL_CACHE.has(key)) {
+      _setStrategicCursorLocationLine(STRATEGIC_LOCATION_LABEL_CACHE.get(key), key);
+      return key;
+    }
+    if (STRATEGIC_LOCATION_LABEL_TIMER) {
+      try { clearTimeout(STRATEGIC_LOCATION_LABEL_TIMER); } catch (_) {}
+      STRATEGIC_LOCATION_LABEL_TIMER = null;
+    }
+    STRATEGIC_LOCATION_LABEL_TIMER = setTimeout(async () => {
+      STRATEGIC_LOCATION_LABEL_TIMER = null;
+      if (STRATEGIC_CURSOR_LOCATION_KEY !== key) return;
+      if (STRATEGIC_LOCATION_LABEL_CACHE.has(key)) {
+        _setStrategicCursorLocationLine(STRATEGIC_LOCATION_LABEL_CACHE.get(key), key);
+        return;
+      }
+      if (STRATEGIC_LOCATION_LABEL_INFLIGHT.has(key)) return;
+      const ac = new AbortController();
+      const timeoutId = setTimeout(() => {
+        try { ac.abort(); } catch (_) {}
+      }, 3500);
+      const req = fetch(`/api/location_label?lat=${encodeURIComponent(String(Number(lat).toFixed(6)))}&lon=${encodeURIComponent(String(Number(lon).toFixed(6)))}`, {
+        signal: ac.signal,
+      })
+        .then((res) => res.ok ? res.json() : null)
+        .then((payload) => {
+          const name = payload && typeof payload.location === 'string' ? String(payload.location || '').trim() : '';
+          const finalLabel = name || _strategicLocationFallbackLabel(lat, lon);
+          STRATEGIC_LOCATION_LABEL_CACHE.set(key, finalLabel);
+          _setStrategicCursorLocationLine(finalLabel, key);
+        })
+        .catch(() => {
+          STRATEGIC_LOCATION_LABEL_CACHE.set(key, _strategicLocationFallbackLabel(lat, lon));
+        })
+        .finally(() => {
+          try { clearTimeout(timeoutId); } catch (_) {}
+          STRATEGIC_LOCATION_LABEL_INFLIGHT.delete(key);
+        });
+      STRATEGIC_LOCATION_LABEL_INFLIGHT.set(key, req);
+      await req;
+    }, 140);
+    return key;
+  }
 
   function _ensureStrategicCursorReadout() {
     if (STRATEGIC_CURSOR_EL) return STRATEGIC_CURSOR_EL;
@@ -4975,6 +6135,11 @@
   function _hideStrategicCursorReadout() {
     const el = STRATEGIC_CURSOR_EL;
     if (el) el.style.display = 'none';
+    STRATEGIC_CURSOR_LOCATION_KEY = '';
+    if (STRATEGIC_LOCATION_LABEL_TIMER) {
+      try { clearTimeout(STRATEGIC_LOCATION_LABEL_TIMER); } catch (_) {}
+      STRATEGIC_LOCATION_LABEL_TIMER = null;
+    }
     try {
       if (STRATEGIC_CURSOR_MARKER && STRATEGIC_CURSOR_MARKER._map) {
         STRATEGIC_CURSOR_MARKER._map.removeLayer(STRATEGIC_CURSOR_MARKER);
@@ -5154,6 +6319,7 @@
     _tileMap: null,
     _cursorMoveHandler: null,
     _cursorLeaveHandler: null,
+    _clickHandler: null,
     lastFetchAt: 0,
     pendingFetch: null,
     fetchAbort: null,
@@ -5543,6 +6709,11 @@
     _strategicSyncTimescaleSelectsFromRange();
     _updateStrategicLegend();
     _strategicShowRangeTooltip();
+    try {
+      if (_climateProfileIsActive() && CLIMATE_PROFILE_STATE.selectedPoint) {
+        _scheduleClimateProfileForPoint(CLIMATE_PROFILE_STATE.selectedPoint, { force: true });
+      }
+    } catch (_) {}
     if (!(opts && opts.skipFetch)) _scheduleStrategicFetch('range');
   }
 
@@ -5796,9 +6967,28 @@
 
   function _makeTileMap(points) {
     const m = new Map();
+    let rowMin = Infinity;
+    let rowMax = -Infinity;
+    let colMin = Infinity;
+    let colMax = -Infinity;
     for (const p of (points || [])) {
-      if (p && p.tile_id) m.set(String(p.tile_id), p);
+      if (!(p && p.tile_id)) continue;
+      m.set(String(p.tile_id), p);
+      const row = Number(p.row);
+      const col = Number(p.col);
+      if (Number.isFinite(row)) {
+        rowMin = Math.min(rowMin, row);
+        rowMax = Math.max(rowMax, row);
+      }
+      if (Number.isFinite(col)) {
+        colMin = Math.min(colMin, col);
+        colMax = Math.max(colMax, col);
+      }
     }
+    m.__rowMin = Number.isFinite(rowMin) ? rowMin : null;
+    m.__rowMax = Number.isFinite(rowMax) ? rowMax : null;
+    m.__colMin = Number.isFinite(colMin) ? colMin : null;
+    m.__colMax = Number.isFinite(colMax) ? colMax : null;
     return m;
   }
 
@@ -5964,7 +7154,14 @@
     const latMin = bbox.latMin;
     const lonMin = bbox.lonMin;
     const stepLat = tileKm / 111.32;
-    const row0 = Math.floor((lat - latMin) / stepLat);
+    const rowMin = Number.isFinite(Number(tileMap.__rowMin)) ? Number(tileMap.__rowMin) : null;
+    const rowMax = Number.isFinite(Number(tileMap.__rowMax)) ? Number(tileMap.__rowMax) : null;
+    const colMinBound = Number.isFinite(Number(tileMap.__colMin)) ? Number(tileMap.__colMin) : null;
+    const colMaxBound = Number.isFinite(Number(tileMap.__colMax)) ? Number(tileMap.__colMax) : null;
+    const row0Raw = Math.floor((lat - latMin) / stepLat);
+    const row0 = (rowMin !== null && rowMax !== null)
+      ? Math.max(rowMin, Math.min(Math.max(rowMin, rowMax - 1), row0Raw))
+      : row0Raw;
     const latC0 = latMin + (row0 + 0.5) * stepLat;
     const latC1 = latC0 + stepLat;
     const tLat = _clamp01((lat - latC0) / Math.max(1e-9, (latC1 - latC0)));
@@ -5972,7 +7169,10 @@
     function rowValue(row, latC) {
       const c = Math.max(0.05, Math.cos(latC * Math.PI / 180));
       const stepLon = tileKm / (111.32 * c);
-      const col0 = Math.floor((lon - lonMin) / stepLon);
+      const col0Raw = Math.floor((lon - lonMin) / stepLon);
+      const col0 = (colMinBound !== null && colMaxBound !== null)
+        ? Math.max(colMinBound, Math.min(Math.max(colMinBound, colMaxBound - 1), col0Raw))
+        : col0Raw;
       const lonC0 = lonMin + (col0 + 0.5) * stepLon;
       const lonC1 = lonC0 + stepLon;
       const tLon = _clamp01((lon - lonC0) / Math.max(1e-9, (lonC1 - lonC0)));
@@ -7775,10 +8975,14 @@
         STRATEGIC_STATE.layer = _strategicNormalizeLayer(strategicLayerSelect.value);
         try { strategicLayerSelect.value = STRATEGIC_STATE.layer; } catch (_) {}
       }
-      if (strategicWindMode) STRATEGIC_STATE.windMode = strategicWindMode.value;
+      if (strategicWindMode) {
+        const windModeSetting = String((SETTINGS && SETTINGS.strategicWindMode) || strategicWindMode.value || 'flow');
+        strategicWindMode.value = windModeSetting;
+        STRATEGIC_STATE.windMode = windModeSetting;
+      }
       if (strategicWindOn) {
-        // Default: wind overlay on for wind layer, off otherwise
-        const want = (STRATEGIC_STATE.layer === 'wind_speed');
+        const windPref = Boolean(SETTINGS && SETTINGS.strategicWindOn);
+        const want = windPref || (STRATEGIC_STATE.layer === 'wind_speed');
         strategicWindOn.checked = want;
         STRATEGIC_STATE.windOn = want;
       }
@@ -7992,7 +9196,14 @@
           }
         })();
 
+        const locationKey = _queueStrategicLocationLabel(ll.lat, ll.lng);
+        STRATEGIC_CURSOR_LOCATION_KEY = locationKey;
+        const cachedLocationLabel = locationKey && STRATEGIC_LOCATION_LABEL_CACHE.has(locationKey)
+          ? STRATEGIC_LOCATION_LABEL_CACHE.get(locationKey)
+          : _strategicLocationFallbackLabel(ll.lat, ll.lng);
+
         const lines = [
+          `Location: ${cachedLocationLabel || '—'}`,
           `${dateStr}`,
           `Years: ${yearsTxt || '—'}`,
           `Mode: ${modeTxt || '—'}`,
@@ -8057,6 +9268,25 @@
         c.addEventListener('touchcancel', STRATEGIC_STATE._cursorLeaveHandler, { passive: true });
       } catch (_) {}
 
+      try {
+        if (STRATEGIC_STATE._clickHandler) map.off('click', STRATEGIC_STATE._clickHandler);
+        STRATEGIC_STATE._clickHandler = (ev) => {
+          try {
+            if (!_climateProfileIsActive()) return;
+            const ll = ev && ev.latlng;
+            if (!ll) return;
+            _scheduleClimateProfileForPoint({ lat: Number(ll.lat), lon: Number(ll.lng) }, { force: false });
+          } catch (_) {}
+        };
+        map.on('click', STRATEGIC_STATE._clickHandler);
+      } catch (_) {}
+
+      try {
+        if (CLIMATE_PROFILE_STATE.selectedPoint) {
+          _ensureClimateSelectedMarker(CLIMATE_PROFILE_STATE.selectedPoint);
+        }
+      } catch (_) {}
+
       _scheduleStrategicFetch('init');
       _updateStrategicLegend();
       _syncStrategicQuickLayer();
@@ -8091,7 +9321,15 @@
         if (c && STRATEGIC_STATE._cursorLeaveHandler) c.removeEventListener('touchcancel', STRATEGIC_STATE._cursorLeaveHandler);
       } catch (_) {}
       STRATEGIC_STATE._cursorLeaveHandler = null;
+      try {
+        if (STRATEGIC_STATE._clickHandler) map.off('click', STRATEGIC_STATE._clickHandler);
+      } catch (_) {}
+      STRATEGIC_STATE._clickHandler = null;
       _hideStrategicCursorReadout();
+
+      try {
+        if (CLIMATE_PROFILE_STATE.selectedMarker) map.removeLayer(CLIMATE_PROFILE_STATE.selectedMarker);
+      } catch (_) {}
 
       if (STRATEGIC_STATE.windLayer) {
         STRATEGIC_STATE.windLayer.stop();
@@ -8147,12 +9385,14 @@
   if (strategicWindOn) {
     strategicWindOn.addEventListener('change', () => {
       STRATEGIC_STATE.windOn = Boolean(strategicWindOn.checked);
+      try { SETTINGS.strategicWindOn = Boolean(strategicWindOn.checked); } catch (_) {}
       _renderStrategic();
     });
   }
   if (strategicWindMode) {
     strategicWindMode.addEventListener('change', () => {
       STRATEGIC_STATE.windMode = strategicWindMode.value;
+      try { SETTINGS.strategicWindMode = String(strategicWindMode.value || 'flow'); } catch (_) {}
       _renderStrategic();
     });
   }
@@ -8233,12 +9473,22 @@
       const attach = (el, mode) => {
         if (!el) return;
         el.addEventListener('pointerdown', (ev) => {
+          ev.stopPropagation();
           try { el.setPointerCapture(ev.pointerId); } catch (_) {}
           begin(mode, ev);
         });
-        el.addEventListener('pointermove', move);
-        el.addEventListener('pointerup', end);
-        el.addEventListener('pointercancel', end);
+        el.addEventListener('pointermove', (ev) => {
+          ev.stopPropagation();
+          move(ev);
+        });
+        el.addEventListener('pointerup', (ev) => {
+          ev.stopPropagation();
+          end(ev);
+        });
+        el.addEventListener('pointercancel', (ev) => {
+          ev.stopPropagation();
+          end(ev);
+        });
       };
 
       attach(strategicRangeThumbStart, 'start');
@@ -8391,12 +9641,14 @@
     } catch (_) {}
     if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
     if (setInterpolation) setInterpolation.checked = Boolean(s.interpolation);
+    if (strategicWindOn) strategicWindOn.checked = Boolean(s.strategicWindOn);
+    if (strategicWindMode) strategicWindMode.value = String(s.strategicWindMode || 'flow');
     if (setWindDensity) setWindDensity.value = String(Number(s.windDensity || 40));
     if (setAnimSpeed) setAnimSpeed.value = String(Number(s.animSpeed || 1.0));
     if (setGridKm) setGridKm.value = String(Number(s.gridKm || 50));
-    const activeHours = _getActiveHoursValue(s);
-    if (setTourActiveTime) setTourActiveTime.value = activeHours;
-    if (setClimateActiveTime) setClimateActiveTime.value = activeHours;
+    const activeHours = _parseActiveHoursRange(_getActiveHoursValue(s));
+    if (setActiveHourStart) setActiveHourStart.value = String(activeHours.start);
+    if (setActiveHourEnd) setActiveHourEnd.value = String(activeHours.end);
     if (setWindWeighting) setWindWeighting.value = String(s.windWeighting || 'relative');
 
     if (setOverlayMode) setOverlayMode.value = String(s.overlayMode || 'temperature');
@@ -8452,13 +9704,14 @@
     }
     base.includeSea = Boolean(setIncludeSea && setIncludeSea.checked);
     base.interpolation = Boolean(setInterpolation && setInterpolation.checked);
+    base.strategicWindOn = Boolean(strategicWindOn && strategicWindOn.checked);
+    base.strategicWindMode = String(strategicWindMode && strategicWindMode.value ? strategicWindMode.value : 'flow');
     base.windDensity = Number(setWindDensity && setWindDensity.value) || 40;
     base.animSpeed = Number(setAnimSpeed && setAnimSpeed.value) || 1.0;
     base.gridKm = Number(setGridKm && setGridKm.value) || 50;
-    base.activeHours = String(
-      (setTourActiveTime && setTourActiveTime.value)
-        ? setTourActiveTime.value
-        : ((setClimateActiveTime && setClimateActiveTime.value) ? setClimateActiveTime.value : '10-16')
+    base.activeHours = _formatActiveHoursRange(
+      Number(setActiveHourStart && setActiveHourStart.value),
+      Number(setActiveHourEnd && setActiveHourEnd.value)
     );
     base.rideHours = base.activeHours;
     try { delete base.tentHours; } catch (_) {}
@@ -8605,18 +9858,9 @@
       const maxH = Math.max(minH, window.innerHeight - 220); // keep map at least ~220px
       const hh = Math.max(minH, Math.min(maxH, Math.round(Number(h) || 160)));
       if (profilePanel) profilePanel.style.height = `${hh}px`;
-      // Account for Tour Summary box height (tightened to 64px)
-      const tsdb = document.getElementById('tourSummary');
-      const tsdbH = tsdb && tsdb.offsetHeight ? tsdb.offsetHeight : 64;
-      if (mapEl) {
-        mapEl.style.height = `calc(100% - ${hh + tsdbH}px)`;
-        // Ensure a sensible minimum height for the map container
-        const rect = mapEl.getBoundingClientRect();
-        if (!rect.height || rect.height < 200) {
-          mapEl.style.height = `${Math.max(220, window.innerHeight - (hh + tsdbH))}px`;
-        }
-      }
+      _reflowBottomLayout();
       // Align tooltip just above the profile panel (legacy floating tooltip only)
+      const tsdbH = tourSummaryPanel && tourSummaryPanel.offsetHeight ? tourSummaryPanel.offsetHeight : 64;
       const bottomGap = hh + tsdbH + 16; // slight spacing above profile
       try {
         if (profileTooltip && profilePanel && profileTooltip.parentElement === profilePanel) {
@@ -8625,11 +9869,36 @@
       } catch (_) {}
       // Resize canvases and redraw
       resizeProfileCanvas();
-      if (LAST_PROFILE) drawProfile(LAST_PROFILE);
-      try { if (map && map.invalidateSize) map.invalidateSize(true); } catch(_) {}
+      if (_climateProfileIsActive()) {
+        if (LAST_CLIMATE_PROFILE) drawClimateProfile(LAST_CLIMATE_PROFILE);
+        else _drawClimateProfilePlaceholder('Click the climatic map to inspect weather at a location.');
+      } else if (LAST_PROFILE) {
+        drawProfile(LAST_PROFILE);
+      }
       // Persist
       try { localStorage.setItem('wm_profile_height', String(hh)); } catch(_) {}
     } catch (e) { console.warn('setProfileHeight error', e); }
+  }
+
+  let PROFILE_REDRAW_RAF = 0;
+  function _scheduleProfileRedraw() {
+    try {
+      if (PROFILE_REDRAW_RAF) {
+        try { cancelAnimationFrame(PROFILE_REDRAW_RAF); } catch (_) {}
+        PROFILE_REDRAW_RAF = 0;
+      }
+      PROFILE_REDRAW_RAF = requestAnimationFrame(() => {
+        PROFILE_REDRAW_RAF = 0;
+        try {
+          if (_climateProfileIsActive()) {
+            if (LAST_CLIMATE_PROFILE) drawClimateProfile(LAST_CLIMATE_PROFILE);
+            else _drawClimateProfilePlaceholder('Click the climatic map to inspect weather at a location.');
+            return;
+          }
+          if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+        } catch (_) {}
+      });
+    } catch (_) {}
   }
 
   // Initialize profile height from storage
@@ -9576,8 +10845,7 @@
     
     // Precompute profile x positions for cursor snapping (scaled to route length)
     PROFILE_XS = dist.map(d => xAt(d * scale));
-    // Calibrate Mouse-X mapping using devicePixelRatio only (fix 2x on Retina)
-    CURSOR_X_SCALE = 1 / (window.devicePixelRatio || 1);
+    CURSOR_X_SCALE = 1;
     
     })(); // End async IIFE
   }
@@ -9696,16 +10964,15 @@
     if (!dist.length || index < 0 || index >= dist.length) return;
     const snapX = PROFILE_XS[index] ?? (padL + (innerW * (dist[index] / (dist[dist.length - 1] || 1))));
     const xDisplay = (typeof displayX === 'number') ? displayX : snapX;
-    const dpr = (window.devicePixelRatio || 1);
-    const x = xDisplay / dpr; // align drawing with canvas transform scaling
+    const x = xDisplay;
     // Clear cursor canvas and draw vertical dashed line
     profileCursorCtx.clearRect(0, 0, W, H);
     profileCursorCtx.strokeStyle = '#666';
     profileCursorCtx.lineWidth = 1;
     profileCursorCtx.setLineDash([4,4]);
     profileCursorCtx.beginPath();
-    profileCursorCtx.moveTo(x, padTop / dpr);
-    profileCursorCtx.lineTo(x, (padTop + innerH) / dpr);
+    profileCursorCtx.moveTo(x, padTop);
+    profileCursorCtx.lineTo(x, padTop + innerH);
     profileCursorCtx.stroke();
     profileCursorCtx.setLineDash([]);
 
@@ -9718,7 +10985,7 @@
         if (Number.isFinite(snapX)) {
           profileCursorCtx.fillStyle = 'rgba(30,144,255,0.9)';
           profileCursorCtx.beginPath();
-          profileCursorCtx.arc(snapX / dpr, (padTop + 8) / dpr, 3, 0, Math.PI*2);
+          profileCursorCtx.arc(snapX, padTop + 8, 3, 0, Math.PI*2);
           profileCursorCtx.fill();
         }
         // Render text with measurement
@@ -10656,50 +11923,67 @@
         renderTourSummary(s);
       } catch (e) { console.warn('tour_summary parse error', e); }
     });
-      // Mouse cursor interactions
-      if (profileCanvas) {
-        profileCanvas.addEventListener('mousemove', (e) => {
-          if (!LAST_PROFILE || PROFILE_XS.length === 0) return;
+    // Mouse cursor interactions
+    if (profileCanvas) {
+      profileCanvas.addEventListener('mousemove', (e) => {
+        if (_climateProfileIsActive() && LAST_CLIMATE_PROFILE && PROFILE_XS.length > 0) {
           const rect = profileCanvas.getBoundingClientRect();
           const xClient = Number(e.clientX - rect.left);
-          const { padTop, padBot, padL, padR } = getPads();
-          const W = Math.max(1, Math.floor(rect.width));
-          const H = Math.max(1, Math.floor(rect.height));
-          const innerW = Math.max(1, W - padL - padR);
-          const innerH = Math.max(1, H - padTop - padBot);
-          // Calibrated Mouse-X mapped onto profile grid space
-          // Map mouse X directly into the profile domain and clamp
-          const xCal = xClient; // unified scale
-          const xFinalRaw = xCal + CURSOR_X_OFFSET;
-          const xFinal = Math.max(padL, Math.min(padL + innerW, xFinalRaw));
-          // Snap to nearest x
-          let bestI = 0, bestDx = Infinity;
+          const geom = CLIMATE_PROFILE_GEOMETRY;
+          if (!geom) return;
+          const xFinal = Math.max(geom.padL, Math.min(geom.padL + geom.innerW, xClient));
+          let bestI = 0;
+          let bestDx = Infinity;
           for (let i = 0; i < PROFILE_XS.length; i++) {
             const dx = Math.abs(PROFILE_XS[i] - xFinal);
-            if (dx < bestDx) { bestDx = dx; bestI = i; }
+            if (dx < bestDx) {
+              bestDx = dx;
+              bestI = i;
+            }
           }
-          window.updateProfileCursor(bestI, xFinal);
-          if (DEBUG_CURSOR && profileCursorCtx) {
-            // Draw additional red/blue guide lines for test comparison
-            const rect2 = profileCanvas.getBoundingClientRect();
-            const W = Math.max(1, Math.floor(rect2.width));
-            const H = Math.max(1, Math.floor(rect2.height));
-            // Do not clear; overlay on top of dashed line
-            profileCursorCtx.strokeStyle = 'rgba(255,0,0,0.8)';
-            profileCursorCtx.setLineDash([2,2]);
-            profileCursorCtx.beginPath();
-            profileCursorCtx.moveTo(xClient / dpr, padTop / dpr);
-            profileCursorCtx.lineTo(xClient / dpr, (padTop + Math.max(1, H - padTop - padBot)) / dpr);
-            profileCursorCtx.stroke();
-            profileCursorCtx.strokeStyle = 'rgba(0,0,255,0.6)';
-            profileCursorCtx.beginPath();
-            profileCursorCtx.moveTo(xFinal / dpr, padTop / dpr);
-            profileCursorCtx.lineTo(xFinal / dpr, (padTop + Math.max(1, H - padTop - padBot)) / dpr);
-            profileCursorCtx.stroke();
-            profileCursorCtx.setLineDash([]);
+          _updateClimateProfileCursor(bestI, xFinal);
+          return;
+        }
+        if (!LAST_PROFILE || PROFILE_XS.length === 0) return;
+        const rect = profileCanvas.getBoundingClientRect();
+        const xClient = Number(e.clientX - rect.left);
+        const { padTop, padBot, padL, padR } = getPads();
+        const W = Math.max(1, Math.floor(rect.width));
+        const H = Math.max(1, Math.floor(rect.height));
+        const innerW = Math.max(1, W - padL - padR);
+        const xCal = xClient;
+        const xFinalRaw = xCal + CURSOR_X_OFFSET;
+        const xFinal = Math.max(padL, Math.min(padL + innerW, xFinalRaw));
+        let bestI = 0;
+        let bestDx = Infinity;
+        for (let i = 0; i < PROFILE_XS.length; i++) {
+          const dx = Math.abs(PROFILE_XS[i] - xFinal);
+          if (dx < bestDx) {
+            bestDx = dx;
+            bestI = i;
           }
-        });
+        }
+        window.updateProfileCursor(bestI, xFinal);
+        if (DEBUG_CURSOR && profileCursorCtx) {
+          profileCursorCtx.strokeStyle = 'rgba(255,0,0,0.8)';
+          profileCursorCtx.setLineDash([2,2]);
+          profileCursorCtx.beginPath();
+          profileCursorCtx.moveTo(xClient, padTop);
+          profileCursorCtx.lineTo(xClient, padTop + Math.max(1, H - padTop - padBot));
+          profileCursorCtx.stroke();
+          profileCursorCtx.strokeStyle = 'rgba(0,0,255,0.6)';
+          profileCursorCtx.beginPath();
+          profileCursorCtx.moveTo(xFinal, padTop);
+          profileCursorCtx.lineTo(xFinal, padTop + Math.max(1, H - padTop - padBot));
+          profileCursorCtx.stroke();
+          profileCursorCtx.setLineDash([]);
+        }
+      });
         profileCanvas.addEventListener('mouseleave', () => {
+          if (_climateProfileIsActive()) {
+            _hideClimateProfileTooltip();
+            return;
+          }
           if (profileTooltip) {
             profileTooltip.style.visibility = 'hidden';
             profileTooltip.style.opacity = '0';
@@ -11208,6 +12492,10 @@
       if (!panel) return;
       const badgesRow = document.getElementById('tourSummaryBadges');
       if (!badgesRow) return;
+      try {
+        badgesRow.style.minHeight = '58px';
+        badgesRow.style.padding = '7px 12px';
+      } catch (_) {}
       const badgesWrap = document.getElementById('tourSummaryBadgesItems') || badgesRow;
       badgesWrap.innerHTML = '';
       const fmt = (v, d=1) => (typeof v === 'number' && isFinite(v)) ? v.toFixed(d) : '-';
@@ -11282,19 +12570,7 @@
       // Double rAF ensures DOM has fully reflowed before measurement
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          try {
-            const tsdb = document.getElementById('tourSummary');
-            const tsdbH = tsdb ? tsdb.offsetHeight : 64;
-            const currentProfileH = profilePanel ? profilePanel.offsetHeight : 160;
-            if (mapEl) {
-              mapEl.style.height = `calc(100% - ${currentProfileH + tsdbH}px)`;
-              const rect = mapEl.getBoundingClientRect();
-              if (!rect.height || rect.height < 200) {
-                mapEl.style.height = `${Math.max(220, window.innerHeight - (currentProfileH + tsdbH))}px`;
-              }
-              if (map && map.invalidateSize) map.invalidateSize(true);
-            }
-          } catch (_) {}
+          try { _reflowBottomLayout(); } catch (_) {}
         });
       });
     } catch (e) { console.warn('renderTourSummary error', e); }
@@ -11302,7 +12578,18 @@
 
 
   // Redraw profile on resize
-  window.addEventListener('resize', () => { if (LAST_PROFILE) drawProfile(LAST_PROFILE); });
+  window.addEventListener('resize', () => {
+    _scheduleProfileRedraw();
+  });
+
+  try {
+    if (typeof ResizeObserver === 'function' && profilePanel) {
+      const profileResizeObserver = new ResizeObserver(() => {
+        _scheduleProfileRedraw();
+      });
+      profileResizeObserver.observe(profilePanel);
+    }
+  } catch (_) {}
 
   (function initResizeDrag(){
     if (!resizeHandle) return;
@@ -11383,6 +12670,7 @@
         'rainHigh',
         'windHeadComfort',
         'windTailComfort',
+        'activeHours',
       ];
       let needsRefetch = false;
       try {
@@ -11404,6 +12692,12 @@
         }
         if (LAST_PROFILE) drawProfile(LAST_PROFILE);
       }
+
+      try {
+        if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
+          _refreshClimateProfileSelection({ force: true, immediate: true });
+        }
+      } catch (_) {}
     });
   }
   // Share snapshot: capture full window and share/copy/download
