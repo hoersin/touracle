@@ -30,6 +30,7 @@
       box-sizing: border-box;
       transition: width 220ms ease;
       font-family: system-ui, -apple-system, sans-serif;
+      pointer-events: none;
     }
     body.wm-sidebar-resizing #wmSidebar,
     body.wm-sidebar-resizing #mainPane,
@@ -45,6 +46,7 @@
       padding: 0 10px;
       box-sizing: border-box;
       border-bottom: 1px solid rgba(0,0,0,0.08);
+      pointer-events: auto;
     }
     body.wm-sidebar-collapsed #wmSidebarHeader {
       justify-content: center;
@@ -67,18 +69,20 @@
       overflow: auto;
       padding: 10px;
       box-sizing: border-box;
+      pointer-events: auto;
     }
     body.wm-sidebar-collapsed #wmSidebarScroll { display: none; }
     #wmSidebarResizeHandle {
       position: absolute;
       top: 0;
       right: 0;
-      width: 10px;
+      width: 8px;
       height: 100%;
       cursor: col-resize;
       z-index: 2205;
       touch-action: none;
       background: transparent;
+      pointer-events: auto;
     }
     #wmSidebarResizeHandle::after {
       content: '';
@@ -200,14 +204,10 @@
     }
 
     /* Preferences visibility per mode */
-    body[data-mode="tour"] .wm-pref-group[data-wm-scope="climate"] { display: none; }
-    body[data-mode="climate"] .wm-pref-group[data-wm-scope="tour"] { display: none; }
-
-    /* Lucky Days conditions: Climate mode has no route context → no head/tail split */
-    body[data-mode="climate"] label[for="setWindTailComfort"],
-    body[data-mode="climate"] #setWindTailComfort {
-      display: none;
-    }
+    body[data-mode="tour"] .wm-pref-section[data-wm-scope="climate"],
+    body[data-mode="tour"] .wm-pref-row[data-wm-scope="climate"] { display: none; }
+    body[data-mode="climate"] .wm-pref-section[data-wm-scope="tour"],
+    body[data-mode="climate"] .wm-pref-row[data-wm-scope="tour"] { display: none; }
 
     /* Main pane shifts right of sidebar */
     #mainPane {
@@ -250,11 +250,18 @@
     #controls label { font-family: inherit; }
     #strategicControls { display: none; }
 
-    /* Climate mode base map: apply the desaturated look ONLY for the neutral basemap.
-       Wind/rain layers use the standard OSM basemap (no filter). */
-    body[data-mode="climate"][data-wm-basemap="neutral"] .leaflet-tile-pane {
-      filter: saturate(0.45) brightness(1.08) contrast(0.92) sepia(0.12);
-    }
+      /* Climate mode uses a stable neutral basemap stack without CSS effects. */
+      #map .wm-neutral-base-pane,
+      #map .wm-neutral-base-pane .leaflet-layer,
+      #map .wm-neutral-base-pane img,
+      #map .wm-neutral-label-pane,
+      #map .wm-neutral-label-pane .leaflet-layer,
+      #map .wm-neutral-label-pane img {
+        filter: none !important;
+        opacity: 1 !important;
+        mix-blend-mode: normal !important;
+      }
+      #map .wm-neutral-label-pane { pointer-events: none; }
 
     /* In-map color legend (lower-left) */
     .wm-map-legend {
@@ -275,10 +282,11 @@
       max-width: 320px;
       pointer-events: auto;
       cursor: default;
+      margin-bottom: 10px;
     }
     /* In Climate mode, lift legend above the fixed timeline */
     body[data-mode="climate"] #map .wm-map-legend {
-      bottom: calc(20px + var(--wm-strategic-timeline-h, 0px) + env(safe-area-inset-bottom, 0px));
+      bottom: calc(30px + var(--wm-strategic-timeline-h, 0px) + env(safe-area-inset-bottom, 0px));
     }
     .wm-map-legend.hidden { display: none; }
     .wm-map-legend .row {
@@ -537,6 +545,17 @@
     .wm-range-handle.wm-active {
       transform: translate(-50%, -50%) scale(1.10);
     }
+    .wm-range-thumb::before,
+    .wm-range-handle::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 28px;
+      height: 28px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+    }
     .wm-range-tooltip {
       position: absolute;
       left: 50%;
@@ -573,51 +592,6 @@
       grid-template-columns: 1fr 1fr;
       gap: 10px 12px;
       align-items: center;
-    }
-    .wm-spinbox {
-      display: inline-flex;
-      align-items: stretch;
-      width: 100%;
-      min-width: 0;
-      border: 1px solid rgba(15, 23, 42, 0.14);
-      border-radius: 10px;
-      background: #fff;
-      overflow: hidden;
-      box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
-    }
-    .wm-spinbox-input {
-      flex: 1 1 auto;
-      width: 100%;
-      min-width: 0;
-      border: 0 !important;
-      border-radius: 0 !important;
-      box-shadow: none !important;
-      padding: 8px 10px !important;
-      text-align: center;
-      appearance: textfield;
-      -moz-appearance: textfield;
-    }
-    .wm-spinbox-input::-webkit-outer-spin-button,
-    .wm-spinbox-input::-webkit-inner-spin-button {
-      -webkit-appearance: none;
-      margin: 0;
-    }
-    .wm-spinbox-btn {
-      flex: 0 0 32px;
-      border: 0;
-      background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-      color: #334155;
-      font-size: 18px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: background 120ms ease, color 120ms ease;
-    }
-    .wm-spinbox-btn:hover {
-      background: linear-gradient(180deg, #eef7f1 0%, #dff0e6 100%);
-      color: #166534;
-    }
-    .wm-spinbox-btn:active {
-      background: #d7e7dd;
     }
     .wm-input-shell {
       width: 100%;
@@ -1038,26 +1012,488 @@
     body[data-mode="settings"] #profilePanel { display: none; }
 
     /* Settings view (embedded in sidebar) */
-    #settingsView { display: block; position: static; inset: auto; padding: 0; box-sizing: border-box; overflow: visible; background: transparent; }
-    .wm-card { background: #fff; border: 1px solid rgba(0,0,0,0.08); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,0.08); max-width: 860px; margin: 0 auto; padding: 14px 16px; }
-    .wm-card h3 { margin: 0 0 10px 0; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; }
-    .wm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: center; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; }
-    .wm-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+    #settingsView {
+      display: block;
+      position: static;
+      inset: auto;
+      padding: 0;
+      box-sizing: border-box;
+      overflow: visible;
+      background: transparent;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    .wm-card {
+      background: #fff;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 18px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 14px 16px;
+    }
+    .wm-card h3 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      color: #0f172a;
+      font-weight: 800;
+    }
+    .wm-pref-card {
+      max-width: none;
+      margin: 0;
+      box-shadow: none;
+      padding: 0;
+      background: transparent;
+      border: none;
+    }
+    .wm-pref-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .wm-pref-kicker {
+      margin: 0 0 4px 0;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #0f766e;
+    }
+    .wm-pref-head-note {
+      margin: 5px 0 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #475569;
+      max-width: 42ch;
+    }
+    .wm-pref-live {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 32px;
+      min-width: 140px;
+      padding: 8px 11px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.78);
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      color: #0f172a;
+      font-size: 11px;
+      font-weight: 700;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+      white-space: nowrap;
+    }
+    .wm-pref-live-ico {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      color: #047857;
+      background: rgba(16, 185, 129, 0.14);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12);
+      font-size: 11px;
+      line-height: 1;
+    }
+    .wm-pref-live[data-state="pending"] {
+      color: #334155;
+      border-color: rgba(148, 163, 184, 0.28);
+      background: rgba(248, 250, 252, 0.96);
+    }
+    .wm-pref-live[data-state="pending"] .wm-pref-live-ico {
+      color: #64748b;
+      background: rgba(148, 163, 184, 0.18);
+      box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.14);
+    }
+    .wm-pref-live[data-state="saved"] .wm-pref-live-ico,
+    .wm-pref-live[data-state="idle"] .wm-pref-live-ico {
+      color: #047857;
+      background: rgba(16, 185, 129, 0.14);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12);
+    }
+    .wm-pref-sections {
+      display: grid;
+      gap: 10px;
+    }
+    .wm-pref-section {
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 16px;
+      padding: 12px;
+      background:
+        radial-gradient(circle at top right, rgba(125, 211, 252, 0.16), transparent 36%),
+        linear-gradient(180deg, rgba(255,255,255,0.96), rgba(248,250,252,0.96));
+    }
+    .wm-pref-section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .wm-pref-section-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .wm-pref-section-note {
+      margin: 0;
+      font-size: 11px;
+      color: #64748b;
+    }
+    .wm-pref-section-body {
+      display: grid;
+      gap: 8px;
+    }
+    .wm-pref-row {
+      display: grid;
+      grid-template-columns: minmax(132px, 180px) minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      padding: 4px 0;
+    }
+    .wm-pref-label {
+      min-width: 0;
+    }
+    .wm-pref-name {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.25;
+    }
+    .wm-pref-sub {
+      display: block;
+      margin-top: 2px;
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.3;
+    }
+    .wm-pref-control,
+    .wm-pref-years {
+      min-width: 0;
+    }
+    .wm-pref-control.wm-pref-toggle-wrap {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .wm-pref-select,
+    .wm-pref-date {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      background: rgba(255,255,255,0.88);
+      color: #0f172a;
+      font-size: 12px;
+      box-sizing: border-box;
+      box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
+    }
+    .wm-pref-select:focus-visible,
+    .wm-pref-date:focus-visible {
+      outline: 2px solid rgba(14, 165, 233, 0.28);
+      outline-offset: 2px;
+      border-color: rgba(14, 165, 233, 0.4);
+    }
+    .wm-pref-years {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #settingsView .wm-mini-btn {
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: rgba(255,255,255,0.84);
+      border-color: rgba(15, 23, 42, 0.12);
+    }
+    #settingsView .wm-mini-btn[aria-pressed="true"] {
+      background: rgba(14, 165, 233, 0.16);
+      border-color: rgba(14, 165, 233, 0.36);
+      color: #0f172a;
+    }
+
+    .wm-slider-field {
+      min-width: 0;
+    }
+    .wm-slider-shell {
+      --wm-slider-pos: 50%;
+      position: relative;
+      min-height: 52px;
+      padding-top: 18px;
+    }
+    .wm-slider-track,
+    .wm-slider-fill {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 30px;
+      height: 8px;
+      border-radius: 999px;
+    }
+    .wm-slider-track {
+      background: linear-gradient(90deg, rgba(148, 163, 184, 0.28), rgba(148, 163, 184, 0.12));
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.45);
+    }
+    .wm-slider-fill {
+      right: auto;
+      width: var(--wm-fill-width, 0%);
+      background: linear-gradient(90deg, rgba(14, 165, 233, 0.85), rgba(37, 99, 235, 0.85));
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.38) inset, 0 3px 8px rgba(37, 99, 235, 0.12);
+    }
+    .wm-slider-shell[data-track="temp"] .wm-slider-track {
+      background: linear-gradient(90deg, #3b82f6 0%, #10b981 42%, #facc15 70%, #ef4444 100%);
+    }
+    .wm-slider-shell[data-track="temp"] .wm-slider-fill {
+      background: linear-gradient(90deg, #2563eb 0%, #10b981 45%, #f59e0b 72%, #dc2626 100%);
+    }
+    .wm-slider-shell[data-track="rain"] .wm-slider-track {
+      background: linear-gradient(90deg, #ddd6fe 0%, #c4b5fd 34%, #8b5cf6 68%, #5b21b6 100%);
+    }
+    .wm-slider-shell[data-track="rain"] .wm-slider-fill {
+      background: linear-gradient(90deg, #c4b5fd 0%, #8b5cf6 52%, #4c1d95 100%);
+    }
+    .wm-slider-shell[data-track="wind"] .wm-slider-track {
+      background: linear-gradient(90deg, #d1d5db 0%, #cbd5e1 40%, #93c5fd 100%);
+    }
+    .wm-slider-shell[data-track="wind"] .wm-slider-fill {
+      background: linear-gradient(90deg, #9ca3af 0%, #94a3b8 45%, #60a5fa 100%);
+    }
+    .wm-slider-shell[data-track="season"] .wm-slider-track {
+      background: linear-gradient(90deg, #dbeafe 0%, #93c5fd 50%, #2563eb 100%);
+    }
+    .wm-slider-shell[data-track="season"] .wm-slider-fill {
+      background: linear-gradient(90deg, #93c5fd 0%, #3b82f6 65%, #1d4ed8 100%);
+    }
+    .wm-slider-shell[data-track="history"] .wm-slider-track {
+      background: linear-gradient(90deg, #fde68a 0%, #fb923c 45%, #ea580c 100%);
+    }
+    .wm-slider-shell[data-track="history"] .wm-slider-fill {
+      background: linear-gradient(90deg, #fbbf24 0%, #f97316 52%, #c2410c 100%);
+    }
+    .wm-slider-shell[data-track="neutral"] .wm-slider-track {
+      background: linear-gradient(90deg, #e2e8f0 0%, #cbd5e1 52%, #94a3b8 100%);
+    }
+    .wm-slider-shell[data-track="neutral"] .wm-slider-fill {
+      background: linear-gradient(90deg, #94a3b8 0%, #64748b 100%);
+    }
+    .wm-slider-shell:hover .wm-slider-track {
+      filter: saturate(1.07) brightness(1.03);
+    }
+    .wm-slider-native {
+      -webkit-appearance: none;
+      appearance: none;
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 18px;
+      width: 100%;
+      height: 26px;
+      margin: 0;
+      background: transparent;
+      cursor: pointer;
+      outline: none;
+    }
+    .wm-slider-native::-webkit-slider-runnable-track {
+      height: 8px;
+      background: transparent;
+      border: none;
+    }
+    .wm-slider-native::-moz-range-track {
+      height: 8px;
+      background: transparent;
+      border: none;
+    }
+    .wm-slider-native::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #fff;
+      border: 2px solid rgba(15, 23, 42, 0.26);
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+      margin-top: -5px;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .wm-slider-native::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #fff;
+      border: 2px solid rgba(15, 23, 42, 0.26);
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .wm-slider-native:hover::-webkit-slider-thumb,
+    .wm-slider-native:focus-visible::-webkit-slider-thumb {
+      transform: scale(1.12);
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.22);
+    }
+    .wm-slider-native:hover::-moz-range-thumb,
+    .wm-slider-native:focus-visible::-moz-range-thumb {
+      transform: scale(1.12);
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.22);
+    }
+    .wm-slider-native:focus-visible {
+      outline: none;
+    }
+    .wm-slider-badge,
+    .wm-slider-editor {
+      position: absolute;
+      top: 0;
+      transform: translateX(-50%);
+      min-width: 52px;
+      height: 24px;
+      border-radius: 999px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+      background: rgba(255,255,255,0.96);
+      color: #0f172a;
+      font-size: 11px;
+      font-weight: 800;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 9px;
+      white-space: nowrap;
+      box-sizing: border-box;
+    }
+    .wm-slider-badge {
+      cursor: pointer;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      z-index: 10;
+    }
+    .wm-slider-badge:hover {
+      transform: translateX(-50%) translateY(-1px) scale(1.03);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+      background: #fff;
+    }
+    .wm-slider-editor {
+      width: 72px;
+      padding: 0 8px;
+      text-align: center;
+      display: none;
+      z-index: 8;
+    }
+    .wm-slider-editor::-webkit-outer-spin-button,
+    .wm-slider-editor::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+    .wm-slider-editor[type="number"] {
+      appearance: textfield;
+      -moz-appearance: textfield;
+    }
+    .wm-slider-editor:focus-visible {
+      outline: 2px solid rgba(14, 165, 233, 0.24);
+      outline-offset: 2px;
+    }
+    .wm-slider-ticks {
+      position: relative;
+      height: 16px;
+      margin-top: 6px;
+      pointer-events: none;
+    }
+    .wm-slider-ticks span {
+      position: absolute;
+      top: 0;
+      transform: translateX(-50%);
+      font-size: 10px;
+      color: #64748b;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .wm-slider-ticks span::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: -8px;
+      width: 1px;
+      height: 6px;
+      transform: translateX(-50%);
+      background: rgba(100, 116, 139, 0.35);
+    }
+    .wm-slider-field-range .wm-slider-fill {
+      left: var(--wm-fill-left, 0%);
+      width: var(--wm-fill-width, 0%);
+      right: auto;
+    }
+    .wm-slider-field-range .wm-slider-shell {
+      touch-action: none;
+    }
+    .wm-slider-field-range .wm-slider-native {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .wm-slider-field .wm-range-thumb {
+      position: absolute;
+      top: 50%;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #fff;
+      border: 2px solid rgba(15, 23, 42, 0.26);
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+      transform: translate(-50%, -50%);
+      cursor: ew-resize;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+      z-index: 11;
+    }
+    .wm-slider-field .wm-range-thumb::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 30px;
+      height: 30px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+    }
+    .wm-slider-field .wm-range-thumb:hover,
+    .wm-slider-field .wm-range-thumb.wm-active {
+      transform: translate(-50%, -50%) scale(1.12);
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.22);
+    }
+    .wm-slider-merge-badge {
+      z-index: 12;
+      pointer-events: none;
+      display: none;
+    }
+    .wm-pref-inline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }
+    .wm-pref-inline .wm-pref-note {
+      margin: 0;
+      font-size: 12px;
+      color: #64748b;
+      line-height: 1.35;
+    }
 
     /* Toggle switch styling (checkboxes) */
     .wm-toggle {
       appearance: none;
       -webkit-appearance: none;
-      width: 38px;
-      height: 22px;
+      width: 42px;
+      height: 24px;
       border-radius: 999px;
-      border: 1px solid rgba(0,0,0,0.18);
-      background: rgba(0,0,0,0.08);
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      background: rgba(148, 163, 184, 0.22);
       position: relative;
       cursor: pointer;
       vertical-align: middle;
-      transition: background 160ms ease, border-color 160ms ease;
+      transition: background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
       flex: 0 0 auto;
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
     }
     .wm-toggle::after {
       content: '';
@@ -1067,16 +1503,31 @@
       width: 18px;
       height: 18px;
       border-radius: 999px;
-      background: rgba(255,255,255,0.95);
-      box-shadow: 0 2px 6px rgba(0,0,0,0.18);
+      background: rgba(255,255,255,0.98);
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
       transition: transform 160ms ease;
     }
     .wm-toggle:checked {
-      background: rgba(40,167,69,0.85);
-      border-color: rgba(40,167,69,0.55);
+      background: linear-gradient(90deg, rgba(16,185,129,0.95), rgba(14,165,233,0.95));
+      border-color: rgba(14, 165, 233, 0.32);
+      box-shadow: 0 4px 14px rgba(14, 165, 233, 0.14);
     }
-    .wm-toggle:checked::after { transform: translateX(16px); }
-    .wm-toggle:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
+    .wm-toggle:checked::after { transform: translateX(18px); }
+    .wm-toggle:focus-visible { outline: 2px solid rgba(14,165,233,0.30); outline-offset: 2px; }
+
+    @media (max-width: 820px) {
+      .wm-pref-head {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .wm-pref-live {
+        align-self: flex-start;
+      }
+      .wm-pref-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1133,7 +1584,6 @@
                   <select id="strategicLayer">
                     <option value="temperature_ride">Temperature</option>
                     <option value="rain_ride">Rain</option>
-                    <option value="wind_dir">Wind</option>
                     <option value="comfort">Lucky Days</option>
                   </select>
                 </div>
@@ -1146,126 +1596,449 @@
           <summary>Preferences</summary>
           <div class="wm-section-body">
             <div id="settingsView" aria-label="Settings">
-              <div class="wm-card" style="max-width:none; margin:0; box-shadow:none;">
-                <div class="wm-actions" style="margin-top:0; margin-bottom:12px;">
-                  <button id="settingsSave" type="button">Update</button>
+              <div class="wm-card wm-pref-card">
+                <div class="wm-pref-head">
+                  <div>
+                    <p class="wm-pref-kicker">Shared Preferences</p>
+                    <h3>Live controls for climate and route planning</h3>
+                    <p class="wm-pref-head-note">Every change applies automatically after a short pause. Click any value bubble to edit it directly.</p>
+                  </div>
+                  <div class="wm-pref-live" id="settingsLiveStatus" aria-live="polite" data-state="idle" aria-label="Live updates enabled" title="Live updates enabled"><span class="wm-pref-live-ico" aria-hidden="true">&#9889;</span><span class="wm-pref-live-text">Live updates</span></div>
                 </div>
 
-                <div class="wm-pref-group" data-wm-scope="climate">
-                  <div class="wm-pref-title">Strategic Years</div>
-                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setStrategicYears">Strategic years</label>
-                    <div id="setStrategicYears" aria-label="Strategic years" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                <div class="wm-pref-sections">
+                  <section class="wm-pref-section" data-wm-scope="both">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Ride Quality</h4>
+                      <p class="wm-pref-section-note">Ride-quality thresholds shared across both modes.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Temperature comfort</span>
+                          <span class="wm-pref-sub">Preferred air temperature range in °C.</span>
+                        </div>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field wm-slider-field-range" data-slider-field="range">
+                            <div class="wm-slider-shell" data-range-shell data-track="temp">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <div class="wm-range-thumb" data-range-thumb="start" aria-hidden="true"></div>
+                              <div class="wm-range-thumb" data-range-thumb="end" aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-range-badge="start" aria-label="Edit minimum ride-quality temperature"></button>
+                              <button type="button" class="wm-slider-badge" data-range-badge="end" aria-label="Edit maximum ride-quality temperature"></button>
+                              <div class="wm-slider-badge wm-slider-merge-badge" data-range-merge-badge aria-hidden="true"></div>
+                              <input type="number" class="wm-slider-editor" data-range-editor="start" aria-label="Minimum comfort temperature" />
+                              <input type="number" class="wm-slider-editor" data-range-editor="end" aria-label="Maximum comfort temperature" />
+                              <input type="range" id="setTempCold" min="0" max="100" step="0.1" value="33.3" class="wm-slider-native" data-range-role="start" data-format="temp" data-scale="temp-nonlinear" data-domain-min="-40" data-domain-max="60" data-min-gap="1" aria-label="Minimum ride-quality temperature" />
+                              <input type="range" id="setTempHot" min="0" max="100" step="0.1" value="75" class="wm-slider-native" data-range-role="end" data-format="temp" data-scale="temp-nonlinear" data-domain-min="-40" data-domain-max="60" data-min-gap="1" aria-label="Maximum ride-quality temperature" />
+                            </div>
+                            <div class="wm-slider-ticks" aria-hidden="true">
+                              <span style="left:0%">-40</span>
+                              <span style="left:25%">0</span>
+                              <span style="left:41.67%">10</span>
+                              <span style="left:58.33%">20</span>
+                              <span style="left:75%">30</span>
+                              <span style="left:100%">60</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="strategicWindOn">Wind field</label>
-                    <input type="checkbox" id="strategicWindOn" class="wm-toggle" />
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="setRainHigh">
+                          <span class="wm-pref-name">Max rain</span>
+                          <span class="wm-pref-sub">Daily rainfall threshold.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="rain">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit maximum rain"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Maximum rain" />
+                              <input type="range" id="setRainHigh" min="0" max="20" step="0.5" value="10" class="wm-slider-native" data-unit=" mm/day" data-snap="rain" aria-label="Maximum rain per day" />
+                            </div>
+                            <div class="wm-slider-ticks" aria-hidden="true">
+                              <span style="left:5%">1</span>
+                              <span style="left:25%">5</span>
+                              <span style="left:50%">10</span>
+                              <span style="left:100%">20 mm</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="strategicWindMode">Wind mode</label>
-                    <select id="strategicWindMode">
-                      <option value="flow">Flow lines</option>
-                    </select>
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="setWindHeadComfort">
+                          <span class="wm-pref-name" data-pref-title-for="setWindHeadComfort">Max headwind</span>
+                          <span class="wm-pref-sub">Ride-quality threshold for opposing wind.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="wind">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit maximum headwind"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Maximum headwind" />
+                              <input type="range" id="setWindHeadComfort" min="0" max="10" step="1" value="4" class="wm-slider-native" data-unit=" m/s" data-snap="wind" aria-label="Maximum headwind" />
+                            </div>
+                            <div class="wm-slider-ticks" aria-hidden="true">
+                              <span style="left:20%">2</span>
+                              <span style="left:50%">5</span>
+                              <span style="left:100%">10 m/s</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setIncludeSea">Include sea areas</label>
-                    <input type="checkbox" id="setIncludeSea" class="wm-toggle" />
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setWindTailComfort">
+                          <span class="wm-pref-name">Max tailwind</span>
+                          <span class="wm-pref-sub">Tailwind cap for tactical scoring.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="wind">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit maximum tailwind"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Maximum tailwind" />
+                              <input type="range" id="setWindTailComfort" min="0" max="30" step="1" value="10" class="wm-slider-native" data-unit=" m/s" data-snap="wind" aria-label="Maximum tailwind" />
+                            </div>
+                            <div class="wm-slider-ticks" aria-hidden="true">
+                              <span style="left:6.67%">2</span>
+                              <span style="left:16.67%">5</span>
+                              <span style="left:33.33%">10</span>
+                              <span style="left:50%">15</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
 
-                    <label for="setInterpolation">Interpolation (strategic)</label>
-                    <input type="checkbox" id="setInterpolation" class="wm-toggle" />
+                  <section class="wm-pref-section" data-wm-scope="both">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Activity Window</h4>
+                      <p class="wm-pref-section-note">Hours used for climatic and tactical evaluation.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Active time</span>
+                          <span class="wm-pref-sub">Daily riding or activity hours.</span>
+                        </div>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field wm-slider-field-range" data-slider-field="range">
+                            <div class="wm-slider-shell" data-range-shell data-track="season">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <div class="wm-range-thumb" data-range-thumb="start" aria-hidden="true"></div>
+                              <div class="wm-range-thumb" data-range-thumb="end" aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-range-badge="start" aria-label="Edit start hour"></button>
+                              <button type="button" class="wm-slider-badge" data-range-badge="end" aria-label="Edit end hour"></button>
+                              <div class="wm-slider-badge wm-slider-merge-badge" data-range-merge-badge aria-hidden="true"></div>
+                              <input type="number" class="wm-slider-editor" data-range-editor="start" aria-label="Start hour" />
+                              <input type="number" class="wm-slider-editor" data-range-editor="end" aria-label="End hour" />
+                              <input type="range" id="setActiveHourStart" min="0" max="23" step="1" value="10" class="wm-slider-native" data-range-role="start" data-format="hour" data-unit=" h" data-snap="int" data-min-gap="1" aria-label="Start hour" />
+                              <input type="range" id="setActiveHourEnd" min="0" max="23" step="1" value="18" class="wm-slider-native" data-range-role="end" data-format="hour" data-unit=" h" data-snap="int" data-min-gap="1" aria-label="End hour" />
+                            </div>
+                            <div class="wm-slider-ticks" aria-hidden="true">
+                              <span style="left:0%">00</span>
+                              <span style="left:34.78%">08</span>
+                              <span style="left:52.17%">12</span>
+                              <span style="left:78.26%">18</span>
+                              <span style="left:100%">23</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
 
-                    <label for="setWindDensity">Wind density</label>
-                    <input type="number" id="setWindDensity" min="1" max="200" step="1" />
+                  <section class="wm-pref-section" data-wm-scope="tour">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Tour Settings</h4>
+                      <p class="wm-pref-section-note">Core route timing and direction.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="startDate">
+                          <span class="wm-pref-name">Start date</span>
+                          <span class="wm-pref-sub">Tour departure date.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <input type="date" id="startDate" class="wm-pref-date" />
+                        </div>
+                      </div>
 
-                    <label for="setAnimSpeed">Animation speed</label>
-                    <input type="number" id="setAnimSpeed" min="0.1" max="10" step="0.1" />
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="tourDays">
+                          <span class="wm-pref-name">Duration</span>
+                          <span class="wm-pref-sub">Overall tour length in days.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="season">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit tour duration"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Tour duration" />
+                              <input type="range" id="tourDays" min="1" max="60" step="1" value="7" class="wm-slider-native" data-unit=" d" data-snap="int" aria-label="Tour duration in days" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setGridKm">Grid resolution (km)</label>
-                    <select id="setGridKm">
-                      <option value="50">50</option>
-                      <option value="25">25</option>
-                      <option value="100">100</option>
-                    </select>
-                  </div>
-                </div>
+                      <div class="wm-pref-row">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Reverse tour</span>
+                          <span class="wm-pref-sub">Evaluate the route in reverse direction.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="reverse" class="wm-toggle" aria-label="Reverse tour" />
+                        </div>
+                      </div>
+                    </div>
+                  </section>
 
-                <div class="wm-pref-group" data-wm-scope="both">
-                  <div class="wm-pref-title">Lucky Days Conditions</div>
-                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setTempCold">Min temp (°C)</label>
-                    <input type="number" id="setTempCold" min="-40" max="30" step="1" />
-                    <label for="setTempHot">Max temp (°C)</label>
-                    <input type="number" id="setTempHot" min="5" max="60" step="1" />
-                    <label for="setRainHigh">Max rain (mm/day)</label>
-                    <input type="number" id="setRainHigh" min="0" max="100" step="1" />
-                    <label for="setWindHeadComfort">Max headwind (m/s)</label>
-                    <input type="number" id="setWindHeadComfort" min="0" max="20" step="0.5" />
-                    <label for="setWindTailComfort">Max tailwind (m/s)</label>
-                    <input type="number" id="setWindTailComfort" min="0" max="30" step="0.5" />
-                  </div>
-                </div>
+                  <section class="wm-pref-section" data-wm-scope="both">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Data Selection</h4>
+                      <p class="wm-pref-section-note">Choose the historical window behind the visible values.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Strategic years</span>
+                          <span class="wm-pref-sub">Climate map year blend for the selected location.</span>
+                        </div>
+                        <div id="setStrategicYears" class="wm-pref-years" aria-label="Strategic years"></div>
+                      </div>
 
-                <div class="wm-pref-group" data-wm-scope="both">
-                  <div class="wm-pref-title">Active Time</div>
-                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="setActiveHourStart">Begin hour</label>
-                    <input type="number" id="setActiveHourStart" min="0" max="23" step="1" />
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setHistLast">
+                          <span class="wm-pref-name">Last historical year</span>
+                          <span class="wm-pref-sub">Newest year used for the route forecast blend.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="history">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit last historical year"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Last historical year" />
+                              <input type="range" id="setHistLast" min="1970" max="2100" step="1" value="2025" class="wm-slider-native" data-snap="int" aria-label="Last historical year" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setActiveHourEnd">End hour</label>
-                    <input type="number" id="setActiveHourEnd" min="0" max="23" step="1" />
-                  </div>
-                </div>
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setHistYears">
+                          <span class="wm-pref-name">Historic years</span>
+                          <span class="wm-pref-sub">How many prior years are averaged.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="history">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit number of historic years"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Number of historic years" />
+                              <input type="range" id="setHistYears" min="1" max="50" step="1" value="10" class="wm-slider-native" data-unit=" y" data-snap="int" aria-label="Number of historic years" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                <div class="wm-pref-group" data-wm-scope="tour">
-                  <div class="wm-pref-title">Everything Else</div>
-                  <div class="wm-grid" style="grid-template-columns: 1fr 1fr;">
-                    <label for="startDate">Start Date</label>
-                    <input type="date" id="startDate" style="width:100%" />
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="weatherQuality">
+                          <span class="wm-pref-name">Weather quality</span>
+                          <span class="wm-pref-sub">Choose preview speed versus multi-year accuracy.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="weatherQuality" class="wm-pref-select" aria-label="Weather data quality" title="Choose fast preview vs multi-year">
+                            <option value="fast">Fast preview</option>
+                            <option value="best" selected>Best multi-year</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
 
-                    <label for="tourDays">Days</label>
-                    <input type="number" id="tourDays" min="1" max="60" value="7" style="width:100%" />
+                  <section class="wm-pref-section" data-wm-scope="both">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Wind Settings</h4>
+                      <p class="wm-pref-section-note">Keep tactical and climatic wind controls aligned.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setWindWeighting">
+                          <span class="wm-pref-name">Wind weighting</span>
+                          <span class="wm-pref-sub">Route-relative or neutral wind treatment.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="setWindWeighting" class="wm-pref-select">
+                            <option value="relative">Relative to route</option>
+                            <option value="neutral">Direction-independent</option>
+                          </select>
+                        </div>
+                      </div>
 
-                    <label for="weatherQuality">Weather quality</label>
-                    <select id="weatherQuality" aria-label="Weather data quality" title="Choose fast preview vs multi-year" style="border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:7px 10px; background:#fff; font-size:12px;">
-                      <option value="fast">Fast (preview)</option>
-                      <option value="best" selected>Best (multi-year)</option>
-                    </select>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Wind field</span>
+                          <span class="wm-pref-sub">Show wind flow overlay on the climate map.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind field" />
+                        </div>
+                      </div>
+                    </div>
+                  </section>
 
-                    <label for="reverse">Reverse Tour</label>
-                    <input type="checkbox" id="reverse" class="wm-toggle" />
+                  <section class="wm-pref-section" data-wm-scope="both">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Advanced</h4>
+                      <p class="wm-pref-section-note">Resolution, interpolation, and visual output controls.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <label class="wm-pref-label" for="setGridKm">
+                          <span class="wm-pref-name">Grid resolution</span>
+                          <span class="wm-pref-sub">Climate-map sampling spacing.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="neutral">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit grid resolution"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Grid resolution" />
+                              <input type="range" id="setGridKm" min="25" max="100" step="25" value="50" class="wm-slider-native" data-unit=" km" data-snap="int" aria-label="Grid resolution in kilometers" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setHistLast">Last historical year</label>
-                    <input type="number" id="setHistLast" min="1970" max="2100" step="1" />
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setStepKm">
+                          <span class="wm-pref-name">Station separation</span>
+                          <span class="wm-pref-sub">Distance between sampled weather stations.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="neutral">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit station separation"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Station separation" />
+                              <input type="range" id="setStepKm" min="5" max="200" step="5" value="60" class="wm-slider-native" data-unit=" km" data-snap="int" aria-label="Weather stations separation in kilometers" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setHistYears"># historic years</label>
-                    <input type="number" id="setHistYears" min="1" max="50" step="1" />
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <label class="wm-pref-label" for="setWindDensity">
+                          <span class="wm-pref-name">Wind density</span>
+                          <span class="wm-pref-sub">Density of rendered wind stream lines.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="wind">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit wind density"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Wind density" />
+                              <input type="range" id="setWindDensity" min="1" max="200" step="1" value="40" class="wm-slider-native" data-snap="int" aria-label="Wind density" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setWeatherVisualizationMode">Tour visualization</label>
-                    <select id="setWeatherVisualizationMode">
-                      <option value="glyphs">Weather symbols</option>
-                      <option value="bands">Bands</option>
-                    </select>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <label class="wm-pref-label" for="setAnimSpeed">
+                          <span class="wm-pref-name">Animation speed</span>
+                          <span class="wm-pref-sub">Playback speed for animated wind visuals.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="wind">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit animation speed"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Animation speed" />
+                              <input type="range" id="setAnimSpeed" min="0.1" max="10" step="0.1" value="1.0" class="wm-slider-native" data-unit="x" data-decimals="1" aria-label="Animation speed" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
 
-                    <label for="setOverlayMode">Profile overlay</label>
-                    <select id="setOverlayMode">
-                      <option value="temperature">Temperature</option>
-                      <option value="precipitation">Rain</option>
-                      <option value="wind">Wind</option>
-                    </select>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Interpolation</span>
+                          <span class="wm-pref-sub">Blend nearby climatic cells for smoother transitions.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="setInterpolation" class="wm-toggle" aria-label="Interpolation" />
+                        </div>
+                      </div>
 
-                    <label for="setGlyphType">Weather symbols type</label>
-                    <select id="setGlyphType">
-                      <option value="classic">Classic (icons + rosette)</option>
-                      <option value="svg">Inline SVG preview</option>
-                      <option value="cyclist">Cyclist (wind-first)</option>
-                    </select>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Include sea areas</span>
+                          <span class="wm-pref-sub">Allow climatic interpolation over coastal water cells.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="setIncludeSea" class="wm-toggle" aria-label="Include sea areas" />
+                        </div>
+                      </div>
 
-                    <label for="setStepKm">Weather stations separation (km)</label>
-                    <input type="number" id="setStepKm" min="5" max="200" step="5" />
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setWeatherVisualizationMode">
+                          <span class="wm-pref-name">Tour visualization</span>
+                          <span class="wm-pref-sub">Choose between weather symbols and band view.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="setWeatherVisualizationMode" class="wm-pref-select">
+                            <option value="glyphs">Weather symbols</option>
+                            <option value="bands">Bands</option>
+                          </select>
+                        </div>
+                      </div>
 
-                    <label for="setWindWeighting">Wind weighting (tactical)</label>
-                    <select id="setWindWeighting">
-                      <option value="relative">Relative to route (head/tail)</option>
-                      <option value="neutral">Direction-independent</option>
-                    </select>
-                  </div>
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setOverlayMode">
+                          <span class="wm-pref-name">Profile overlay</span>
+                          <span class="wm-pref-sub">Main metric highlighted in the bottom profile.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="setOverlayMode" class="wm-pref-select">
+                            <option value="temperature">Temperature</option>
+                            <option value="precipitation">Rain</option>
+                            <option value="wind">Wind</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <label class="wm-pref-label" for="setGlyphType">
+                          <span class="wm-pref-name">Weather symbol style</span>
+                          <span class="wm-pref-sub">Choose the icon system used in the tour view.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="setGlyphType" class="wm-pref-select">
+                            <option value="classic">Classic icons + rosette</option>
+                            <option value="svg">Inline SVG preview</option>
+                            <option value="cyclist">Cyclist wind-first</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
                 </div>
               </div>
             </div>
@@ -1452,7 +2225,6 @@
         <select id="strategicQuickLayerSelect" aria-label="Strategic quick layer" title="Quick layer">
           <option value="temperature_ride">Temperature (Active)</option>
           <option value="rain_ride">Rain (total 24h)</option>
-          <option value="wind_dir">Wind</option>
           <option value="comfort_day">Lucky Days (24h)</option>
           <option value="comfort_ride">Lucky Days (Active)</option>
         </select>

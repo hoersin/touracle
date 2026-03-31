@@ -25,15 +25,63 @@
   // Prefer canvas renderer so snapshotting (html2canvas) captures route layers without SVG transform drift.
   const map = L.map('map', { preferCanvas: true });
   try { window.__WM_LEAFLET_MAP__ = map; } catch (_) {}
+  try {
+    const neutralBasePane = map.createPane('wmNeutralBasePane');
+    if (neutralBasePane) {
+      neutralBasePane.classList.add('wm-neutral-base-pane');
+      neutralBasePane.style.zIndex = '100';
+    }
+    const climatePane = map.createPane('wmClimatePane');
+    if (climatePane) {
+      climatePane.style.zIndex = '200';
+      climatePane.style.pointerEvents = 'none';
+    }
+    const windPane = map.createPane('wmWindPane');
+    if (windPane) {
+      windPane.style.zIndex = '300';
+      windPane.style.pointerEvents = 'none';
+    }
+    const neutralLabelPane = map.createPane('wmNeutralLabelPane');
+    if (neutralLabelPane) {
+      neutralLabelPane.classList.add('wm-neutral-label-pane');
+      neutralLabelPane.style.zIndex = '400';
+      neutralLabelPane.style.pointerEvents = 'none';
+    }
+  } catch (_) {}
   // Base maps
   const _osmTiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors'
   });
-  // Neutral basemap (light grey styling, suited for meteorological overlays)
-  const _neutralTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  // Neutral basemap with separated labels so the background stays quiet in climate mode.
+  const _neutralTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+    pane: 'wmNeutralBasePane',
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
   });
+  const _neutralLabels = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+    pane: 'wmNeutralLabelPane',
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  });
+  const _cycleOverlayApiKey = (() => {
+    try {
+      const raw = (typeof window !== 'undefined' && window.WM_THUNDERFOREST_API_KEY)
+        ? String(window.WM_THUNDERFOREST_API_KEY)
+        : '';
+      return raw.trim();
+    } catch (_) {
+      return '';
+    }
+  })();
+  const _cycleOverlayEnabled = false;
+  const _cycleOverlay = _cycleOverlayApiKey
+    ? L.tileLayer(`https://tile.thunderforest.com/cycle/{z}/{x}/{y}.png?apikey=${encodeURIComponent(_cycleOverlayApiKey)}`, {
+        pane: 'wmNeutralBasePane',
+        opacity: 0.3,
+        attribution: '&copy; OpenStreetMap contributors &copy; Thunderforest'
+      })
+    : null;
   let _activeBaseLayer = _osmTiles;
+  let _neutralLabelsMounted = false;
+  let _cycleOverlayMounted = false;
   _activeBaseLayer.addTo(map);
   try {
     map.setView([48.2, 11.6], 5);
@@ -55,9 +103,9 @@
   function _applyComfortWindUiForMode() {
     try {
       const mode = _getAppMode();
-      const labHead = document.querySelector('label[for="setWindHeadComfort"]');
+      const labHead = document.querySelector('[data-pref-title-for="setWindHeadComfort"]');
       if (labHead) {
-        labHead.textContent = (mode === 'climate') ? 'Max wind (m/s)' : 'Max headwind (m/s)';
+        labHead.textContent = (mode === 'climate') ? 'Max wind' : 'Max headwind';
       }
     } catch (_) {}
   }
@@ -115,7 +163,6 @@
     const defs = [
       { v: 'temperature_ride', t: 'Temperature' },
       { v: 'rain_ride', t: 'Rain' },
-      { v: 'wind_dir', t: 'Wind' },
       { v: 'comfort', t: 'Lucky Days' },
     ];
     for (const d of defs) {
@@ -129,6 +176,7 @@
   function _strategicNormalizeLayer(layer) {
     const l = String(layer || '');
     if (l === 'comfort_day' || l === 'comfort_ride') return 'comfort';
+    if (l === 'wind_dir' || l === 'wind_speed') return 'temperature_ride';
     return l || 'temperature_ride';
   }
 
@@ -137,21 +185,35 @@
   // legend (lower-left), so we intentionally do not mount any extra box.
 
   function _strategicWantsStandardBasemap() {
-    const layer = STRATEGIC_STATE ? String(STRATEGIC_STATE.layer || '') : '';
-    return (layer === 'rain_ride' || layer === 'rain' || layer === 'precipitation' || layer === 'wind_dir' || layer === 'wind_speed');
+    return false;
   }
 
   function _applyStrategicBasemap() {
     try {
       const m = _getAppMode();
-      // Tour planning always uses standard OSM.
-      const wantOSM = (m !== 'climate') ? true : _strategicWantsStandardBasemap();
+      const wantOSM = (m !== 'climate');
       try { document.body.dataset.wmBasemap = wantOSM ? 'osm' : 'neutral'; } catch (_) {}
       const next = wantOSM ? _osmTiles : _neutralTiles;
       if (_activeBaseLayer !== next) {
         try { map.removeLayer(_activeBaseLayer); } catch (_) {}
         _activeBaseLayer = next;
         try { _activeBaseLayer.addTo(map); } catch (_) {}
+      }
+      const wantNeutralLabels = !wantOSM;
+      if (wantNeutralLabels && !_neutralLabelsMounted) {
+        try { _neutralLabels.addTo(map); } catch (_) {}
+        _neutralLabelsMounted = true;
+      } else if (!wantNeutralLabels && _neutralLabelsMounted) {
+        try { map.removeLayer(_neutralLabels); } catch (_) {}
+        _neutralLabelsMounted = false;
+      }
+      const wantCycleOverlay = !wantOSM && _cycleOverlayEnabled && !!_cycleOverlay;
+      if (wantCycleOverlay && !_cycleOverlayMounted) {
+        try { _cycleOverlay.addTo(map); } catch (_) {}
+        _cycleOverlayMounted = true;
+      } else if (!wantCycleOverlay && _cycleOverlayMounted) {
+        try { map.removeLayer(_cycleOverlay); } catch (_) {}
+        _cycleOverlayMounted = false;
       }
     } catch (_) {}
   }
@@ -251,6 +313,7 @@
   const strategicWindMode = document.getElementById('strategicWindMode');
   const settingsCancel = document.getElementById('settingsCancel');
   const settingsSave = document.getElementById('settingsSave');
+  const settingsLiveStatus = document.getElementById('settingsLiveStatus');
   const progressEl = document.getElementById('progress');
   const progressBar = progressEl ? progressEl.querySelector('.bar') : null;
   const sseStatus = document.getElementById('sseStatus');
@@ -1187,6 +1250,16 @@
     const maxWind = Math.max(6, ...series.map(p => Number(p && p.wind_speed)).filter(Number.isFinite));
 
     CLIMATE_PROFILE_GEOMETRY = { padTop, padBot, padL, padR, innerW, innerH, axisY, rainAxisMax };
+
+    profileCtx.save();
+    profileCtx.globalAlpha = 0.68;
+    profileCtx.fillStyle = '#334155';
+    profileCtx.font = '600 11px system-ui, -apple-system, sans-serif';
+    profileCtx.textAlign = 'left';
+    profileCtx.fillText('Temperature (°C)', padL, 13);
+    profileCtx.textAlign = 'right';
+    profileCtx.fillText('Rain (mm/day)', padL + innerW + padR - 4, 13);
+    profileCtx.restore();
 
     profileCtx.strokeStyle = '#ddd';
     profileCtx.lineWidth = 1;
@@ -2333,7 +2406,7 @@
       windDensity: 40,
       animSpeed: 1.0,
       gridKm: 50,
-      activeHours: '10-16',
+      activeHours: '10-18',
       windWeighting: 'relative',
     };
     if (!s) return defaults;
@@ -2449,16 +2522,16 @@
   function _getActiveHoursValue(source) {
     if (source && typeof source.activeHours === 'string' && source.activeHours) return String(source.activeHours);
     if (source && typeof source.rideHours === 'string' && source.rideHours) return String(source.rideHours);
-    return '10-16';
+    return '10-18';
   }
 
   function _parseActiveHoursRange(raw) {
     const txt = String(raw || '').trim();
     const match = txt.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
     let start = match ? Number(match[1]) : 10;
-    let end = match ? Number(match[2]) : 16;
+    let end = match ? Number(match[2]) : 18;
     if (!Number.isFinite(start)) start = 10;
-    if (!Number.isFinite(end)) end = 16;
+    if (!Number.isFinite(end)) end = 18;
     start = Math.max(0, Math.min(23, Math.round(start)));
     end = Math.max(0, Math.min(23, Math.round(end)));
     if (end < start) {
@@ -2466,20 +2539,32 @@
       start = end;
       end = tmp;
     }
+    if (end - start < 1) {
+      if (start >= 23) {
+        start = 22;
+        end = 23;
+      } else {
+        end = Math.min(23, start + 1);
+      }
+    }
     return { start, end };
   }
 
   function _formatActiveHoursRange(start, end) {
     const s = Math.max(0, Math.min(23, Math.round(Number(start) || 10)));
-    const e = Math.max(0, Math.min(23, Math.round(Number(end) || 16)));
-    return `${Math.min(s, e)}-${Math.max(s, e)}`;
+    const e = Math.max(0, Math.min(23, Math.round(Number(end) || 18)));
+    const a = Math.min(s, e);
+    let b = Math.max(s, e);
+    if (b - a < 1) b = Math.min(23, a + 1);
+    return `${a}-${b}`;
   }
 
   function _syncActiveHourInputs(source) {
     try {
-      const current = _parseActiveHoursRange(_getActiveHoursValue(SETTINGS));
-      let start = current.start;
-      let end = current.end;
+      const currentStart = Number(setActiveHourStart && setActiveHourStart.value);
+      const currentEnd = Number(setActiveHourEnd && setActiveHourEnd.value);
+      let start = Number.isFinite(currentStart) ? currentStart : _parseActiveHoursRange(_getActiveHoursValue(SETTINGS)).start;
+      let end = Number.isFinite(currentEnd) ? currentEnd : _parseActiveHoursRange(_getActiveHoursValue(SETTINGS)).end;
       if (source === setActiveHourStart) start = Number(setActiveHourStart && setActiveHourStart.value);
       if (source === setActiveHourEnd) end = Number(setActiveHourEnd && setActiveHourEnd.value);
       const next = _parseActiveHoursRange(_formatActiveHoursRange(start, end));
@@ -2490,46 +2575,514 @@
     } catch (_) {}
   }
 
-  function _enhanceSettingsNumberInputs() {
+  const SETTINGS_LIVE_APPLY_DEBOUNCE_MS = 200;
+  const SETTINGS_REFETCH_KEYS = [
+    'startDate',
+    'tourDays',
+    'reverse',
+    'weatherQuality',
+    'stepKm',
+    'histLastYear',
+    'histYears',
+    'tempCold',
+    'tempHot',
+    'rainHigh',
+    'windHeadComfort',
+    'windTailComfort',
+    'activeHours',
+  ];
+  let _settingsLiveApplyTimer = null;
+  let _settingsLiveStatusTimer = null;
+  const TEMP_SLIDER_LOW_RANGE = 40;
+  const TEMP_SLIDER_MID_RANGE = 30;
+  const TEMP_SLIDER_HIGH_RANGE = 30;
+  const TEMP_SLIDER_LOW_PCT = 25;
+  const TEMP_SLIDER_MID_PCT = 75;
+
+  function _updateSettingsLiveStatus(text, state) {
+    if (!settingsLiveStatus) return;
+    settingsLiveStatus.dataset.state = String(state || 'idle');
+    const msg = String(text || 'Live updates enabled');
+    settingsLiveStatus.setAttribute('aria-label', msg);
+    settingsLiveStatus.title = msg;
+  }
+
+  function _markSettingsPending() {
+    _updateSettingsLiveStatus('Updating after you stop dragging', 'pending');
+    if (_settingsLiveStatusTimer) {
+      try { clearTimeout(_settingsLiveStatusTimer); } catch (_) {}
+      _settingsLiveStatusTimer = null;
+    }
+  }
+
+  function _markSettingsSaved() {
+    _updateSettingsLiveStatus('Updated', 'saved');
+    if (_settingsLiveStatusTimer) {
+      try { clearTimeout(_settingsLiveStatusTimer); } catch (_) {}
+    }
+    _settingsLiveStatusTimer = setTimeout(() => {
+      _updateSettingsLiveStatus('Live updates on', 'idle');
+    }, 1200);
+  }
+
+  function _settingInputMin(input) {
+    const n = Number(input && input.min);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function _settingInputMax(input) {
+    const n = Number(input && input.max);
+    return Number.isFinite(n) ? n : 100;
+  }
+
+  function _settingInputStep(input) {
+    const n = Number(input && input.step);
+    return (Number.isFinite(n) && n > 0) ? n : 1;
+  }
+
+  function _settingDomainMin(input) {
+    if (input && input.dataset && input.dataset.scale === 'temp-nonlinear') {
+      return Number.isFinite(Number(input.dataset.domainMin)) ? Number(input.dataset.domainMin) : -40;
+    }
+    return _settingInputMin(input);
+  }
+
+  function _settingDomainMax(input) {
+    if (input && input.dataset && input.dataset.scale === 'temp-nonlinear') {
+      return Number.isFinite(Number(input.dataset.domainMax)) ? Number(input.dataset.domainMax) : 60;
+    }
+    return _settingInputMax(input);
+  }
+
+  function _tempDomainToSliderValue(domainValue) {
+    let v = Number(domainValue);
+    if (!Number.isFinite(v)) v = 0;
+    v = Math.max(-40, Math.min(60, v));
+    if (v <= 0) return ((v + TEMP_SLIDER_LOW_RANGE) / TEMP_SLIDER_LOW_RANGE) * TEMP_SLIDER_LOW_PCT;
+    if (v <= 30) return TEMP_SLIDER_LOW_PCT + (v / TEMP_SLIDER_MID_RANGE) * (TEMP_SLIDER_MID_PCT - TEMP_SLIDER_LOW_PCT);
+    return TEMP_SLIDER_MID_PCT + ((v - 30) / TEMP_SLIDER_HIGH_RANGE) * (100 - TEMP_SLIDER_MID_PCT);
+  }
+
+  function _tempSliderToDomainValue(sliderValue) {
+    let p = Number(sliderValue);
+    if (!Number.isFinite(p)) p = TEMP_SLIDER_LOW_PCT;
+    p = Math.max(0, Math.min(100, p));
+    if (p <= TEMP_SLIDER_LOW_PCT) return -40 + (p / TEMP_SLIDER_LOW_PCT) * TEMP_SLIDER_LOW_RANGE;
+    if (p <= TEMP_SLIDER_MID_PCT) return ((p - TEMP_SLIDER_LOW_PCT) / (TEMP_SLIDER_MID_PCT - TEMP_SLIDER_LOW_PCT)) * TEMP_SLIDER_MID_RANGE;
+    return 30 + ((p - TEMP_SLIDER_MID_PCT) / (100 - TEMP_SLIDER_MID_PCT)) * TEMP_SLIDER_HIGH_RANGE;
+  }
+
+  function _sliderRawToDomainValue(input, rawValue) {
+    if (input && input.dataset && input.dataset.scale === 'temp-nonlinear') {
+      return _tempSliderToDomainValue(rawValue);
+    }
+    const value = Number(rawValue);
+    return Number.isFinite(value) ? value : Number(input && input.value);
+  }
+
+  function _domainValueToSliderRaw(input, domainValue) {
+    if (input && input.dataset && input.dataset.scale === 'temp-nonlinear') {
+      return _tempDomainToSliderValue(domainValue);
+    }
+    return Number(domainValue);
+  }
+
+  function _clampSettingsValue(input, rawValue) {
+    const min = _settingInputMin(input);
+    const max = _settingInputMax(input);
+    let value = Number(rawValue);
+    if (!Number.isFinite(value)) value = Number(input && input.value);
+    if (!Number.isFinite(value)) value = min;
+    value = Math.max(min, Math.min(max, value));
+
+    const snap = String(input && input.dataset && input.dataset.snap || '');
+    if (snap === 'rain') {
+      if (value <= 2) value = Math.round(value / 0.5) * 0.5;
+      else if (value <= 10) value = Math.round(value);
+      else if (value <= 20) value = Math.round(value / 2) * 2;
+      else value = Math.round(value / 5) * 5;
+    } else if (snap === 'wind' || snap === 'int') {
+      value = Math.round(value);
+    } else {
+      const step = _settingInputStep(input);
+      const base = min;
+      value = base + Math.round((value - base) / step) * step;
+    }
+
+    value = Math.max(min, Math.min(max, value));
+    const decimals = Math.max(0, (String(_settingInputStep(input)).split('.')[1] || '').length);
+    return Number(value.toFixed(decimals));
+  }
+
+  function _settingValueToPercent(input, rawValue) {
+    const min = _settingInputMin(input);
+    const max = _settingInputMax(input);
+    const value = Number(rawValue);
+    const span = Math.max(1e-9, max - min);
+    return ((Math.max(min, Math.min(max, value)) - min) / span) * 100;
+  }
+
+  function _formatSettingsValue(input, rawValue) {
+    const value = _sliderRawToDomainValue(input, _clampSettingsValue(input, rawValue));
+    const fmt = String(input && input.dataset && input.dataset.format || '');
+    if (fmt === 'hour') return String(Math.round(value)).padStart(2, '0');
+    if (fmt === 'temp') return `${Math.round(value)}°C`;
+    const decimals = Number(input && input.dataset && input.dataset.decimals);
+    const fixed = Number.isFinite(decimals)
+      ? value.toFixed(Math.max(0, decimals))
+      : ((_settingInputStep(input) < 1)
+          ? (Number.isInteger(value) ? String(Math.round(value)) : value.toFixed(1))
+          : String(Math.round(value)));
+    const unit = String(input && input.dataset && input.dataset.unit || '');
+    if (!unit) return fixed;
+    if (unit === 'x') return `${fixed}${unit}`;
+    return `${fixed}${unit}`;
+  }
+
+  function _formatMergedRangeValue(input, rawStart, rawEnd) {
+    const start = _sliderRawToDomainValue(input, rawStart);
+    const end = _sliderRawToDomainValue(input, rawEnd);
+    const fmt = String(input && input.dataset && input.dataset.format || '');
+    if (fmt === 'hour') return `${String(Math.round(start)).padStart(2, '0')}–${String(Math.round(end)).padStart(2, '0')} h`;
+    if (fmt === 'temp') return `${Math.round(start)}–${Math.round(end)}°C`;
+    const unit = String(input && input.dataset && input.dataset.unit || '');
+    const startTxt = _formatSettingsValue(input, _domainValueToSliderRaw(input, start)).replace(unit, '');
+    const endTxt = _formatSettingsValue(input, _domainValueToSliderRaw(input, end)).replace(unit, '');
+    return `${startTxt}–${endTxt}${unit}`;
+  }
+
+  function _positionSliderElement(el, pct) {
+    if (!el) return;
+    el.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+  }
+
+  function _openSettingsValueEditor(editor, badge, input, applyValue) {
+    if (!editor || !badge || !input || typeof applyValue !== 'function') return;
+    const left = badge.style.left || `${_settingValueToPercent(input, input.value)}%`;
+    editor.min = String(_settingDomainMin(input));
+    editor.max = String(_settingDomainMax(input));
+    editor.step = (input && input.dataset && input.dataset.scale === 'temp-nonlinear') ? '1' : (input.step || '1');
+    editor.value = String(_sliderRawToDomainValue(input, input.value || ''));
+    editor.style.left = left;
+    editor.style.display = 'inline-flex';
+    badge.style.visibility = 'hidden';
+
+    let closed = false;
+    const finish = (commit) => {
+      if (closed) return;
+      closed = true;
+      if (commit) applyValue(editor.value);
+      editor.style.display = 'none';
+      badge.style.visibility = '';
+      editor.removeEventListener('keydown', onKeyDown);
+      editor.removeEventListener('blur', onBlur);
+    };
+    const onKeyDown = (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        finish(true);
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        finish(false);
+      }
+    };
+    const onBlur = () => finish(true);
+    editor.addEventListener('keydown', onKeyDown);
+    editor.addEventListener('blur', onBlur);
+    try {
+      editor.focus({ preventScroll: true });
+      editor.select();
+    } catch (_) {}
+  }
+
+  function _syncSingleSliderField(field) {
+    if (!field) return;
+    const input = field.querySelector('.wm-slider-native');
+    if (!input) return;
+    input.value = String(_clampSettingsValue(input, input.value));
+    const pct = _settingValueToPercent(input, input.value);
+    const fill = field.querySelector('[data-slider-fill]');
+    if (fill) fill.style.width = `${pct}%`;
+    const badge = field.querySelector('[data-slider-badge]');
+    if (badge) {
+      badge.textContent = _formatSettingsValue(input, input.value);
+      _positionSliderElement(badge, pct);
+    }
+    const editor = field.querySelector('[data-slider-editor]');
+    if (editor && editor.style.display !== 'none' && editor.style.display !== '') {
+      _positionSliderElement(editor, pct);
+    }
+  }
+
+  function _syncRangeSliderField(field, preferredSide) {
+    if (!field) return;
+    const startInput = field.querySelector('[data-range-role="start"]');
+    const endInput = field.querySelector('[data-range-role="end"]');
+    if (!startInput || !endInput) return;
+    let start = _clampSettingsValue(startInput, startInput.value);
+    let end = _clampSettingsValue(endInput, endInput.value);
+    if (start > end) {
+      if (preferredSide === 'start') end = start;
+      else start = end;
+    }
+    startInput.value = String(start);
+    endInput.value = String(end);
+    const startPct = _settingValueToPercent(startInput, start);
+    const endPct = _settingValueToPercent(endInput, end);
+    const shell = field.querySelector('[data-range-shell]');
+    const mergeBadge = field.querySelector('[data-range-merge-badge]');
+    const fill = field.querySelector('[data-slider-fill]');
+    if (fill) {
+      fill.style.left = `${startPct}%`;
+      fill.style.width = `${Math.max(0, endPct - startPct)}%`;
+    }
+    const startThumb = field.querySelector('[data-range-thumb="start"]');
+    const endThumb = field.querySelector('[data-range-thumb="end"]');
+    _positionSliderElement(startThumb, startPct);
+    _positionSliderElement(endThumb, endPct);
+    const startBadge = field.querySelector('[data-range-badge="start"]');
+    const endBadge = field.querySelector('[data-range-badge="end"]');
+    if (startBadge) {
+      startBadge.textContent = _formatSettingsValue(startInput, start);
+      _positionSliderElement(startBadge, startPct);
+    }
+    if (endBadge) {
+      endBadge.textContent = _formatSettingsValue(endInput, end);
+      _positionSliderElement(endBadge, endPct);
+    }
+    if (mergeBadge) {
+      const width = Math.max(1, Number(shell && shell.getBoundingClientRect ? shell.getBoundingClientRect().width : 0) || 220);
+      const overlapPx = (Math.abs(endPct - startPct) / 100) * width;
+      if (overlapPx < 78) {
+        mergeBadge.textContent = _formatMergedRangeValue(startInput, start, end);
+        _positionSliderElement(mergeBadge, (startPct + endPct) * 0.5);
+        mergeBadge.style.display = 'inline-flex';
+        if (startBadge) startBadge.style.visibility = 'hidden';
+        if (endBadge) endBadge.style.visibility = 'hidden';
+      } else {
+        mergeBadge.style.display = 'none';
+        if (startBadge && !(field.querySelector('[data-range-editor="start"]') && field.querySelector('[data-range-editor="start"]').style.display === 'inline-flex')) startBadge.style.visibility = '';
+        if (endBadge && !(field.querySelector('[data-range-editor="end"]') && field.querySelector('[data-range-editor="end"]').style.display === 'inline-flex')) endBadge.style.visibility = '';
+      }
+    }
+    const startEditor = field.querySelector('[data-range-editor="start"]');
+    const endEditor = field.querySelector('[data-range-editor="end"]');
+    if (startEditor && startEditor.style.display !== 'none' && startEditor.style.display !== '') _positionSliderElement(startEditor, startPct);
+    if (endEditor && endEditor.style.display !== 'none' && endEditor.style.display !== '') _positionSliderElement(endEditor, endPct);
+  }
+
+  function _refreshPreferencesUi() {
     try {
       if (!settingsView) return;
-      for (const input of Array.from(settingsView.querySelectorAll('input[type="number"]'))) {
-        if (!input || input.closest('.wm-spinbox')) continue;
-        const wrapper = document.createElement('div');
-        wrapper.className = 'wm-spinbox';
-        const minus = document.createElement('button');
-        minus.type = 'button';
-        minus.className = 'wm-spinbox-btn';
-        minus.textContent = '−';
-        const plus = document.createElement('button');
-        plus.type = 'button';
-        plus.className = 'wm-spinbox-btn';
-        plus.textContent = '+';
-        input.classList.add('wm-spinbox-input');
-        const parent = input.parentNode;
-        if (!parent) continue;
-        parent.insertBefore(wrapper, input);
-        wrapper.appendChild(minus);
-        wrapper.appendChild(input);
-        wrapper.appendChild(plus);
-        const step = (dir) => {
-          try {
-            if (dir < 0 && typeof input.stepDown === 'function') input.stepDown();
-            else if (dir > 0 && typeof input.stepUp === 'function') input.stepUp();
-            else {
-              const stepVal = Number(input.step || '1');
-              const base = Number(input.value || 0) + dir * (Number.isFinite(stepVal) && stepVal > 0 ? stepVal : 1);
-              input.value = String(base);
-            }
-          } catch (_) {}
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          try { input.focus({ preventScroll: true }); } catch (_) {}
-        };
-        minus.addEventListener('click', () => step(-1));
-        plus.addEventListener('click', () => step(1));
+      for (const field of Array.from(settingsView.querySelectorAll('[data-slider-field="single"]'))) {
+        _syncSingleSliderField(field);
       }
+      for (const field of Array.from(settingsView.querySelectorAll('[data-slider-field="range"]'))) {
+        _syncRangeSliderField(field);
+      }
+      _applyComfortWindUiForMode();
     } catch (_) {}
+  }
+
+  function _emitInputAndChange(input) {
+    if (!input) return;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function _applyRangePair(startInput, endInput, nextStart, nextEnd, preferredSide, emitEvents) {
+    if (!startInput || !endInput) return;
+    let start = _sliderRawToDomainValue(startInput, nextStart);
+    let end = _sliderRawToDomainValue(endInput, nextEnd);
+    const minGap = Math.max(0, Number(startInput.dataset.minGap || endInput.dataset.minGap || 0));
+    if (start > end) {
+      if (preferredSide === 'start') end = start;
+      else start = end;
+    }
+    if (end - start < minGap) {
+      if (preferredSide === 'start') {
+        start = Math.min(start, _settingDomainMax(startInput) - minGap);
+        end = Math.min(_settingDomainMax(endInput), start + minGap);
+      } else {
+        end = Math.max(end, _settingDomainMin(endInput) + minGap);
+        start = Math.max(_settingDomainMin(startInput), end - minGap);
+      }
+    }
+    startInput.value = String(_clampSettingsValue(startInput, _domainValueToSliderRaw(startInput, start)));
+    endInput.value = String(_clampSettingsValue(endInput, _domainValueToSliderRaw(endInput, end)));
+    const field = startInput.closest('[data-slider-field="range"]');
+    _syncRangeSliderField(field, preferredSide);
+    if (emitEvents) {
+      _emitInputAndChange(startInput);
+      _emitInputAndChange(endInput);
+    }
+  }
+
+  function _scheduleLiveSettingsApply() {
+    _markSettingsPending();
+    if (_settingsLiveApplyTimer) {
+      try { clearTimeout(_settingsLiveApplyTimer); } catch (_) {}
+    }
+    _settingsLiveApplyTimer = setTimeout(() => {
+      _settingsLiveApplyTimer = null;
+      try { _applySettingsWithRefresh(); } catch (_) {}
+      _markSettingsSaved();
+    }, SETTINGS_LIVE_APPLY_DEBOUNCE_MS);
+  }
+
+  function _initPreferencesSliderUi() {
+    if (!settingsView || settingsView.dataset.wmSliderInit === '1') return;
+
+    for (const field of Array.from(settingsView.querySelectorAll('[data-slider-field="single"]'))) {
+      const input = field.querySelector('.wm-slider-native');
+      const badge = field.querySelector('[data-slider-badge]');
+      const editor = field.querySelector('[data-slider-editor]');
+      if (!input) continue;
+      input.addEventListener('input', () => {
+        input.value = String(_clampSettingsValue(input, input.value));
+        _syncSingleSliderField(field);
+        _scheduleLiveSettingsApply();
+      });
+      input.addEventListener('change', () => {
+        input.value = String(_clampSettingsValue(input, input.value));
+        _syncSingleSliderField(field);
+        _scheduleLiveSettingsApply();
+      });
+      if (badge && editor) {
+        badge.addEventListener('click', () => {
+          _openSettingsValueEditor(editor, badge, input, (raw) => {
+            input.value = String(_clampSettingsValue(input, _domainValueToSliderRaw(input, raw)));
+            _syncSingleSliderField(field);
+            _emitInputAndChange(input);
+          });
+        });
+      }
+      _syncSingleSliderField(field);
+    }
+
+    for (const field of Array.from(settingsView.querySelectorAll('[data-slider-field="range"]'))) {
+      const shell = field.querySelector('[data-range-shell]');
+      const startInput = field.querySelector('[data-range-role="start"]');
+      const endInput = field.querySelector('[data-range-role="end"]');
+      const startThumb = field.querySelector('[data-range-thumb="start"]');
+      const endThumb = field.querySelector('[data-range-thumb="end"]');
+      const startBadge = field.querySelector('[data-range-badge="start"]');
+      const endBadge = field.querySelector('[data-range-badge="end"]');
+      const startEditor = field.querySelector('[data-range-editor="start"]');
+      const endEditor = field.querySelector('[data-range-editor="end"]');
+      if (!shell || !startInput || !endInput) continue;
+
+      startInput.addEventListener('input', () => {
+        _applyRangePair(startInput, endInput, startInput.value, endInput.value, 'start', false);
+        _scheduleLiveSettingsApply();
+      });
+      startInput.addEventListener('change', () => {
+        _applyRangePair(startInput, endInput, startInput.value, endInput.value, 'start', false);
+        _scheduleLiveSettingsApply();
+      });
+      endInput.addEventListener('input', () => {
+        _applyRangePair(startInput, endInput, startInput.value, endInput.value, 'end', false);
+        _scheduleLiveSettingsApply();
+      });
+      endInput.addEventListener('change', () => {
+        _applyRangePair(startInput, endInput, startInput.value, endInput.value, 'end', false);
+        _scheduleLiveSettingsApply();
+      });
+
+      const valueFromClientX = (clientX) => {
+        const rect = shell.getBoundingClientRect();
+        const width = Math.max(1, rect.width);
+        const ratio = Math.max(0, Math.min(1, (Number(clientX) - rect.left) / width));
+        const min = _settingInputMin(startInput);
+        const max = _settingInputMax(startInput);
+        return min + ratio * (max - min);
+      };
+
+      let dragSide = '';
+      const clearDragUi = () => {
+        dragSide = '';
+        try { if (startThumb) startThumb.classList.remove('wm-active'); } catch (_) {}
+        try { if (endThumb) endThumb.classList.remove('wm-active'); } catch (_) {}
+      };
+      const setDragUi = (side) => {
+        dragSide = side;
+        try { if (startThumb) startThumb.classList.toggle('wm-active', side === 'start'); } catch (_) {}
+        try { if (endThumb) endThumb.classList.toggle('wm-active', side === 'end'); } catch (_) {}
+      };
+      const applyClientX = (clientX, side) => {
+        const raw = valueFromClientX(clientX);
+        if (side === 'start') _applyRangePair(startInput, endInput, raw, endInput.value, 'start', true);
+        else _applyRangePair(startInput, endInput, startInput.value, raw, 'end', true);
+      };
+      const startDrag = (side, clientX, jumpToTrack) => {
+        setDragUi(side);
+        if (jumpToTrack) applyClientX(clientX, side);
+        const onMove = (ev) => {
+          ev.preventDefault();
+          applyClientX(ev.clientX, side);
+        };
+        const onUp = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onUp);
+          clearDragUi();
+        };
+        window.addEventListener('pointermove', onMove, { passive: false });
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
+      };
+
+      if (startThumb) {
+        startThumb.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          startDrag('start', ev.clientX, false);
+        });
+      }
+      if (endThumb) {
+        endThumb.addEventListener('pointerdown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          startDrag('end', ev.clientX, false);
+        });
+      }
+      shell.addEventListener('pointerdown', (ev) => {
+        if (ev.target && (ev.target.closest('.wm-slider-badge') || ev.target.closest('.wm-slider-editor'))) return;
+        const startPct = _settingValueToPercent(startInput, startInput.value);
+        const endPct = _settingValueToPercent(endInput, endInput.value);
+        const rect = shell.getBoundingClientRect();
+        const xPct = ((Number(ev.clientX) - rect.left) / Math.max(1, rect.width)) * 100;
+        const side = (Math.abs(xPct - startPct) <= Math.abs(xPct - endPct)) ? 'start' : 'end';
+        ev.preventDefault();
+        startDrag(side, ev.clientX, true);
+      });
+
+      if (startBadge && startEditor) {
+        startBadge.addEventListener('click', () => {
+          _openSettingsValueEditor(startEditor, startBadge, startInput, (raw) => {
+            _applyRangePair(startInput, endInput, _domainValueToSliderRaw(startInput, raw), endInput.value, 'start', true);
+          });
+        });
+      }
+      if (endBadge && endEditor) {
+        endBadge.addEventListener('click', () => {
+          _openSettingsValueEditor(endEditor, endBadge, endInput, (raw) => {
+            _applyRangePair(startInput, endInput, startInput.value, _domainValueToSliderRaw(endInput, raw), 'end', true);
+          });
+        });
+      }
+
+      _syncRangeSliderField(field);
+    }
+
+    for (const input of Array.from(settingsView.querySelectorAll('select, input[type="date"], input[type="checkbox"]'))) {
+      if (!input) continue;
+      input.addEventListener('input', () => _scheduleLiveSettingsApply());
+      input.addEventListener('change', () => _scheduleLiveSettingsApply());
+    }
+
+    settingsView.dataset.wmSliderInit = '1';
+    _refreshPreferencesUi();
   }
 
   try {
@@ -2542,7 +3095,7 @@
       setActiveHourEnd.addEventListener('change', () => _syncActiveHourInputs(setActiveHourEnd));
     }
   } catch (_) {}
-  try { _enhanceSettingsNumberInputs(); } catch (_) {}
+  try { _initPreferencesSliderUi(); } catch (_) {}
 
   // -------------------- Mode side effects --------------------
   // Tab selection + pill positioning is handled by the inlined script in index.html.
@@ -2776,6 +3329,7 @@
     try { _updateStrategicLegend(); } catch (_) {}
     try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) { _renderStrategic(); if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('years'); } } catch (_) {}
     try { _refreshClimateProfileSelection({ force: true, immediate: true }); } catch (_) {}
+    try { _markSettingsSaved(); } catch (_) {}
   }
 
   function _setStrategicMode(nextMode) {
@@ -3407,10 +3961,6 @@
     try {
       if (strategicLayerSelect) strategicLayerSelect.value = STRATEGIC_STATE.layer;
     } catch (_) {}
-    if (strategicWindOn && (STRATEGIC_STATE.layer === 'wind_speed' || STRATEGIC_STATE.layer === 'wind_dir') && !strategicWindOn.checked) {
-      strategicWindOn.checked = true;
-      STRATEGIC_STATE.windOn = true;
-    }
     _syncStrategicQuickLayer();
     _updateStrategicLegend();
     try { _applyStrategicBasemap(); } catch (_) {}
@@ -3548,7 +4098,8 @@
         this._lastH = 0;
         this._lastDpr = 0;
 
-        m.getPanes().overlayPane.appendChild(this._container);
+        const climatePane = (m.getPane && m.getPane('wmClimatePane')) ? m.getPane('wmClimatePane') : m.getPanes().overlayPane;
+        climatePane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
         this._reset();
       },
@@ -3625,7 +4176,8 @@
         this._lastW = 0;
         this._lastH = 0;
         this._lastDpr = 0;
-        m.getPanes().overlayPane.appendChild(this._container);
+        const windPane = (m.getPane && m.getPane('wmWindPane')) ? m.getPane('wmWindPane') : m.getPanes().overlayPane;
+        windPane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
         this._reset();
       },
@@ -8158,13 +8710,13 @@
     }
 
     ctx.save();
-    ctx.globalAlpha = aFill;
     for (let i = 0; i < quadsByIdx.length; i++) {
       const quads = quadsByIdx[i];
       if (!quads || !quads.length) continue;
       const col = cols[i];
       if (!col) continue;
-      ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},1)`;
+      const fillAlpha = _clamp01((Number.isFinite(Number(col.a)) ? Number(col.a) : 1) * aFill);
+      ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},${fillAlpha})`;
       ctx.beginPath();
       for (const q of quads) {
         ctx.moveTo(q[0].x, q[0].y);
@@ -8271,8 +8823,6 @@
         })();
         const valueKey = (String(modeRaw) === 'full_day') ? 'temperature_c' : 'temp_day_median';
         const grid = _gridFromPoints(resp.points, valueKey);
-        // Phase 1: post-interpolation binning into discrete colors.
-        // Render into a low-res raster and upscale for speed; keep bins crisp.
         if (meta) {
           const sc = (typeof window !== 'undefined') ? window.WM_TEMP_SCALE : null;
           const bounds = (sc && Array.isArray(sc.TEMP_BOUNDS)) ? sc.TEMP_BOUNDS : [-Infinity, 5, 10, 15, 20, 25, 30, 35, Infinity];
@@ -8293,104 +8843,8 @@
             };
           };
           const colorsRgb = colorsHex.map(toRgb);
-          const binIndex = (t) => {
-            try {
-              if (sc && typeof sc.getTempBinIndex === 'function') return sc.getTempBinIndex(t);
-            } catch (_) {}
-            const v = Number(t);
-            if (!Number.isFinite(v)) return null;
-            for (let i = 0; i < bounds.length - 1; i++) {
-              if (v < bounds[i + 1]) return i;
-            }
-            return bounds.length - 2;
-          };
-
-          const z = map.getZoom ? map.getZoom() : 6;
-          const stride = Math.max(2, Math.min(6, Math.round(6 - Math.max(0, Math.min(6, z - 5)))));
-          const w2 = Math.max(1, Math.ceil(w / stride));
-          const h2 = Math.max(1, Math.ceil(h / stride));
-          const off = (STRATEGIC_STATE._tempRideRaster || (STRATEGIC_STATE._tempRideRaster = document.createElement('canvas')));
-          off.width = w2;
-          off.height = h2;
-          const octx = off.getContext('2d');
-          if (octx) {
-            const img = octx.createImageData(w2, h2);
-            const data = img.data;
-            const a255 = Math.max(0, Math.min(255, Math.round(255 * 0.22)));
-            const binArr = new Int16Array(w2 * h2);
-            for (let i = 0; i < binArr.length; i++) binArr[i] = -1;
-
-            // Lon is linear in x at constant y in WebMercator.
-            let lonAtX0 = 0;
-            let lonPerPx = 0;
-            try {
-              const llL = map.containerPointToLatLng([0, h * 0.5]);
-              const llR = map.containerPointToLatLng([w, h * 0.5]);
-              if (llL && llR) {
-                lonAtX0 = Number(llL.lng);
-                let dLon = Number(llR.lng) - lonAtX0;
-                if (dLon > 180) dLon -= 360;
-                if (dLon < -180) dLon += 360;
-                lonPerPx = dLon / Math.max(1, w);
-              }
-            } catch (_) {
-              lonAtX0 = 0;
-              lonPerPx = 0;
-            }
-            const lonByX2 = new Array(w2);
-            for (let x2 = 0; x2 < w2; x2++) {
-              const px = x2 * stride + stride * 0.5;
-              let lon = lonAtX0 + lonPerPx * px;
-              lon = ((lon + 540) % 360) - 180;
-              lonByX2[x2] = lon;
-            }
-
-            for (let y2 = 0; y2 < h2; y2++) {
-              const py = y2 * stride + stride * 0.5;
-              let latRow = NaN;
-              try {
-                const llRow = map.containerPointToLatLng([w * 0.5, py]);
-                latRow = llRow ? Number(llRow.lat) : NaN;
-              } catch (_) {
-                latRow = NaN;
-              }
-              const haveLat = Number.isFinite(latRow);
-
-              for (let x2 = 0; x2 < w2; x2++) {
-                const idxPx = (y2 * w2 + x2) * 4;
-                if (!haveLat) {
-                  data[idxPx + 3] = 0;
-                  continue;
-                }
-                const lon = lonByX2[x2];
-                const s = _sampleInterpolated(tileMap, meta, latRow, lon);
-                const t = s ? Number(s.temp_day_median) : NaN;
-                if (!Number.isFinite(t)) {
-                  data[idxPx + 3] = 0;
-                  continue;
-                }
-                const bi = binIndex(t);
-                if (bi === null) {
-                  data[idxPx + 3] = 0;
-                  continue;
-                }
-                binArr[(y2 * w2 + x2)] = Number(bi);
-                const rgb = colorsRgb[Math.max(0, Math.min(colorsRgb.length - 1, Number(bi)))] || { r: 150, g: 150, b: 150 };
-                data[idxPx + 0] = rgb.r;
-                data[idxPx + 1] = rgb.g;
-                data[idxPx + 2] = rgb.b;
-                data[idxPx + 3] = a255;
-              }
-            }
-
-            _applyBinnedEdgeEmphasis(data, w2, h2, binArr, { darken: 0.90, alphaAdd: 0.02 });
-
-            octx.putImageData(img, 0, 0);
-            ctx.save();
-            try { ctx.imageSmoothingEnabled = false; } catch (_) {}
-            ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
-            ctx.restore();
-          }
+          const thresholds = bounds.filter(Number.isFinite);
+          if (grid) _drawBandedCellFill(ctx, grid, thresholds, colorsRgb, 0.22);
         }
 
         // Optional thin contours (°C anchors) to help read bins.
@@ -8420,155 +8874,21 @@
           { r: 80,  g: 40,  b: 160, a: 0.60 }, // 20–50 heavy
           { r: 70,  g: 30,  b: 140, a: 0.70 }, // >50 extreme (capped max)
         ];
-        const rainBinIdx = (mm) => {
-          const v = Number(mm);
-          if (!Number.isFinite(v) || v < RAIN_BINS[0]) return -1;
-          if (v < RAIN_BINS[1]) return 0;
-          if (v < RAIN_BINS[2]) return 1;
-          if (v < RAIN_BINS[3]) return 2;
-          if (v < RAIN_BINS[4]) return 3;
-          if (v < RAIN_BINS[5]) return 4;
-          return 5;
-        };
         const RAIN_SMOOTH_SIGMA = 0.75; // ~0.5–1 grid cell
 
-        // Render into a low-res raster and upscale for speed + smoothness.
-        const z = map.getZoom ? map.getZoom() : 6;
-        const stride = Math.max(2, Math.min(6, Math.round(6 - Math.max(0, Math.min(6, z - 5)))));
-        const w2 = Math.max(1, Math.ceil(w / stride));
-        const h2 = Math.max(1, Math.ceil(h / stride));
-        const off = (STRATEGIC_STATE._rainRideRaster || (STRATEGIC_STATE._rainRideRaster = document.createElement('canvas')));
-        off.width = w2;
-        off.height = h2;
-        const octx = off.getContext('2d');
-        if (!octx) {
-          if (clipped) ctx.restore();
-          _strokeStrategicShoreline(ctx);
-          return;
-        }
-        const field = Array.from({ length: h2 }, () => Array.from({ length: w2 }, () => NaN));
-
-        // Existing interpolation is kept: we sample `precipitation_mm` (mm/day equivalent) at each raster pixel.
-        // Performance: avoid calling Leaflet's containerPointToLatLng for every raster pixel.
-        // In WebMercator, longitude is linear in x for a given zoom, and latitude depends only on y.
-        let lonAtX0 = 0;
-        let lonPerPx = 0;
-        try {
-          const llL = map.containerPointToLatLng([0, h * 0.5]);
-          const llR = map.containerPointToLatLng([w, h * 0.5]);
-          if (llL && llR) {
-            lonAtX0 = Number(llL.lng);
-            let dLon = Number(llR.lng) - lonAtX0;
-            // Choose shortest delta across the dateline.
-            if (dLon > 180) dLon -= 360;
-            if (dLon < -180) dLon += 360;
-            lonPerPx = dLon / Math.max(1, w);
-          }
-        } catch (_) {
-          lonAtX0 = 0;
-          lonPerPx = 0;
-        }
-
-        const lonByX2 = new Array(w2);
-        for (let x2 = 0; x2 < w2; x2++) {
-          const px = x2 * stride + stride * 0.5;
-          let lon = lonAtX0 + lonPerPx * px;
-          // Normalize to [-180, 180) for stable tile hashing.
-          lon = ((lon + 540) % 360) - 180;
-          lonByX2[x2] = lon;
-        }
-
-        for (let y2 = 0; y2 < h2; y2++) {
-          const py = y2 * stride + stride * 0.5;
-          let latRow = NaN;
-          try {
-            const llRow = map.containerPointToLatLng([w * 0.5, py]);
-            latRow = llRow ? Number(llRow.lat) : NaN;
-          } catch (_) {
-            latRow = NaN;
-          }
-          const haveLat = Number.isFinite(latRow);
-
-          for (let x2 = 0; x2 < w2; x2++) {
-            if (!haveLat) continue;
-            const lon = lonByX2[x2];
-            let mm = NaN;
-            try {
-              const s = _sampleInterpolated(tileMap, meta, latRow, lon);
-              mm = s ? Number(s.precipitation_mm) : NaN;
-            } catch (_) {
-              mm = NaN;
-            }
-            if (!Number.isFinite(mm) || mm < RAIN_BINS[0]) continue;
-            field[y2][x2] = Math.max(0, mm);
-          }
-        }
-
-        // Light smoothing improves field shape (removes blockiness).
-        const smooth = _gaussianBlur2D_nanAware(field, RAIN_SMOOTH_SIGMA);
-
-        const img = octx.createImageData(w2, h2);
-        const data = img.data;
-        const binArr = new Int16Array(w2 * h2);
-        for (let i = 0; i < binArr.length; i++) binArr[i] = -1;
-
-        for (let y2 = 0; y2 < h2; y2++) {
-          const row = smooth[y2];
-          for (let x2 = 0; x2 < w2; x2++) {
-            const mm = row ? Number(row[x2]) : NaN;
-            const bi = rainBinIdx(mm);
-            const i = (y2 * w2 + x2) * 4;
-            if (bi < 0) {
-              data[i + 3] = 0;
-              continue;
-            }
-            binArr[(y2 * w2 + x2)] = bi;
-            const base = RAIN_COLORS[bi] || { r: 150, g: 150, b: 150, a: 0.2 };
-            data[i + 0] = base.r;
-            data[i + 1] = base.g;
-            data[i + 2] = base.b;
-            data[i + 3] = Math.max(0, Math.min(255, Math.round(_clamp01(base.a) * 255)));
-          }
-        }
-
-        // Subtle core/halo effect for bins >= 10mm (>= index 3):
-        // - interior pixels: slightly higher opacity (core)
-        // - edge pixels: slightly lower opacity (softer edge)
-        for (let y2 = 1; y2 < h2 - 1; y2++) {
-          for (let x2 = 1; x2 < w2 - 1; x2++) {
-            const p = y2 * w2 + x2;
-            const bi = binArr[p];
-            if (bi < 3) continue;
-            const bL = binArr[p - 1];
-            const bR = binArr[p + 1];
-            const bU = binArr[p - w2];
-            const bD = binArr[p + w2];
-            const interior = (bL === bi && bR === bi && bU === bi && bD === bi);
-            const i = p * 4;
-            const a0 = data[i + 3];
-            if (!(a0 > 0)) continue;
-            if (interior) {
-              // +~0.04 alpha, tiny darken
-              data[i + 0] = Math.max(0, Math.min(255, Math.round(data[i + 0] * 0.97)));
-              data[i + 1] = Math.max(0, Math.min(255, Math.round(data[i + 1] * 0.97)));
-              data[i + 2] = Math.max(0, Math.min(255, Math.round(data[i + 2] * 0.97)));
-              data[i + 3] = Math.max(0, Math.min(255, a0 + Math.round(0.04 * 255)));
-            } else {
-              data[i + 3] = Math.max(0, Math.min(255, Math.round(a0 * 0.92)));
-            }
-          }
-        }
-
-        // Edge definition between bins (subtle; no hard outlines).
-        _applyBinnedEdgeEmphasis(data, w2, h2, binArr, { darken: 0.92, alphaAdd: 0.01 });
-
-        octx.putImageData(img, 0, 0);
-        ctx.save();
-        // Crisp bin edges.
-        try { ctx.imageSmoothingEnabled = false; } catch (_) {}
-        ctx.globalAlpha = 1;
-        ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
-        ctx.restore();
+        const prepared = _prepareStrategicRainRide(resp.points, { sigma: RAIN_SMOOTH_SIGMA });
+        const rainPoints = Array.isArray(prepared && prepared.pointsForContours) ? prepared.pointsForContours : [];
+        const rainGrid = _gridFromPoints(
+          rainPoints.map((p) => {
+            const v = Number(p && p.__rain_raw_mm_smooth);
+            return {
+              ...p,
+              __rain_band_mm: (Number.isFinite(v) && v >= RAIN_BINS[0]) ? v : NaN,
+            };
+          }),
+          '__rain_band_mm',
+        );
+        if (rainGrid) _drawBandedCellFill(ctx, rainGrid, RAIN_BINS.slice(1, -1), RAIN_COLORS, 1);
 
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
@@ -8615,112 +8935,15 @@
           { r: 0xa6, g: 0xd9, b: 0x6a }, // #a6d96a
           { r: 0x1a, g: 0x98, b: 0x50 }, // #1a9850
         ];
-        const luckyBinIdx = (pct) => {
-          const v = Number(pct);
-          if (!Number.isFinite(v)) return -1;
-          if (v < LUCKY_BINS[1]) return 0;
-          if (v < LUCKY_BINS[2]) return 1;
-          if (v < LUCKY_BINS[3]) return 2;
-          if (v < LUCKY_BINS[4]) return 3;
-          return 4;
-        };
 
-        const z = map.getZoom ? map.getZoom() : 6;
-        const stride = Math.max(2, Math.min(6, Math.round(6 - Math.max(0, Math.min(6, z - 5)))));
-        const w2 = Math.max(1, Math.ceil(w / stride));
-        const h2 = Math.max(1, Math.ceil(h / stride));
-        const off = (STRATEGIC_STATE._luckyRaster || (STRATEGIC_STATE._luckyRaster = document.createElement('canvas')));
-        off.width = w2;
-        off.height = h2;
-        const octx = off.getContext('2d');
-        if (!octx) {
-          if (clipped) ctx.restore();
-          _strokeStrategicShoreline(ctx);
-          return;
-        }
-
-        // Lon linear in x, lat depends only on y.
-        let lonAtX0 = 0;
-        let lonPerPx = 0;
-        try {
-          const llL = map.containerPointToLatLng([0, h * 0.5]);
-          const llR = map.containerPointToLatLng([w, h * 0.5]);
-          if (llL && llR) {
-            lonAtX0 = Number(llL.lng);
-            let dLon = Number(llR.lng) - lonAtX0;
-            if (dLon > 180) dLon -= 360;
-            if (dLon < -180) dLon += 360;
-            lonPerPx = dLon / Math.max(1, w);
-          }
-        } catch (_) {
-          lonAtX0 = 0;
-          lonPerPx = 0;
-        }
-        const lonByX2 = new Array(w2);
-        for (let x2 = 0; x2 < w2; x2++) {
-          const px = x2 * stride + stride * 0.5;
-          let lon = lonAtX0 + lonPerPx * px;
-          lon = ((lon + 540) % 360) - 180;
-          lonByX2[x2] = lon;
-        }
-
-        // Build interpolated percent field in raster space.
-        const field = Array.from({ length: h2 }, () => Array.from({ length: w2 }, () => NaN));
-        for (let y2 = 0; y2 < h2; y2++) {
-          const py = y2 * stride + stride * 0.5;
-          let latRow = NaN;
-          try {
-            const llRow = map.containerPointToLatLng([w * 0.5, py]);
-            latRow = llRow ? Number(llRow.lat) : NaN;
-          } catch (_) {
-            latRow = NaN;
-          }
-          if (!Number.isFinite(latRow)) continue;
-          for (let x2 = 0; x2 < w2; x2++) {
-            const lon = lonByX2[x2];
-            const s = _sampleInterpolated(tileMap, meta, latRow, lon);
-            const n = s ? Number(s[countKey]) : NaN;
-            if (!Number.isFinite(n)) continue;
-            const pctRaw = 100.0 * Math.max(0, n) / Math.max(1, sampleDaysNow);
-            const pct = Math.max(0, Math.min(100, pctRaw));
-            field[y2][x2] = pct;
-          }
-        }
-
-        // Optional micro-smoothing to remove blockiness (sigma ~ 0.5–1 grid units).
-        const smooth = _gaussianBlur2D_nanAware(field, 0.85);
-
-        const img = octx.createImageData(w2, h2);
-        const data = img.data;
-        const binArr = new Int16Array(w2 * h2);
-        for (let i = 0; i < binArr.length; i++) binArr[i] = -1;
-        const a255 = Math.max(0, Math.min(255, Math.round(255 * 0.24)));
-
-        for (let y2 = 0; y2 < h2; y2++) {
-          const row = smooth[y2];
-          for (let x2 = 0; x2 < w2; x2++) {
-            const v = row ? Number(row[x2]) : NaN;
-            const bi = luckyBinIdx(v);
-            const i = (y2 * w2 + x2) * 4;
-            if (bi < 0) {
-              data[i + 3] = 0;
-              continue;
-            }
-            binArr[(y2 * w2 + x2)] = bi;
-            const rgb = LUCKY_COLS[bi] || { r: 150, g: 150, b: 150 };
-            data[i + 0] = rgb.r;
-            data[i + 1] = rgb.g;
-            data[i + 2] = rgb.b;
-            data[i + 3] = a255;
-          }
-        }
-
-        _applyBinnedEdgeEmphasis(data, w2, h2, binArr, { darken: 0.90, alphaAdd: 0.02 });
-        octx.putImageData(img, 0, 0);
-        ctx.save();
-        try { ctx.imageSmoothingEnabled = false; } catch (_) {}
-        ctx.drawImage(off, 0, 0, w2, h2, 0, 0, w, h);
-        ctx.restore();
+        const luckyGrid = _gridFromPoints(
+          resp.points.map((p) => ({
+            ...p,
+            __lucky_pct: pctFn(p),
+          })),
+          '__lucky_pct',
+        );
+        if (luckyGrid) _drawBandedCellFill(ctx, luckyGrid, LUCKY_BINS.slice(1, -1), LUCKY_COLS, 0.24);
 
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
@@ -8734,11 +8957,7 @@
     });
 
     // Wind overlay
-    const wantWind = Boolean(STRATEGIC_STATE.windOn) || (layer === 'wind_dir');
-    if (strategicWindOn && layer === 'wind_dir' && !strategicWindOn.checked) {
-      strategicWindOn.checked = true;
-      STRATEGIC_STATE.windOn = true;
-    }
+    const wantWind = Boolean(STRATEGIC_STATE.windOn);
     if (STRATEGIC_STATE.windLayer) {
       if (!wantWind) {
         STRATEGIC_STATE.windLayer.stop();
@@ -8982,7 +9201,7 @@
       }
       if (strategicWindOn) {
         const windPref = Boolean(SETTINGS && SETTINGS.strategicWindOn);
-        const want = windPref || (STRATEGIC_STATE.layer === 'wind_speed');
+        const want = windPref;
         strategicWindOn.checked = want;
         STRATEGIC_STATE.windOn = want;
       }
@@ -9367,10 +9586,6 @@
   if (strategicLayerSelect) {
     strategicLayerSelect.addEventListener('change', () => {
       STRATEGIC_STATE.layer = strategicLayerSelect.value;
-      if (strategicWindOn && STRATEGIC_STATE.layer === 'wind_speed' && !strategicWindOn.checked) {
-        strategicWindOn.checked = true;
-        STRATEGIC_STATE.windOn = true;
-      }
       _updateStrategicLegend();
       _syncStrategicQuickLayer();
       _renderStrategic();
@@ -9623,8 +9838,8 @@
     } catch (_) {}
     if (setHistLast) setHistLast.value = s.histLastYear;
     if (setHistYears) setHistYears.value = s.histYears;
-    if (setTempCold) setTempCold.value = s.tempCold;
-    if (setTempHot) setTempHot.value = s.tempHot;
+    if (setTempCold) setTempCold.value = String(_domainValueToSliderRaw(setTempCold, s.tempCold));
+    if (setTempHot) setTempHot.value = String(_domainValueToSliderRaw(setTempHot, s.tempHot));
     if (setRainHigh) setRainHigh.value = s.rainHigh;
     if (setWindHeadComfort) setWindHeadComfort.value = s.windHeadComfort;
     if (setWindTailComfort) setWindTailComfort.value = s.windTailComfort;
@@ -9653,6 +9868,7 @@
 
     if (setOverlayMode) setOverlayMode.value = String(s.overlayMode || 'temperature');
     if (profileOverlaySelect) profileOverlaySelect.value = String(s.overlayMode || 'temperature');
+    try { _refreshPreferencesUi(); } catch (_) {}
   }
 
   function readSettingsFromForm(prev) {
@@ -9674,9 +9890,9 @@
     base.histYears = Number(setHistYears && setHistYears.value) || 10;
     if (!Number.isFinite(base.histLastYear) || base.histLastYear < 1970) base.histLastYear = defaultLastYear;
     if (!Number.isFinite(base.histYears) || base.histYears < 1) base.histYears = 10;
-    base.tempCold = Number(setTempCold && setTempCold.value);
+    base.tempCold = _sliderRawToDomainValue(setTempCold, setTempCold && setTempCold.value);
     if (!Number.isFinite(base.tempCold)) base.tempCold = 5;
-    base.tempHot = Number(setTempHot && setTempHot.value);
+    base.tempHot = _sliderRawToDomainValue(setTempHot, setTempHot && setTempHot.value);
     if (!Number.isFinite(base.tempHot)) base.tempHot = 30;
     base.rainHigh = Number(setRainHigh && setRainHigh.value);
     if (!Number.isFinite(base.rainHigh)) base.rainHigh = 10;
@@ -9746,6 +9962,41 @@
         try { _strategicSetYear(Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
         _renderStrategic();
         if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('prefs');
+      }
+    } catch (_) {}
+  }
+
+  function _applySettingsWithRefresh() {
+    const prev = SETTINGS ? { ...SETTINGS } : {};
+    try { applyPrefsFromFormAndPersist(); } catch (_) {}
+    const next = SETTINGS ? { ...SETTINGS } : {};
+
+    let needsRefetch = false;
+    try {
+      for (const k of SETTINGS_REFETCH_KEYS) {
+        if (String(prev && prev[k]) !== String(next && next[k])) {
+          needsRefetch = true;
+          break;
+        }
+      }
+    } catch (_) {
+      needsRefetch = true;
+    }
+
+    if (needsRefetch) {
+      loadMap({ forceRestart: true });
+    } else {
+      if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
+        try { _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
+        try { if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('prefs'); } catch (_) {}
+        try { _renderStrategic(); } catch (_) {}
+      }
+      if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+    }
+
+    try {
+      if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
+        _refreshClimateProfileSelection({ force: true, immediate: true });
       }
     } catch (_) {}
   }
@@ -12653,51 +12904,8 @@
 
   if (settingsSave) {
     settingsSave.addEventListener('click', () => {
-      const prev = SETTINGS ? { ...SETTINGS } : {};
-      try { applyPrefsFromFormAndPersist(); } catch (_) {}
-      const next = SETTINGS ? { ...SETTINGS } : {};
-
-      const dataKeys = [
-        'startDate',
-        'tourDays',
-        'reverse',
-        'weatherQuality',
-        'stepKm',
-        'histLastYear',
-        'histYears',
-        'tempCold',
-        'tempHot',
-        'rainHigh',
-        'windHeadComfort',
-        'windTailComfort',
-        'activeHours',
-      ];
-      let needsRefetch = false;
-      try {
-        for (const k of dataKeys) {
-          if (String(prev && prev[k]) !== String(next && next[k])) { needsRefetch = true; break; }
-        }
-      } catch (_) { needsRefetch = true; }
-
-      if (needsRefetch) {
-        loadMap({ forceRestart: true });
-      } else {
-        // Pure display/strategic toggles → redraw locally.
-        if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
-          try { _strategicSetYear(Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
-          try { if (_strategicViewNeedsFetch()) _scheduleStrategicFetch('prefs'); } catch (_) {}
-          // Some strategic settings (e.g. includeSea land clipping) don't change the fetch key.
-          // Force a local redraw so the toggle has an immediate effect.
-          try { _renderStrategic(); } catch (_) {}
-        }
-        if (LAST_PROFILE) drawProfile(LAST_PROFILE);
-      }
-
-      try {
-        if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
-          _refreshClimateProfileSelection({ force: true, immediate: true });
-        }
-      } catch (_) {}
+      try { _applySettingsWithRefresh(); } catch (_) {}
+      _markSettingsSaved();
     });
   }
   // Share snapshot: capture full window and share/copy/download
@@ -12792,6 +13000,7 @@
         setStepKm.value = SETTINGS.stepKm;
         if (setHistLast) setHistLast.value = SETTINGS.histLastYear;
         setHistYears.value = SETTINGS.histYears;
+        try { _refreshPreferencesUi(); } catch (_) {}
         // GPX path and reverse flag
         if (st.last_gpx_path) LAST_GPX_PATH = st.last_gpx_path;
         if (st.last_gpx_name) LAST_GPX_NAME = st.last_gpx_name;
