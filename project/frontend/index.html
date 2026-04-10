@@ -706,7 +706,7 @@
     body[data-mode="climate"] #mainPane {
       height: calc(100vh - var(--wm-strategic-timeline-h, 0px));
     }
-    #profilePanel { height: 160px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
+    #profilePanel { position: relative; height: 160px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
     #tourSummary { font-family: system-ui, -apple-system, sans-serif; }
     #tourSummary button,
     #tourSummary input,
@@ -903,7 +903,7 @@
       }
     }
     #profileCanvas,
-    #profileCursorCanvas { width: 100%; height: 100%; display: block; }
+    #profileCursorCanvas { width: 100%; height: 100%; display: block; z-index: 2; }
     /* Resize handle at top edge of profile canvas */
     #profileResizeHandle { 
       position: absolute; 
@@ -1053,6 +1053,13 @@
       gap: 12px;
       margin-bottom: 12px;
     }
+    .wm-pref-head-actions {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 10px;
+    }
     .wm-pref-kicker {
       margin: 0 0 4px 0;
       font-size: 11px;
@@ -1084,7 +1091,12 @@
       font-weight: 700;
       box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
       white-space: nowrap;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      text-align: left;
     }
+    .wm-pref-live:focus-visible { outline: 2px solid rgba(14,165,233,0.30); outline-offset: 2px; }
     .wm-pref-live-ico {
       display: inline-flex;
       align-items: center;
@@ -1113,6 +1125,47 @@
       color: #047857;
       background: rgba(16, 185, 129, 0.14);
       box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.12);
+    }
+    .wm-pref-live[data-state="paused"] {
+      color: #475569;
+      border-color: rgba(148, 163, 184, 0.30);
+      background: rgba(248, 250, 252, 0.96);
+    }
+    .wm-pref-live[data-state="paused"] .wm-pref-live-ico {
+      color: #64748b;
+      background: rgba(148, 163, 184, 0.18);
+      box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.14);
+    }
+    .wm-pref-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      width: 100%;
+    }
+    .wm-pref-action-btn {
+      flex: 1 1 auto;
+      min-height: 32px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      background: rgba(255,255,255,0.78);
+      color: #0f172a;
+      font-size: 11px;
+      font-weight: 700;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      white-space: nowrap;
+    }
+    .wm-pref-action-btn:hover {
+      background: rgba(248, 250, 252, 0.98);
+      border-color: rgba(15, 23, 42, 0.16);
+    }
+    .wm-pref-action-btn:focus-visible {
+      outline: 2px solid rgba(14,165,233,0.30);
+      outline-offset: 2px;
     }
     .wm-pref-sections {
       display: grid;
@@ -1520,8 +1573,14 @@
         flex-direction: column;
         align-items: stretch;
       }
+      .wm-pref-head-actions {
+        align-items: stretch;
+      }
       .wm-pref-live {
         align-self: flex-start;
+      }
+      .wm-pref-actions {
+        justify-content: flex-start;
       }
       .wm-pref-row {
         grid-template-columns: 1fr;
@@ -1569,7 +1628,7 @@
 
             <div id="strategicControls">
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <span class="wm-pref-note">Layer and timescale live directly on the climatic map now.</span>
+                <span class="wm-pref-note">To explore the climate map: choose a weather layer, pick a timescale, then click any place on the map. The map tooltip summarizes the selected time window, while the weather profile below lets you hover day by day.</span>
                 <span id="strategicDayLabel" style="display:none">—</span>
                 <div style="display:none" aria-hidden="true">
                   <select id="strategicTimescale">
@@ -1603,7 +1662,13 @@
                     <h3>Live controls for climate and route planning</h3>
                     <p class="wm-pref-head-note">Every change applies automatically after a short pause. Click any value bubble to edit it directly.</p>
                   </div>
-                  <div class="wm-pref-live" id="settingsLiveStatus" aria-live="polite" data-state="idle" aria-label="Live updates enabled" title="Live updates enabled"><span class="wm-pref-live-ico" aria-hidden="true">&#9889;</span><span class="wm-pref-live-text">Live updates</span></div>
+                  <div class="wm-pref-head-actions">
+                    <button type="button" class="wm-pref-live" id="settingsLiveStatus" aria-live="polite" data-state="idle" aria-label="Live updates enabled" title="Live updates enabled" aria-pressed="true"><span class="wm-pref-live-ico" aria-hidden="true">&#9889;</span><span class="wm-pref-live-text">Live updates on</span></button>
+                    <div class="wm-pref-actions" aria-label="Saved settings actions">
+                      <button type="button" class="wm-pref-action-btn" id="settingsSave">Save Settings</button>
+                      <button type="button" class="wm-pref-action-btn" id="settingsLoad">Load Settings</button>
+                    </div>
+                  </div>
                 </div>
 
                 <div class="wm-pref-sections">
@@ -2258,6 +2323,7 @@
   <!-- Leaflet is loaded (with fallback) at the end of body, before map.js -->
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="/frontend/temperature_scale.js?v=1"></script>
+  <script src="/frontend/profile_hover_utils.js?v=1"></script>
   <script src="/profile.js?v=1"></script>
   <script src="/frontend/sidebar.js?v=1"></script>
   <script>
@@ -2665,7 +2731,7 @@
     window.setTestDemoSettings = function() {
       try {
         const cfg = { stepKm: 100, histLastYear: 2024, histYears: 1 };
-        localStorage.setItem('wm_settings', JSON.stringify(cfg));
+        localStorage.setItem('touracle_settings', JSON.stringify({ version: 1, data: cfg }));
         const btn = document.getElementById('reload');
         if (btn) btn.click(); else location.reload();
         console.log('[Test] Applied demo settings:', cfg);
