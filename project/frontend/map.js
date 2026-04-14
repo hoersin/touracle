@@ -2488,6 +2488,53 @@
     return 'rgba(153,153,153,1)';
   }
 
+  function _parseCssColorToRgba(color) {
+    const raw = String(color || '').trim();
+    if (!raw) return null;
+    let m = raw.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)(?:\s*,\s*([\d.]+))?\s*\)$/i);
+    if (m) {
+      return {
+        r: Math.max(0, Math.min(255, Math.round(Number(m[1]) || 0))),
+        g: Math.max(0, Math.min(255, Math.round(Number(m[2]) || 0))),
+        b: Math.max(0, Math.min(255, Math.round(Number(m[3]) || 0))),
+        a: Math.max(0, Math.min(1, m[4] === undefined ? 1 : (Number(m[4]) || 0))),
+      };
+    }
+    m = raw.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (m) {
+      const hex = m[1];
+      if (hex.length === 3) {
+        return {
+          r: parseInt(hex[0] + hex[0], 16),
+          g: parseInt(hex[1] + hex[1], 16),
+          b: parseInt(hex[2] + hex[2], 16),
+          a: 1,
+        };
+      }
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16),
+        a: 1,
+      };
+    }
+    return null;
+  }
+
+  function _softenCssColor(color, opts) {
+    const parsed = _parseCssColorToRgba(color);
+    if (!parsed) return String(color || 'rgba(153,153,153,0.6)');
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const mixWhite = Math.max(0, Math.min(1, Number(o.mixWhite) || 0));
+    const darken = Math.max(0, Math.min(1, Number(o.darken) || 0));
+    const alpha = Math.max(0, Math.min(1, o.alpha === undefined ? parsed.a : Number(o.alpha)));
+    const mix = (v) => {
+      const washed = v + (255 - v) * mixWhite;
+      return Math.max(0, Math.min(255, Math.round(washed * (1 - darken))));
+    };
+    return `rgba(${mix(parsed.r)},${mix(parsed.g)},${mix(parsed.b)},${alpha})`;
+  }
+
   // Map rain probability to weather icon class
   function mapWeatherByProb(prob) {
     const p = Number(prob||0);
@@ -3611,17 +3658,11 @@
       } catch (_) {}
     }
     if (m === 'tour') {
-      // Restore preferred TOUR visualization when coming back from Climate mode.
+      // TOUR tactical map is ribbon-only in the current phase.
       try { _setTourBandsEnabled(_tourWantBands()); } catch (_) {}
       try {
-        const wantGlyphs = SETTINGS && String(SETTINGS.weatherVisualizationMode || 'glyphs') === 'glyphs';
-        if (wantGlyphs) {
-          if (glyphLayerNew) { try { glyphLayerNew.addTo(map); } catch (_) {} }
-          if (glyphLayer) { try { glyphLayer.addTo(map); } catch (_) {} }
-        } else {
-          if (glyphLayerNew) { try { map.removeLayer(glyphLayerNew); } catch (_) {} }
-          if (glyphLayer) { try { map.removeLayer(glyphLayer); } catch (_) {} }
-        }
+        if (glyphLayerNew) { try { map.removeLayer(glyphLayerNew); } catch (_) {} }
+        if (glyphLayer) { try { map.removeLayer(glyphLayer); } catch (_) {} }
       } catch (_) {}
       try {
         if (CLIMATE_PROFILE_STATE.selectedMarker) map.removeLayer(CLIMATE_PROFILE_STATE.selectedMarker);
@@ -4847,6 +4888,19 @@
   // - Right side: temperature band + uncertainty envelope (p25..p75)
   // - Left side: effective wind component (headwind↔tailwind)
   // - Sparse rain markers when rain is likely
+  function _applyTourRouteLayerVisibility() {
+    try {
+      if (!routeLayer || !map) return;
+      const wantLeafletRoute = false;
+      const hasLayer = !!(map.hasLayer && map.hasLayer(routeLayer));
+      if (wantLeafletRoute) {
+        if (!hasLayer) routeLayer.addTo(map);
+      } else if (hasLayer) {
+        map.removeLayer(routeLayer);
+      }
+    } catch (_) {}
+  }
+
   let TOUR_BANDS_LAYER = null;
   let TOUR_BANDS_ENABLED = false;
   let TOUR_BANDS_PROFILE = null;
@@ -5073,7 +5127,22 @@
 
   function _tourProjectRouteRibbon(m) {
     try {
-      if (!m || !LAST_PROFILE || !Array.isArray(LAST_PROFILE.sampled_points) || !Array.isArray(LAST_PROFILE.sampled_dist_km)) return null;
+      if (!m) return null;
+      if (Array.isArray(ROUTE_COORDS) && Array.isArray(ROUTE_CUM_DISTS) && ROUTE_COORDS.length >= 2 && ROUTE_CUM_DISTS.length === ROUTE_COORDS.length) {
+        const out = [];
+        for (let i = 0; i < ROUTE_COORDS.length; i++) {
+          const c = ROUTE_COORDS[i];
+          if (!Array.isArray(c) || c.length < 2) continue;
+          const lon = Number(c[0]);
+          const lat = Number(c[1]);
+          const dist = Number(ROUTE_CUM_DISTS[i]);
+          if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(dist)) continue;
+          const p = m.latLngToContainerPoint([lat, lon]);
+          out.push({ x: Number(p.x), y: Number(p.y), dist });
+        }
+        if (out.length >= 2) return out;
+      }
+      if (!LAST_PROFILE || !Array.isArray(LAST_PROFILE.sampled_points) || !Array.isArray(LAST_PROFILE.sampled_dist_km)) return null;
       const coords = LAST_PROFILE.sampled_points;
       const dists = LAST_PROFILE.sampled_dist_km;
       if (coords.length < 2 || dists.length !== coords.length) return null;
@@ -5081,7 +5150,6 @@
       for (let i = 0; i < coords.length; i++) {
         const c = coords[i];
         if (!c) continue;
-        // Backend profile emits sampled_points as [lon, lat]
         const lon = Array.isArray(c) ? Number(c[0]) : Number(c.lng);
         const lat = Array.isArray(c) ? Number(c[1]) : Number(c.lat);
         const p = m.latLngToContainerPoint([lat, lon]);
@@ -5192,7 +5260,7 @@
 
   function _tourWantBands() {
     try {
-      return _tourIsActive() && SETTINGS && (String(SETTINGS.weatherVisualizationMode || 'glyphs') === 'bands');
+      return _tourIsActive();
     } catch (_) {
       return false;
     }
@@ -5220,12 +5288,17 @@
     const Layer = L.Layer.extend({
       onAdd: function(m) {
         this._map = m;
-        // Pane above route vectors, below markers.
+        // Main pane below route vectors plus a foreground pane for rain dots above the route.
         try {
           if (!m.getPane('wmBandsPane')) {
             m.createPane('wmBandsPane');
-            m.getPane('wmBandsPane').style.zIndex = '450';
+            m.getPane('wmBandsPane').style.zIndex = '350';
             try { m.getPane('wmBandsPane').classList.add('leaflet-zoom-animated'); } catch (_) {}
+          }
+          if (!m.getPane('wmBandsTopPane')) {
+            m.createPane('wmBandsTopPane');
+            m.getPane('wmBandsTopPane').style.zIndex = '450';
+            try { m.getPane('wmBandsTopPane').classList.add('leaflet-zoom-animated'); } catch (_) {}
           }
         } catch (_) {}
 
@@ -5235,6 +5308,12 @@
         this._container.style.top = '0';
         this._container.style.pointerEvents = 'none';
 
+        this._topContainer = L.DomUtil.create('div', 'wm-tour-bands-top');
+        this._topContainer.style.position = 'absolute';
+        this._topContainer.style.left = '0';
+        this._topContainer.style.top = '0';
+        this._topContainer.style.pointerEvents = 'none';
+
         this._canvasBand = L.DomUtil.create('canvas', '', this._container);
         this._canvasBand.style.position = 'absolute';
         this._canvasBand.style.left = '0';
@@ -5243,14 +5322,13 @@
         this._canvasBand.style.height = '100%';
         this._canvasBand.style.zIndex = '1';
 
-        this._canvasWind = L.DomUtil.create('canvas', '', this._container);
+        this._canvasWind = L.DomUtil.create('canvas', '', this._topContainer);
         this._canvasWind.style.position = 'absolute';
         this._canvasWind.style.left = '0';
         this._canvasWind.style.top = '0';
         this._canvasWind.style.width = '100%';
         this._canvasWind.style.height = '100%';
-        // Wind must never cover the temperature band or rain symbols.
-        this._canvasWind.style.zIndex = '0';
+        this._canvasWind.style.zIndex = '1';
 
         // Legend: use a Leaflet control so it stays screen-fixed during drag.
         this._legendControl = L.control({ position: 'topright' });
@@ -5265,62 +5343,32 @@
           el.style.color = '#111';
           el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)';
           el.style.pointerEvents = 'auto';
-          const td = _tempLegendData(-5, 35);
-          const segHtml = (td && Array.isArray(td.segments) && td.segments.length)
-            ? td.segments.map(s => `<div style="flex:${Number(s.flex) || 1} 1 0%;height:100%;background:${s.color};"></div>`).join('')
-            : [
-                '<div style="flex:1;height:100%;background:#313695"></div>',
-                '<div style="flex:1;height:100%;background:#2c7bb6"></div>',
-                '<div style="flex:1;height:100%;background:#00a6ca"></div>',
-                '<div style="flex:1;height:100%;background:#66c2a5"></div>',
-                '<div style="flex:1;height:100%;background:#1a9850"></div>',
-                '<div style="flex:1;height:100%;background:#66bd63"></div>',
-                '<div style="flex:1;height:100%;background:#fee08b"></div>',
-                '<div style="flex:1;height:100%;background:#f46d43"></div>',
-              ].join('');
-          const ticksHtml = _tempLegendTicksMarkup(td, { unitOnMax: true });
           el.innerHTML = `
-            <div style="font-weight:600;margin-bottom:6px;">Legend</div>
+            <div style="font-weight:600;margin-bottom:6px;">Tour Weather</div>
             <div style="margin-bottom:8px;">
-              <div style="font-weight:600;margin-bottom:3px;">Temperature</div>
-              <div style="width:160px;height:10px;border-radius:6px;overflow:hidden;border:1px solid rgba(0,0,0,0.10);display:flex;">${segHtml}</div>
-              <div style="font-size:10px;opacity:0.85;">${ticksHtml}</div>
+              <div style="font-weight:600;margin-bottom:3px;">Route</div>
+              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                <span style="position:relative;display:inline-block;width:28px;height:10px;">
+                  <span style="position:absolute;left:0;right:0;top:0;height:10px;border-radius:999px;background:rgba(245,242,235,0.6);"></span>
+                  <span style="position:absolute;left:0;right:0;top:3px;height:3px;border-radius:999px;background:#2F4858;"></span>
+                  <span style="position:absolute;left:0;right:0;top:4px;height:1px;border-radius:999px;background:rgba(255,255,255,0.6);"></span>
+                </span>
+                <span style="opacity:0.9;">base route</span>
+              </div>
             </div>
             <div style="margin-bottom:8px;">
-              <div style="font-weight:600;margin-bottom:3px;">Rain</div>
+              <div style="font-weight:600;margin-bottom:3px;">Weather</div>
               <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
-                <span style="display:inline-flex;gap:3px;align-items:center;width:44px;">
-                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
-                </span>
-                <span style="opacity:0.9;">1–3 mm</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
-                <span style="display:inline-flex;gap:3px;align-items:center;width:44px;">
-                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
-                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
-                </span>
-                <span style="opacity:0.9;">3–8 mm</span>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
-                <span style="display:inline-flex;gap:3px;align-items:center;width:44px;">
-                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
-                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
-                  <span style="display:inline-block;width:6px;height:14px;border-radius:3px;background:rgba(35, 120, 210, 0.88);"></span>
-                </span>
-                <span style="opacity:0.9;">&gt;8 mm</span>
+                <span style="display:inline-block;min-width:44px;font-size:13px;line-height:1;">🌤 21°</span>
+                <span style="opacity:0.9;">icon + temperature</span>
               </div>
             </div>
             <div>
               <div style="font-weight:600;margin-bottom:3px;">Wind</div>
               <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
-                <span style="display:inline-block;width:28px;height:6px;border-radius:4px;background:rgba(95,174,106,0.80);border:1px solid rgba(255,255,255,0.85);"></span>
-                <span style="opacity:0.9;">tailwind</span>
+                <span style="display:inline-block;min-width:44px;color:#666;opacity:0.8;">▸▸</span>
+                <span style="opacity:0.9;">wind chevrons</span>
               </div>
-              <div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
-                <span style="display:inline-block;width:28px;height:6px;border-radius:4px;background:rgba(200,106,106,0.80);border:1px solid rgba(255,255,255,0.85);"></span>
-                <span style="opacity:0.9;">headwind</span>
-              </div>
-              <div style="opacity:0.85;">Arrow shows direction</div>
             </div>`;
           try { L.DomEvent.disableClickPropagation(el); } catch (_) {}
           try { L.DomEvent.disableScrollPropagation(el); } catch (_) {}
@@ -5331,6 +5379,8 @@
 
         const pane = (m.getPane && m.getPane('wmBandsPane')) ? m.getPane('wmBandsPane') : m.getPanes().overlayPane;
         pane.appendChild(this._container);
+        const topPane = (m.getPane && m.getPane('wmBandsTopPane')) ? m.getPane('wmBandsTopPane') : m.getPanes().markerPane;
+        topPane.appendChild(this._topContainer);
 
         this._anim = null;
         this._lastAnimTs = null;
@@ -5461,8 +5511,7 @@
               try {
                 const rr = _tourProjectRouteRibbon(m);
                 this._hoverRouteRibbon = rr;
-                // Match draw() offset: TEMP_BAND_WIDTH_PX=8 => bandOffsetPx = 8*0.5 + 6 = 10
-                this._hoverBandRibbon = (wantBandHover && rr) ? _offsetRibbonRight(rr, 10) : null;
+                this._hoverBandRibbon = (wantBandHover && rr) ? rr : null;
                 this._hoverGeomValid = true;
               } catch (_) {
                 this._hoverRouteRibbon = null;
@@ -5716,16 +5765,22 @@
         this._legendEl = null;
         try { if (this._anim) cancelAnimationFrame(this._anim); } catch (_) {}
         try { this._container && this._container.remove(); } catch (_) {}
+        try { this._topContainer && this._topContainer.remove(); } catch (_) {}
         this._map = null;
       },
       _reset: function() {
         if (!this._map || !this._container) return;
         const topLeft = this._map.containerPointToLayerPoint([0, 0]);
         L.DomUtil.setPosition(this._container, topLeft);
+        if (this._topContainer) L.DomUtil.setPosition(this._topContainer, topLeft);
         const size = this._map.getSize();
         const dpr = (window.devicePixelRatio || 1);
         this._container.style.width = `${size.x}px`;
         this._container.style.height = `${size.y}px`;
+        if (this._topContainer) {
+          this._topContainer.style.width = `${size.x}px`;
+          this._topContainer.style.height = `${size.y}px`;
+        }
         this._canvasBand.width = Math.max(1, Math.floor(size.x * dpr));
         this._canvasBand.height = Math.max(1, Math.floor(size.y * dpr));
         this._canvasWind.width = Math.max(1, Math.floor(size.x * dpr));
@@ -5767,10 +5822,12 @@
 
         if (!TOUR_BANDS_ENABLED) {
           try { this._container.style.display = 'none'; } catch (_) {}
+          try { if (this._topContainer) this._topContainer.style.display = 'none'; } catch (_) {}
           this.clear();
           return;
         }
         try { this._container.style.display = 'block'; } catch (_) {}
+        try { if (this._topContainer) this._topContainer.style.display = 'block'; } catch (_) {}
         try { if (this._legendEl) this._legendEl.style.display = 'block'; } catch (_) {}
 
         if (!profile || !Array.isArray(profile.sampled_points) || !Array.isArray(profile.sampled_dist_km)) {
@@ -5819,12 +5876,7 @@
         windCtx.scale(dpr, dpr);
 
         // Spec parameters
-        // Temperature band width: fixed (~2mm on typical displays) per latest UX request.
-        // Use a constant pixel width to remove variability from percentile spread.
-        const TEMP_BAND_WIDTH_PX = 8;
-        // Small, deterministic offset so the GPX route stays readable.
-        // Keep the near band edge ~6px away from the route.
-        const bandOffsetPx = (TEMP_BAND_WIDTH_PX * 0.5) + 6;
+        const TEMP_BAND_WIDTH_PX = 7;
         const stride = (z >= 12) ? 1 : ((z >= 9) ? 2 : 3);
         // Less aggressive simplification at higher zoom to avoid geometric kinks.
         const simplifyEps = clamp(10 - (z - 6) * 1.6, 1.5, 10);
@@ -6153,32 +6205,35 @@
           return;
         }
 
-        // Keep a non-offset copy for hover hit-testing against the GPX route itself.
-        const routeRibbon = ribbon;
-
-        // Offset the band to one side (right of local travel direction) so the route line remains readable.
-        const offsetRibbon = (() => {
-          const n = ribbon.length;
-          const out = new Array(n);
-          for (let i = 0; i < n; i++) {
-            const p = ribbon[i];
-            const pPrev = ribbon[Math.max(0, i - 1)];
-            const pNext = ribbon[Math.min(n - 1, i + 1)];
-            const dx = Number(pNext.x) - Number(pPrev.x);
-            const dy = Number(pNext.y) - Number(pPrev.y);
-            const Ls = Math.hypot(dx, dy);
-            if (!(Ls > 1e-3)) {
-              out[i] = { x: Number(p.x), y: Number(p.y), dist: Number(p.dist) };
-              continue;
+        const routeRibbon = (() => {
+          try {
+            if (!Array.isArray(ROUTE_COORDS) || !Array.isArray(ROUTE_CUM_DISTS) || ROUTE_COORDS.length < 2 || ROUTE_CUM_DISTS.length !== ROUTE_COORDS.length) {
+              return ribbon;
             }
-            // Right normal in screen coords
-            const nx = dy / Ls;
-            const ny = -dx / Ls;
-            out[i] = { x: Number(p.x) + nx * bandOffsetPx, y: Number(p.y) + ny * bandOffsetPx, dist: Number(p.dist) };
+            const out = [];
+            let prevX = NaN;
+            let prevY = NaN;
+            for (let i = 0; i < ROUTE_COORDS.length; i++) {
+              const pair = ROUTE_COORDS[i];
+              if (!Array.isArray(pair) || pair.length < 2) continue;
+              const lon = Number(pair[0]);
+              const lat = Number(pair[1]);
+              const distKm = Number(ROUTE_CUM_DISTS[i]);
+              if (!Number.isFinite(lon) || !Number.isFinite(lat) || !Number.isFinite(distKm)) continue;
+              const cp = m.latLngToContainerPoint([lat, lon]);
+              const x = Number(cp.x);
+              const y = Number(cp.y);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+              if (out.length && Math.hypot(x - prevX, y - prevY) < 0.75 && i < (ROUTE_COORDS.length - 1)) continue;
+              out.push({ x, y, dist: distKm });
+              prevX = x;
+              prevY = y;
+            }
+            return out.length >= 2 ? out : ribbon;
+          } catch (_) {
+            return ribbon;
           }
-          return out;
         })();
-        ribbon = offsetRibbon;
 
         // Expose ribbons + sampling helpers for tooltips.
         this._routeRibbon = routeRibbon;
@@ -6232,112 +6287,244 @@
         };
         this._tangentAngleAtDist = tangentAngleAtDist;
 
-        // Render temperature band as a thick stroked line (stroke algorithm with thickness).
-        for (let i = 0; i < ribbon.length - 1; i++) {
-          const a = ribbon[i];
-          const b = ribbon[i + 1];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const segLen = Math.hypot(dx, dy);
-          if (!(segLen > 0.25)) continue;
-          const d0 = Number(a.dist);
-          const d1 = Number(b.dist);
-          const s0 = sampleAt(d0);
-          const s1 = sampleAt(d1);
-          const t0 = s0 ? Number(s0.temperature) : null;
-          const t1 = s1 ? Number(s1.temperature) : null;
-          if (!Number.isFinite(t0) || !Number.isFinite(t1)) continue;
-          const w0 = bandWidthAt(s0);
-          const w1 = bandWidthAt(s1);
-          const wAvg = 0.5 * (w0 + w1);
-
-          const tMid = 0.5 * (Number(t0) + Number(t1));
-          const col = tempColorSpec(tMid);
-
-          ctx.globalAlpha = 1.0;
-          ctx.strokeStyle = col;
-          ctx.lineWidth = wAvg;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-          ctx.globalAlpha = 1;
-        }
-
-        // Precip markers: only on category transitions (spec), plus a light re-marker
-        // in long sustained rainy stretches to slightly increase symbol density.
-        const rainCat = (mm) => {
-          const x = Number(mm);
-          if (!Number.isFinite(x) || x <= 1) return 0;
-          if (x <= 3) return 1;
-          if (x <= 8) return 2;
-          if (x <= 15) return 3;
-          return 4;
+        const topCtx = windCtx;
+        const makePointAtDistFor = (line) => (dk) => {
+          const x = Number(dk);
+          if (!Number.isFinite(x) || !Array.isArray(line) || !line.length) return null;
+          if (line.length === 1) return line[0];
+          let lo = 0;
+          let hi = line.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (Number(line[mid].dist) <= x) lo = mid; else hi = mid - 1;
+          }
+          const i0 = lo;
+          const i1 = Math.min(line.length - 1, i0 + 1);
+          const p0 = line[i0];
+          const p1 = line[i1];
+          const d0 = Number(p0.dist);
+          const d1 = Number(p1.dist);
+          if (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) return p0;
+          const u = clamp((x - d0) / (d1 - d0), 0, 1);
+          return { x: p0.x + (p1.x - p0.x) * u, y: p0.y + (p1.y - p0.y) * u, dist: x };
         };
+        const routePointAtDist = makePointAtDistFor(routeRibbon);
+
+        const drawPolyline = (targetCtx, line, color, width, alpha) => {
+          if (!targetCtx || !line || line.length < 2) return;
+          targetCtx.save();
+          targetCtx.globalAlpha = Number.isFinite(alpha) ? alpha : 1;
+          targetCtx.strokeStyle = color;
+          targetCtx.lineWidth = width;
+          targetCtx.lineJoin = 'round';
+          targetCtx.lineCap = 'round';
+          targetCtx.beginPath();
+          for (let i = 0; i < line.length; i++) {
+            const p = line[i];
+            if (!p) continue;
+            if (i === 0) targetCtx.moveTo(p.x, p.y);
+            else targetCtx.lineTo(p.x, p.y);
+          }
+          targetCtx.stroke();
+          targetCtx.restore();
+        };
+
+        const weatherIconForSample = (sample) => {
+          if (!sample) return '☁️';
+          const rainMm = Number(sample.rainTypical);
+          const rainProb = Number(sample.rainProb);
+          const t25 = Number(sample.temp_day_p25);
+          const t75 = Number(sample.temp_day_p75);
+          if (Number.isFinite(rainMm) && rainMm >= 10) return '🌧🌧';
+          const kind = classify_weather(rainProb, rainMm, t25, t75);
+          if (kind === 'sunny') return '☀️';
+          if (kind === 'partly_cloudy') return '🌤';
+          if (kind === 'cloudy') return '☁️';
+          return '🌧';
+        };
+
+        const windChevronCountForSample = (sample) => {
+          if (!sample) return 0;
+          const speed = Number(sample.windSpeed);
+          if (!Number.isFinite(speed) || speed <= 0.75) return 0;
+          if (speed < 3.5) return 1;
+          if (speed < 7.0) return 2;
+          return 3;
+        };
+
+        const roundRect = (targetCtx, x, y, w, h, r) => {
+          const rad = Math.max(0, Math.min(Number(r) || 0, Math.min(w, h) / 2));
+          targetCtx.beginPath();
+          targetCtx.moveTo(x + rad, y);
+          targetCtx.lineTo(x + w - rad, y);
+          targetCtx.quadraticCurveTo(x + w, y, x + w, y + rad);
+          targetCtx.lineTo(x + w, y + h - rad);
+          targetCtx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
+          targetCtx.lineTo(x + rad, y + h);
+          targetCtx.quadraticCurveTo(x, y + h, x, y + h - rad);
+          targetCtx.lineTo(x, y + rad);
+          targetCtx.quadraticCurveTo(x, y, x + rad, y);
+          targetCtx.closePath();
+        };
+
+        const drawWindChevrons = (targetCtx, x, y, angle, count) => {
+          const n = Math.max(0, Math.min(3, Math.round(Number(count) || 0)));
+          if (!n) return;
+          const chevronW = 7;
+          const chevronH = 5;
+          const spacing = 6;
+          targetCtx.save();
+          targetCtx.translate(x, y);
+          targetCtx.rotate(angle);
+          targetCtx.strokeStyle = 'rgba(245,242,235,0.96)';
+          targetCtx.lineWidth = 4;
+          targetCtx.lineCap = 'round';
+          targetCtx.lineJoin = 'round';
+          for (let i = 0; i < n; i++) {
+            const cx = (i - (n - 1) / 2) * spacing;
+            targetCtx.beginPath();
+            targetCtx.moveTo(cx - chevronW * 0.5, -chevronH);
+            targetCtx.lineTo(cx + chevronW * 0.5, 0);
+            targetCtx.lineTo(cx - chevronW * 0.5, chevronH);
+            targetCtx.stroke();
+          }
+          targetCtx.strokeStyle = 'rgba(80,80,80,0.88)';
+          targetCtx.lineWidth = 2.2;
+          for (let i = 0; i < n; i++) {
+            const cx = (i - (n - 1) / 2) * spacing;
+            targetCtx.beginPath();
+            targetCtx.moveTo(cx - chevronW * 0.5, -chevronH);
+            targetCtx.lineTo(cx + chevronW * 0.5, 0);
+            targetCtx.lineTo(cx - chevronW * 0.5, chevronH);
+            targetCtx.stroke();
+          }
+          targetCtx.restore();
+        };
+
+        drawPolyline(ctx, routeRibbon, 'rgba(245,242,235,0.6)', 10, 1);
+        drawPolyline(ctx, routeRibbon, '#2F4858', 4, 1);
+        drawPolyline(ctx, routeRibbon, 'rgba(255,255,255,0.6)', 1, 1);
+
         try {
-          const rainEvents = [];
-          let prev = null;
-          let lastAddedAt = -1e99;
-          const extraSpacingKm = 90; // slightly denser, still calm
+          const minKmSpacing = 35;
+          const minBadgePxSpacing = 72;
+          const minWindPxSpacing = 64;
+          let lastBadgeKm = -1e99;
+          let lastBadgePt = null;
+          let lastWindPt = null;
+          let windIndex = 0;
+          topCtx.save();
+
           for (const p of pts) {
             const dk = Number(p.dist);
             if (!Number.isFinite(dk)) continue;
-            const sMid = sampleAt(dk);
-            const mm = sMid ? Number(sMid.rainTypical) : null;
-            const cat = rainCat(mm);
-            if (prev === null) { prev = cat; continue; }
-            if (cat !== prev) {
-              if (cat > 0) {
-                rainEvents.push({ dist: dk, cat });
-                lastAddedAt = dk;
-              }
-              prev = cat;
-              continue;
-            }
-            // Slight density increase: in long constant rainy stretches, add occasional markers.
-            if (cat > 0 && (dk - lastAddedAt) >= extraSpacingKm) {
-              rainEvents.push({ dist: dk, cat });
-              lastAddedAt = dk;
-            }
+            const routePt = routePointAtDist(dk);
+            if (!routePt) continue;
+            if (lastWindPt && Math.hypot(routePt.x - lastWindPt.x, routePt.y - lastWindPt.y) < minWindPxSpacing) continue;
+            const sample = sampleAt(dk);
+            if (!sample) continue;
+            const chevronCount = windChevronCountForSample(sample);
+            if (!chevronCount) continue;
+            const angle = tangentAngleAtDist(dk);
+            const nx = -Math.sin(angle);
+            const ny = Math.cos(angle);
+            const effWind = _tourEffectiveWind(sample, dk);
+            const side = (windIndex % 2 === 0) ? -1 : 1;
+            const chevronAngle = angle + ((Number.isFinite(effWind) && effWind < 0) ? Math.PI : 0);
+            const windX = routePt.x + nx * side * 7;
+            const windY = routePt.y + ny * side * 7;
+            drawWindChevrons(topCtx, windX, windY, chevronAngle, chevronCount);
+            lastWindPt = routePt;
+            windIndex += 1;
           }
 
-          const rr = (x, y, w, h, r) => {
-            const rad = Math.max(0, Math.min(Math.min(w, h) / 2, Number(r) || 0));
-            ctx.beginPath();
-            ctx.moveTo(x + rad, y);
-            ctx.lineTo(x + w - rad, y);
-            ctx.quadraticCurveTo(x + w, y, x + w, y + rad);
-            ctx.lineTo(x + w, y + h - rad);
-            ctx.quadraticCurveTo(x + w, y + h, x + w - rad, y + h);
-            ctx.lineTo(x + rad, y + h);
-            ctx.quadraticCurveTo(x, y + h, x, y + h - rad);
-            ctx.lineTo(x, y + rad);
-            ctx.quadraticCurveTo(x, y, x + rad, y);
-            ctx.closePath();
-          };
+          for (const p of pts) {
+            const dk = Number(p.dist);
+            if (!Number.isFinite(dk) || (dk - lastBadgeKm) < minKmSpacing) continue;
+            const routePt = routePointAtDist(dk);
+            if (!routePt) continue;
+            if (lastBadgePt && Math.hypot(routePt.x - lastBadgePt.x, routePt.y - lastBadgePt.y) < minBadgePxSpacing) continue;
 
-          ctx.fillStyle = 'rgba(35, 120, 210, 0.88)';
-          for (const ev of rainEvents) {
-            const p = pointAtDist(ev.dist);
-            if (!p) continue;
-            const w = bandWidthAt(sampleAt(ev.dist));
-            const ang = tangentAngleAtDist(ev.dist);
-            const nx = Math.sin(ang);
-            const ny = -Math.cos(ang);
-            const x0 = p.x + nx * (0.5 * w + 12);
-            const y0 = p.y + ny * (0.5 * w + 12);
-            const count = (ev.cat <= 1) ? 1 : (ev.cat === 2) ? 2 : 3; // ||| for >= heavy
-            const sep = 6;
-            const len = 18;
-            const barW = 4;
-            const rad = 2.2;
-            for (let k = 0; k < count; k++) {
-              const xo = x0 + (k - (count - 1) / 2) * sep;
-              rr(xo - barW / 2, y0 - len / 2, barW, len, rad);
-              ctx.fill();
-            }
+            const sample = sampleAt(dk);
+            if (!sample) continue;
+            const icon = weatherIconForSample(sample);
+            const temp = Number(sample.temperature);
+            const tempText = Number.isFinite(temp) ? `${Math.round(temp)}°` : '–';
+            const angle = tangentAngleAtDist(dk);
+            const nx = -Math.sin(angle);
+            const ny = Math.cos(angle);
+            const labelX = routePt.x + nx * 16;
+            const labelY = routePt.y + ny * 16;
+            const connectorX = routePt.x + nx * 7;
+            const connectorY = routePt.y + ny * 7;
+
+            topCtx.textAlign = 'left';
+            topCtx.textBaseline = 'middle';
+            const iconFont = '22px -apple-system, BlinkMacSystemFont, "Segoe UI Emoji", "Apple Color Emoji", sans-serif';
+            const textFont = '500 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+            topCtx.font = iconFont;
+            const iconW = Math.max(22, topCtx.measureText(icon).width);
+            topCtx.font = textFont;
+            const tempW = Math.max(19, topCtx.measureText(tempText).width);
+            const badgePadX = 8;
+            const badgePadY = 4;
+            const contentGap = 7;
+            const badgeW = Math.ceil(badgePadX * 2 + iconW + contentGap + tempW);
+            const badgeH = 29;
+            const badgeX = Math.round(labelX - badgeW / 2);
+            const badgeY = Math.round(labelY - badgeH / 2);
+
+            topCtx.strokeStyle = 'rgba(0,0,0,0.15)';
+            topCtx.lineWidth = 1;
+            topCtx.beginPath();
+            topCtx.moveTo(connectorX, connectorY);
+            topCtx.lineTo(routePt.x + nx * 10, routePt.y + ny * 10);
+            topCtx.stroke();
+
+            topCtx.save();
+            topCtx.shadowColor = 'rgba(0,0,0,0.15)';
+            topCtx.shadowBlur = 3;
+            topCtx.shadowOffsetX = 0;
+            topCtx.shadowOffsetY = 1;
+            topCtx.fillStyle = 'rgba(255,255,255,0.85)';
+            roundRect(topCtx, badgeX, badgeY, badgeW, badgeH, 6);
+            topCtx.fill();
+            topCtx.restore();
+
+            const contentY = badgeY + badgeH / 2;
+            let cursorX = badgeX + badgePadX;
+            const iconChipSize = 22;
+            const iconChipX = Math.round(cursorX - 1);
+            const iconChipY = Math.round(contentY - iconChipSize / 2);
+            topCtx.save();
+            topCtx.shadowColor = 'rgba(0,0,0,0.08)';
+            topCtx.shadowBlur = 2;
+            topCtx.fillStyle = 'rgba(255,255,255,0.96)';
+            roundRect(topCtx, iconChipX, iconChipY, iconChipSize + 3, iconChipSize, 6);
+            topCtx.fill();
+            topCtx.restore();
+
+            topCtx.font = iconFont;
+            topCtx.save();
+            topCtx.shadowColor = 'rgba(255,255,255,0.9)';
+            topCtx.shadowBlur = 1.5;
+            topCtx.fillStyle = '#333';
+            topCtx.fillText(icon, cursorX, contentY + 0.5);
+            topCtx.restore();
+            cursorX += iconW + contentGap;
+            topCtx.font = textFont;
+            topCtx.fillText(tempText, cursorX, contentY + 0.5);
+
+            lastBadgeKm = dk;
+            lastBadgePt = { x: labelX, y: labelY };
+            badgeIndex += 1;
           }
+          topCtx.restore();
         } catch (_) {}
+
+        try { if (this._anim) cancelAnimationFrame(this._anim); } catch (_) {}
+        this._anim = null;
+        return;
 
         // Temperature labels every ~160 km; avoid overlaps.
         try {
@@ -6398,6 +6585,10 @@
             }
           }
         } catch (_) {}
+
+        try { if (this._anim) cancelAnimationFrame(this._anim); } catch (_) {}
+        this._anim = null;
+        return;
 
         // Wind bands (spec): subtle, deterministic, parallel outside the temperature band (no animation).
         try {
@@ -8445,6 +8636,7 @@
     const resp = await fetch(url, { signal: ac.signal });
     const j = await resp.json();
     if (!resp.ok) throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
+    try { j._luckyVariant = _strategicLuckyVariant(); } catch (_) {}
     try { _strategicCacheSet(cacheKey, j); } catch (_) {}
     STRATEGIC_STATE.lastFetchAt = t0;
     return j;
@@ -8498,6 +8690,7 @@
     const resp = await fetch(url, { signal: ac.signal });
     const j = await resp.json();
     if (!resp.ok) throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
+    try { j._luckyVariant = _strategicLuckyVariant(); } catch (_) {}
     try { _strategicCacheSet(cacheKey, j); } catch (_) {}
     STRATEGIC_STATE.lastFetchAt = t0;
     return j;
@@ -8579,6 +8772,7 @@
       ...a,
       points: (b && b.points) ? _blendStrategicPoints(a.points, b.points, frac) : a.points,
     };
+    try { blended._luckyVariant = _strategicLuckyVariant(); } catch (_) {}
     try { blended._coverage_bbox = _coverageBBoxFromPoints(blended.points); } catch (_) {}
     STRATEGIC_STATE.lastResp = blended;
     // Invalidate sampling caches so tooltip counts update immediately.
@@ -9892,6 +10086,12 @@
         if (wantMode && gotMode && String(wantMode) !== String(gotMode)) return true;
       } catch (_) {}
       try {
+        const wantLuckyVariant = _strategicLuckyVariant();
+        const gotLuckyVariant = String((resp && resp._luckyVariant) || '');
+        if (wantLuckyVariant && gotLuckyVariant && wantLuckyVariant !== gotLuckyVariant) return true;
+        if (wantLuckyVariant && !gotLuckyVariant) return true;
+      } catch (_) {}
+      try {
         const gotTs = String(resp.timescale || 'daily');
         if (_strategicUsingRangeUI()) {
           if (gotTs !== 'range') return true;
@@ -10097,8 +10297,9 @@
           }
         };
 
+        const strategicLuckyTile = _nearestStrategicTile(ll.lat, ll.lng);
         const s = (layerNow === 'comfort' || layerNow === 'comfort_day' || layerNow === 'comfort_ride')
-          ? _nearestStrategicTile(ll.lat, ll.lng)
+          ? strategicLuckyTile
           : _strategicSampleAt(ll.lat, ll.lng);
         if (!s) {
           if (!dbg) {
@@ -10200,24 +10401,39 @@
         // Lucky Days: absolute counts provided by backend when lucky_* params are passed.
         let luckyDayCount = null;
         let luckyRideCount = null;
+        let luckyCountsUseVisibleDays = false;
         try {
-          const a = Number(s.lucky_day_count);
-          const b = Number(s.lucky_ride_count);
+          const luckySource = strategicLuckyTile || s;
+          const useMajorityCounts = Boolean(
+            luckySource
+            && (luckySource.lucky_day_majority_count !== undefined || luckySource.lucky_ride_majority_count !== undefined)
+          );
+          const a = Number(luckySource && (useMajorityCounts
+            ? luckySource.lucky_day_majority_count
+            : luckySource.lucky_day_count));
+          const b = Number(luckySource && (useMajorityCounts
+            ? luckySource.lucky_ride_majority_count
+            : luckySource.lucky_ride_count));
           luckyDayCount = Number.isFinite(a) ? Math.max(0, Math.round(a)) : null;
           luckyRideCount = Number.isFinite(b) ? Math.max(0, Math.round(b)) : null;
+          luckyCountsUseVisibleDays = useMajorityCounts;
         } catch (_) {}
-        const luckyDayPct = (luckyDayCount === null) ? null : (100.0 * luckyDayCount / Math.max(1, sampleDays));
-        const luckyRidePct = (luckyRideCount === null) ? null : (100.0 * luckyRideCount / Math.max(1, sampleDays));
+        const luckyDayPct = (luckyDayCount === null)
+          ? null
+          : (100.0 * luckyDayCount / Math.max(1, luckyCountsUseVisibleDays ? periodDays : sampleDays));
+        const luckyRidePct = (luckyRideCount === null)
+          ? null
+          : (100.0 * luckyRideCount / Math.max(1, luckyCountsUseVisibleDays ? periodDays : sampleDays));
 
         // The backend count is over sample-days (= years × days). For the tooltip, show
         // an expected count over the selected visible period (periodDays) so the time span
         // matches the Range label. Percentage stays based on sample-days.
         const luckyDayCountPerPeriod = (luckyDayCount === null)
           ? null
-          : (Number(luckyDayCount) * Math.max(1, periodDays) / Math.max(1, sampleDays));
+          : Number(luckyDayCount);
         const luckyRideCountPerPeriod = (luckyRideCount === null)
           ? null
-          : (Number(luckyRideCount) * Math.max(1, periodDays) / Math.max(1, sampleDays));
+          : Number(luckyRideCount);
 
         const _fmtLuckyDays = (countPerPeriod, days, pct, expandedSamples) => {
           if (countPerPeriod === null) return '—';
@@ -12704,30 +12920,23 @@
           stationTotal = total;
           if (routeLayer) { map.removeLayer(routeLayer); }
           if (flagsLayer) { map.removeLayer(flagsLayer); flagsLayer = null; }
-          // Render bright green, alternating brightness per day when available
-          const ROUTE_COLOR_A = '#FFA726'; // softer orange
-          const ROUTE_COLOR_B = '#FFD180'; // lighter, desaturated orange
+          const ROUTE_COLOR = '#2F4858';
           const CASE_COLOR = '#FFFFFF';
-          const CASE_OPACITY = 0.7;
-          const CASE_WEIGHT = 7;
-          const LINE_WEIGHT = 4; // slimmer line
+          const CASE_OPACITY = 0.82;
+          const CASE_WEIGHT = 5;
+          const LINE_WEIGHT = 2.5;
           if (routeSegments && routeSegments.features && routeSegments.features.length) {
             routeLayer = L.layerGroup().addTo(map);
             routeSegments.features.forEach(feat => {
-              const di = Number((feat.properties||{}).day_index||0);
-              const color = (di % 2 === 0) ? ROUTE_COLOR_A : ROUTE_COLOR_B;
-              // Casing underlay
               L.geoJSON(feat, { style: { color: CASE_COLOR, weight: CASE_WEIGHT, opacity: CASE_OPACITY } }).addTo(routeLayer);
-              // Colored line on top
-              L.geoJSON(feat, { style: { color, weight: LINE_WEIGHT, opacity: 0.85 } }).addTo(routeLayer);
+              L.geoJSON(feat, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
             });
           } else {
             routeLayer = L.layerGroup().addTo(map);
-            // Casing underlay
             L.geoJSON(route, { style: { color: CASE_COLOR, weight: CASE_WEIGHT, opacity: CASE_OPACITY } }).addTo(routeLayer);
-            // Colored line on top
-            L.geoJSON(route, { style: { color: ROUTE_COLOR_A, weight: LINE_WEIGHT, opacity: 0.85 } }).addTo(routeLayer);
+            L.geoJSON(route, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
           }
+          try { _applyTourRouteLayerVisibility(); } catch (_) {}
           // ... (flags placement and fitBounds retained below)
           function dayAbbrev(d) {
             const idx = d.getDay();
@@ -12842,27 +13051,24 @@
         stationTotal = total;
         if (routeLayer) { map.removeLayer(routeLayer); }
         if (flagsLayer) { map.removeLayer(flagsLayer); flagsLayer = null; }
-        // Render bright green, alternating brightness per day when available
         ROUTE_COORDS = route.geometry && route.geometry.coordinates || null;
-        const ROUTE_COLOR_A = '#FFA726';
-        const ROUTE_COLOR_B = '#FFD180';
+        const ROUTE_COLOR = '#2F4858';
         const CASE_COLOR = '#FFFFFF';
-        const CASE_OPACITY = 0.7;
-        const CASE_WEIGHT = 7;
-        const LINE_WEIGHT = 4;
+        const CASE_OPACITY = 0.82;
+        const CASE_WEIGHT = 5;
+        const LINE_WEIGHT = 2.5;
         if (routeSegments && routeSegments.features && routeSegments.features.length) {
           routeLayer = L.layerGroup().addTo(map);
           routeSegments.features.forEach(feat => {
-            const di = Number((feat.properties||{}).day_index||0);
-            const color = (di % 2 === 0) ? ROUTE_COLOR_A : ROUTE_COLOR_B;
             L.geoJSON(feat, { style: { color: CASE_COLOR, weight: CASE_WEIGHT, opacity: CASE_OPACITY } }).addTo(routeLayer);
-            L.geoJSON(feat, { style: { color, weight: LINE_WEIGHT, opacity: 0.85 } }).addTo(routeLayer);
+            L.geoJSON(feat, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
           });
         } else {
           routeLayer = L.layerGroup().addTo(map);
           L.geoJSON(route, { style: { color: CASE_COLOR, weight: CASE_WEIGHT, opacity: CASE_OPACITY } }).addTo(routeLayer);
-          L.geoJSON(route, { style: { color: ROUTE_COLOR_A, weight: LINE_WEIGHT, opacity: 0.85 } }).addTo(routeLayer);
+          L.geoJSON(route, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
         }
+        try { _applyTourRouteLayerVisibility(); } catch (_) {}
         // Update route coords and recompute cumulative distances & profile mapping
         ROUTE_COORDS = route.geometry && route.geometry.coordinates || null;
         computeRouteCumulativeDistances();

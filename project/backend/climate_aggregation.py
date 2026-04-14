@@ -845,6 +845,7 @@ def _fetch_rows_for_mmdd_multi(
     sql = (
         "SELECT "
         "  t.tile_id, t.lat, t.lon, t.row, t.col, "
+        "  c.month, c.day, "
         "  c.temperature_c, "
         f"  {temp24_expr} AS temp_24h_c, "
         "  c.precipitation_mm, c.rain_probability, c.rain_typical_mm, "
@@ -918,6 +919,12 @@ def _aggregate_multi_for_mmdd(
 
     lucky_day_cnt: Dict[str, int] = {}
     lucky_ride_cnt: Dict[str, int] = {}
+    lucky_day_vote: Dict[Tuple[str, int, int], int] = {}
+    lucky_day_sample: Dict[Tuple[str, int, int], int] = {}
+    lucky_ride_vote: Dict[Tuple[str, int, int], int] = {}
+    lucky_ride_sample: Dict[Tuple[str, int, int], int] = {}
+    lucky_day_majority_cnt: Dict[str, int] = {}
+    lucky_ride_majority_cnt: Dict[str, int] = {}
 
     mean_keys = (
         "precipitation_mm",
@@ -1013,6 +1020,8 @@ def _aggregate_multi_for_mmdd(
                     lon,
                     row,
                     col,
+                    month,
+                    day,
                     temperature_c,
                     temp_24h_c,
                     precipitation_mm,
@@ -1066,12 +1075,29 @@ def _aggregate_multi_for_mmdd(
 
             if want_lucky:
                 try:
+                    day_key = (tid, int(month), int(day))
+                    lucky_day_sample[day_key] = lucky_day_sample.get(day_key, 0) + 1
+                    lucky_ride_sample[day_key] = lucky_ride_sample.get(day_key, 0) + 1
                     if _is_lucky(full_sample, precipitation_mm, wind_speed_ms):
                         lucky_day_cnt[tid] = lucky_day_cnt.get(tid, 0) + 1
+                        lucky_day_vote[day_key] = lucky_day_vote.get(day_key, 0) + 1
                     if _is_lucky(active_sample, precipitation_mm, wind_speed_ms):
                         lucky_ride_cnt[tid] = lucky_ride_cnt.get(tid, 0) + 1
+                        lucky_ride_vote[day_key] = lucky_ride_vote.get(day_key, 0) + 1
                 except Exception:
                     pass
+
+    if want_lucky:
+        for day_key, sample_count in lucky_day_sample.items():
+            if int(sample_count) <= 0:
+                continue
+            if int(lucky_day_vote.get(day_key, 0)) >= max(1, math.ceil(int(sample_count) / 2.0)):
+                lucky_day_majority_cnt[day_key[0]] = lucky_day_majority_cnt.get(day_key[0], 0) + 1
+        for day_key, sample_count in lucky_ride_sample.items():
+            if int(sample_count) <= 0:
+                continue
+            if int(lucky_ride_vote.get(day_key, 0)) >= max(1, math.ceil(int(sample_count) / 2.0)):
+                lucky_ride_majority_cnt[day_key[0]] = lucky_ride_majority_cnt.get(day_key[0], 0) + 1
 
     out: List[Dict[str, Any]] = []
     for tid in order:
@@ -1104,6 +1130,8 @@ def _aggregate_multi_for_mmdd(
         if want_lucky:
             d["lucky_day_count"] = int(lucky_day_cnt.get(tid, 0))
             d["lucky_ride_count"] = int(lucky_ride_cnt.get(tid, 0))
+            d["lucky_day_majority_count"] = int(lucky_day_majority_cnt.get(tid, 0))
+            d["lucky_ride_majority_count"] = int(lucky_ride_majority_cnt.get(tid, 0))
 
         out.append(d)
     return out
