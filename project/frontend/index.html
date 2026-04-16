@@ -266,8 +266,8 @@
     /* In-map color legend (lower-left) */
     .wm-map-legend {
       position: absolute;
-      left: 12px;
-      bottom: 8px;
+      left: 16px;
+      bottom: 16px;
       z-index: 1600;
       background: rgba(255,255,255,0.88);
       border: 1px solid rgba(0,0,0,0.14);
@@ -286,7 +286,10 @@
     }
     /* In Climate mode, lift legend above the fixed timeline */
     body[data-mode="climate"] #map .wm-map-legend {
-      bottom: calc(30px + var(--wm-strategic-timeline-h, 0px) + env(safe-area-inset-bottom, 0px));
+      bottom: calc(16px + var(--wm-strategic-timeline-h, 0px) + env(safe-area-inset-bottom, 0px));
+    }
+    body[data-mode="tour"] #map .wm-map-legend {
+      bottom: calc(104px + var(--wm-strategic-timeline-h, 0px) + env(safe-area-inset-bottom, 0px));
     }
     .wm-map-legend.hidden { display: none; }
     .wm-map-legend .row {
@@ -443,7 +446,8 @@
       box-sizing: border-box;
       font-family: system-ui, -apple-system, sans-serif;
     }
-    body[data-mode="climate"] #strategicTimeline { display: block; }
+    body[data-mode="climate"] #strategicTimeline,
+    body[data-mode="tour"] #strategicTimeline { display: block; }
     #strategicTimeline .row {
       display: flex;
       align-items: center;
@@ -703,10 +707,11 @@
       min-height: 0;
     }
     /* In Climate mode, reserve space for the fixed bottom Strategic timeline (avoid map underlay). */
-    body[data-mode="climate"] #mainPane {
+    body[data-mode="climate"] #mainPane,
+    body[data-mode="tour"] #mainPane {
       height: calc(100vh - var(--wm-strategic-timeline-h, 0px));
     }
-    #profilePanel { position: relative; height: 160px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
+    #profilePanel { position: relative; height: 220px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
     #tourSummary { font-family: system-ui, -apple-system, sans-serif; }
     #tourSummary button,
     #tourSummary input,
@@ -714,36 +719,223 @@
       font-family: inherit;
     }
 
-    /* Profile tooltip: fixed 3-column layout (no wrapping). */
-    #profileTooltip .wm-ptt-grid {
+    #tourSummaryBadges {
       display: grid;
-      grid-template-columns: 220px 260px 240px;
-      column-gap: 16px;
-      align-items: start;
+      grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 0.7fr);
+      align-items: stretch;
+      gap: 14px;
+      padding: 7px 10px;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      color: #222;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 64px;
+    }
+    #tourSummaryRoute,
+    #profileTooltip,
+    #tourSummaryBadgesItems,
+    #tourSummaryLegends {
+      min-width: 0;
+    }
+    #tourSummaryRoute,
+    #profileTooltip,
+    #tourSummaryBadgesItems,
+    #tourSummaryLegends {
+      display: flex;
+      align-items: stretch;
+    }
+    #profileTooltip {
+      visibility: visible;
+      opacity: 1;
+      overflow: hidden;
+      pointer-events: auto;
+    }
+    .wm-tour-band-card {
+      display: flex;
+      flex-direction: column;
       justify-content: center;
+      gap: 4px;
+      width: 100%;
+      min-height: 50px;
+      padding: 7px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.96) 100%);
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+      box-sizing: border-box;
+    }
+    .wm-tour-route-kicker,
+    .wm-tour-vdl-kicker,
+    .wm-tour-inline-kicker {
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    .wm-tour-route-title,
+    .wm-tour-vdl-location {
+      font-size: 14px;
+      line-height: 1.2;
+      font-weight: 700;
+      color: #0f172a;
       white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    #profileTooltip .wm-ptt-col { display: flex; flex-direction: column; gap: 3px; }
-    #profileTooltip .wm-ptt-line { white-space: nowrap; }
-    #profileTooltip .wm-ptt-k { font-weight: 700; color: rgba(15, 23, 42, 0.95); }
+    .wm-tour-route-meta,
+    .wm-tour-vdl-meta,
+    .wm-tour-route-file {
+      font-size: 10px;
+      line-height: 1.15;
+      color: #64748b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-tour-route-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 0;
+    }
+    .wm-tour-inline-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 26px;
+      padding: 0 10px;
+      border: 1px solid rgba(148, 163, 184, 0.42);
+      border-radius: 999px;
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .wm-tour-inline-toggle[aria-pressed="true"] {
+      background: #0f766e;
+      border-color: #0f766e;
+      color: #ffffff;
+    }
+    .wm-tour-vdl-card {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+      width: 100%;
+    }
+    .wm-tour-vdl-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .wm-tour-vdl-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(88px, 1fr));
+      gap: 8px;
+      align-items: stretch;
+      min-width: 0;
+    }
+    .wm-tour-vdl-metric {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .wm-tour-vdl-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    .wm-tour-vdl-value {
+      font-size: 12px;
+      line-height: 1.15;
+      font-weight: 600;
+      color: #0f172a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-tour-vdl-empty .wm-tour-vdl-value {
+      white-space: normal;
+    }
+    #tourSummaryBadgesItems,
+    #tourSummaryLegends {
+      width: 100%;
+    }
+    .wm-whiteband-card-empty {
+      border-style: dashed;
+      border-color: rgba(148, 163, 184, 0.24);
+      background: linear-gradient(180deg, rgba(255,255,255,0.86) 0%, rgba(248,250,252,0.72) 100%);
+      box-shadow: none;
+    }
+    .wm-whiteband-card-empty::before {
+      content: '';
+      display: block;
+      width: 100%;
+      min-height: 12px;
+    }
+    .wm-tour-summary-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      width: 100%;
+      min-width: 0;
+    }
+    .wm-tour-summary-metric {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 2px;
+      padding: 7px 6px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.9);
+      min-width: 0;
+      text-align: center;
+    }
+    .wm-tour-summary-metric .wm-climate-metric-label {
+      font-size: 10px;
+    }
+    .wm-tour-summary-metric .wm-climate-metric-main {
+      font-size: 14px;
+    }
+    .wm-tour-summary-metric .wm-climate-metric-secondary,
+    .wm-tour-summary-metric .wm-climate-metric-tertiary {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 1180px) {
+      #tourSummaryBadges {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 860px) {
+      #tourSummaryBadges {
+        grid-template-columns: 1fr;
+      }
+      #tourSummaryBadgesItems,
+      #tourSummaryLegends,
+      #profileTooltip,
+      #tourSummaryRoute {
+        grid-column: 1;
+      }
+      .wm-tour-vdl-grid,
+      .wm-tour-summary-metrics {
+        grid-template-columns: 1fr;
+      }
+    }
 
-    /* Reuse map legend style inside the Tour Summary band. */
-    #tourSummaryBadges .wm-map-legend {
-      position: static;
-      left: auto;
-      bottom: auto;
-      z-index: auto;
-      min-width: 180px;
-      max-width: 240px;
-      padding: 7px 9px;
-      margin-left: 10px;
-      box-shadow: 0 1px 6px rgba(0,0,0,0.10);
-    }
-    #tourSummaryBadges .wm-map-legend .title { margin-bottom: 5px; }
-    #tourSummaryBadges .wm-map-legend .ticks { margin-top: 4px; }
     .wm-climate-strip {
       display: grid;
-      grid-template-columns: minmax(220px, 0.95fr) minmax(420px, 1.45fr) minmax(240px, 0.95fr);
+      grid-template-columns: minmax(240px, 1.05fr) minmax(420px, 1.7fr) minmax(210px, 0.8fr);
       align-items: center;
       gap: 16px;
       width: 100%;
@@ -774,7 +966,7 @@
     }
     .wm-climate-metrics {
       display: grid;
-      grid-template-columns: repeat(4, minmax(92px, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
       align-items: stretch;
       min-width: 0;
@@ -811,13 +1003,15 @@
       font-size: 12px;
       line-height: 1.15;
       color: #334155;
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .wm-climate-metric-tertiary {
       font-size: 10px;
       line-height: 1.15;
       color: #64748b;
-      white-space: nowrap;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .wm-climate-legends {
       display: flex;
@@ -825,6 +1019,7 @@
       gap: 8px;
       align-items: stretch;
       min-width: 0;
+      width: 100%;
     }
     .wm-climate-legend {
       display: flex;
@@ -863,6 +1058,45 @@
     .wm-climate-legend-ticks span:last-child {
       text-align: right;
     }
+    .wm-climate-legend-note {
+      font-size: 8px;
+      line-height: 1.05;
+      color: #7c8798;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-tour-legends {
+      gap: 4px;
+    }
+    .wm-tour-legends .wm-climate-legend {
+      gap: 2px;
+    }
+    .wm-tour-legends .wm-climate-legend-label,
+    .wm-tour-legends .wm-tour-wind-sublegend-label {
+      font-size: 9px;
+      letter-spacing: 0.03em;
+    }
+    .wm-tour-legends .wm-climate-legend-bar {
+      height: 6px;
+    }
+    .wm-tour-legends .wm-climate-legend-ticks {
+      font-size: 9px;
+      gap: 3px;
+    }
+    .wm-tour-wind-legend {
+      gap: 3px;
+    }
+    .wm-tour-wind-sublegend {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .wm-tour-wind-sublegend-label {
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #64748b;
+    }
     .wm-climate-profile-tooltip {
       position: absolute;
       z-index: 1800;
@@ -896,10 +1130,12 @@
         gap: 10px;
       }
       .wm-climate-metrics {
-        grid-template-columns: repeat(4, minmax(72px, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
       }
       .wm-climate-legends {
         flex-direction: row;
+        justify-self: stretch;
+        width: 100%;
       }
     }
     #profileCanvas,
@@ -910,7 +1146,7 @@
       top: 0; 
       left: 0; 
       right: 0; 
-      height: 8px; 
+      height: 5px; 
       z-index: 1700; 
       background: transparent;
       cursor: ns-resize; 
@@ -921,6 +1157,15 @@
     #profileResizeHandle:hover { 
       background: rgba(0,0,0,0.05); 
       border-bottom-color: rgba(0,0,0,0.25);
+    }
+    #profileResizeHandle.is-dragging {
+      background: rgba(15,23,42,0.08);
+      border-bottom-color: rgba(15,23,42,0.38);
+    }
+    body.wm-profile-resizing,
+    body.wm-profile-resizing * {
+      cursor: row-resize !important;
+      user-select: none !important;
     }
     .glyph { width: 64px; height: 64px; }
     .tooltip { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; }
@@ -1882,41 +2127,6 @@
                         <div id="setStrategicYears" class="wm-pref-years" aria-label="Strategic years"></div>
                       </div>
 
-                      <div class="wm-pref-row" data-wm-scope="tour">
-                        <label class="wm-pref-label" for="setHistLast">
-                          <span class="wm-pref-name">Last historical year</span>
-                          <span class="wm-pref-sub">Newest year used for the route forecast blend.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="history">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit last historical year"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Last historical year" />
-                              <input type="range" id="setHistLast" min="1970" max="2100" step="1" value="2025" class="wm-slider-native" data-snap="int" aria-label="Last historical year" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row" data-wm-scope="tour">
-                        <label class="wm-pref-label" for="setHistYears">
-                          <span class="wm-pref-name">Historic years</span>
-                          <span class="wm-pref-sub">How many prior years are averaged.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="history">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit number of historic years"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Number of historic years" />
-                              <input type="range" id="setHistYears" min="1" max="50" step="1" value="10" class="wm-slider-native" data-unit=" y" data-snap="int" aria-label="Number of historic years" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
 
                       <div class="wm-pref-row" data-wm-scope="tour">
                         <label class="wm-pref-label" for="weatherQuality">
@@ -2062,20 +2272,7 @@
                         </div>
                       </div>
 
-                      <div class="wm-pref-row" data-wm-scope="tour">
-                        <label class="wm-pref-label" for="setWeatherVisualizationMode">
-                          <span class="wm-pref-name">Tour visualization</span>
-                          <span class="wm-pref-sub">Choose between weather symbols and band view.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <select id="setWeatherVisualizationMode" class="wm-pref-select">
-                            <option value="glyphs">Weather symbols</option>
-                            <option value="bands">Bands</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row" data-wm-scope="tour">
+                      <div class="wm-pref-row" data-wm-scope="tour" style="display:none;" aria-hidden="true">
                         <label class="wm-pref-label" for="setOverlayMode">
                           <span class="wm-pref-name">Profile overlay</span>
                           <span class="wm-pref-sub">Main metric highlighted in the bottom profile.</span>
@@ -2084,24 +2281,12 @@
                           <select id="setOverlayMode" class="wm-pref-select">
                             <option value="temperature">Temperature</option>
                             <option value="precipitation">Rain</option>
-                            <option value="wind">Wind</option>
+                            <option value="wind_absolute">Wind</option>
+                            <option value="wind_component">Head/Tail-Wind</option>
                           </select>
                         </div>
                       </div>
 
-                      <div class="wm-pref-row" data-wm-scope="tour">
-                        <label class="wm-pref-label" for="setGlyphType">
-                          <span class="wm-pref-name">Weather symbol style</span>
-                          <span class="wm-pref-sub">Choose the icon system used in the tour view.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <select id="setGlyphType" class="wm-pref-select">
-                            <option value="classic">Classic icons + rosette</option>
-                            <option value="svg">Inline SVG preview</option>
-                            <option value="cyclist">Cyclist wind-first</option>
-                          </select>
-                        </div>
-                      </div>
                     </div>
                   </section>
                 </div>
@@ -2297,11 +2482,11 @@
       <div id="profilePanel" style="position:relative; width:100%;">
     <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
-      <div id="tourSummaryBadges" style="display:flex; align-items:center; gap:12px; padding:7px 12px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box; min-height:58px;">
-        <!-- Profile hover tooltip (moved into the Tour Summary white band to use space and avoid overlaying the map/profile) -->
-        <div id="profileTooltip" style="align-self:center; flex:0 0 clamp(520px, 42vw, 760px); width:clamp(520px, 42vw, 760px); max-height:calc(100% - 10px); overflow:auto; box-sizing:border-box; font-family:system-ui, -apple-system, sans-serif; font-size:11px; line-height:1.25; color:#222; background:rgba(255,255,255,0.86); border:1px solid rgba(0,0,0,0.15); border-radius:8px; padding:10px 9px; display:block; visibility:hidden; opacity:0; white-space:normal; pointer-events:none; backdrop-filter:blur(3px); box-shadow:0 2px 6px rgba(0,0,0,0.12); transition:opacity 80ms linear"></div>
-        <div id="tourSummaryBadgesItems" style="display:flex; gap:18px; align-items:center; justify-content:center; flex-wrap:wrap; flex:1;"></div>
-        <div id="profileLegendHost" class="wm-map-legend" aria-label="Profile legend" style="display:none"></div>
+      <div id="tourSummaryBadges" style="display:grid; gap:14px; padding:7px 10px; font-family:system-ui, -apple-system, sans-serif; font-size:13px; color:#222; width:100%; box-sizing:border-box; min-height:64px;">
+        <div id="tourSummaryRoute"></div>
+        <div id="profileTooltip"></div>
+        <div id="tourSummaryBadgesItems"></div>
+        <div id="tourSummaryLegends"></div>
         <button id="share" class="wm-share-btn" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:none">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 16V3" />
@@ -2314,7 +2499,7 @@
       <div id="tourSummaryTooltip" class="tooltip wm-tip" style="position:absolute; left:50%; transform:translateX(-50%); bottom:80px; display:none; z-index:1600; pointer-events:none;"></div>
     </div>
     <!-- Drag handle on the upper edge to resize the profile panel height -->
-    <div id="profileResizeHandle" style="position:absolute; top:0; left:0; right:0; height:8px; z-index:1700; background:transparent;"></div>
+    <div id="profileResizeHandle" style="position:absolute; top:0; left:0; right:0; height:5px; z-index:1700; background:transparent;"></div>
     <canvas id="profileCanvas"></canvas>
     <canvas id="profileCursorCanvas" style="position:absolute; inset:0; pointer-events:none"></canvas>
       </div>
@@ -2703,7 +2888,7 @@
       }
 
       async function bootMap(){
-        const mapSrc = '/map.js?v=114';
+        const mapSrc = '/map.js?v=141';
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();

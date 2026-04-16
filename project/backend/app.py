@@ -8,6 +8,14 @@ import pandas as pd
 import datetime as _dt
 import math
 import requests
+try:
+    import geonamescache
+except Exception:  # pragma: no cover
+    geonamescache = None  # type: ignore
+try:
+    import reverse_geocoder as _offline_reverse_geocoder
+except Exception:  # pragma: no cover
+    _offline_reverse_geocoder = None  # type: ignore
 
 
 def _json_default(obj: Any):
@@ -35,6 +43,10 @@ def _json_default(obj: Any):
 # Import sibling modules when running as a script
 import logging
 from route_sampling import sample_route, haversine_km
+try:
+    from stations import StationIndex
+except Exception:  # pragma: no cover
+    StationIndex = None  # type: ignore
 from weather import compute_weather_statistics
 from glyph_geometry import generate_glyph_v2
 from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_daily_weather_window, fetch_hourly_weather_same_day, reset_api_disable, set_force_online
@@ -70,6 +82,7 @@ try:
 except Exception:
     pass
 BASE_DIR = Path(__file__).resolve().parents[1]
+ASSETS_DIR = BASE_DIR.parent / 'assets'
 DATA_DIR = BASE_DIR / 'data'
 ENV_GPX = os.environ.get('GPX_PATH')
 # Default to the repo-tracked demo route so fresh clones work out of the box.
@@ -149,6 +162,31 @@ SESSION_STATE: Dict[str, Any] = {
     "reverse": False,
 }
 
+
+def _latest_available_gpx() -> Optional[Path]:
+    try:
+        candidates = [p for p in UPLOAD_DIR.glob('*.gpx') if p.is_file()]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return candidates[0]
+    except Exception:
+        return None
+
+
+def _resolve_default_gpx(preferred: str | Path | None = None) -> Path:
+    try:
+        if preferred:
+            preferred_path = Path(preferred)
+            if preferred_path.exists() and preferred_path.suffix.lower() == '.gpx':
+                return preferred_path
+    except Exception:
+        pass
+    latest = _latest_available_gpx()
+    if latest is not None:
+        return latest
+    return GPX_FILE
+
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger('pipeline')
 
@@ -160,6 +198,12 @@ _OFFLINE_STORES_BY_PATH: Dict[str, Any] = {}
 _OFFLINE_STORES_BY_PATH_LOCK = threading.Lock()
 _REVERSE_GEOCODE_CACHE: Dict[tuple[float, float], dict[str, str]] = {}
 _REVERSE_GEOCODE_CACHE_LOCK = threading.Lock()
+_REVERSE_GEOCODE_COOLDOWN_UNTIL = 0.0
+_REVERSE_GEOCODE_COOLDOWN_LOCK = threading.Lock()
+_REVERSE_STATION_INDEX_CACHE: Dict[tuple[int, int], Any] = {}
+_REVERSE_STATION_INDEX_CACHE_LOCK = threading.Lock()
+_REVERSE_OFFLINE_CITY_CANDIDATES: list[tuple[float, float, int, str, str]] | None = None
+_REVERSE_OFFLINE_CITY_CANDIDATES_LOCK = threading.Lock()
 
 
 def _offline_strict_enabled() -> bool:
@@ -595,17 +639,27 @@ def _pick_reverse_geocode_name(payload: Any) -> tuple[str | None, str | None]:
         if not isinstance(payload, dict):
             return (None, None)
         address = payload.get('address') if isinstance(payload.get('address'), dict) else {}
-        keys = (
+        primary_keys = (
             'city',
             'town',
-            'municipality',
             'village',
+            'hamlet',
+            'municipality',
+            'locality',
             'suburb',
             'city_district',
+        )
+        fallback_keys = (
             'county',
             'state_district',
         )
-        for key in keys:
+        for key in primary_keys:
+            raw = address.get(key)
+            if raw:
+                name = str(raw).strip()
+                if name:
+                    return (name, _normalize_location_country(address.get('country_code')))
+        for key in fallback_keys:
             raw = address.get(key)
             if raw:
                 name = str(raw).strip()
@@ -621,7 +675,147 @@ def _pick_reverse_geocode_name(payload: Any) -> tuple[str | None, str | None]:
         return (None, None)
 
 
+def _reverse_station_fallback(lat: float, lon: float) -> dict[str, str] | None:
+    try:
+        if StationIndex is None:
+            return None
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except Exception:
+        return None
+
+    cell_key = (int(math.floor(lat_f)), int(math.floor(lon_f)))
+    with _REVERSE_STATION_INDEX_CACHE_LOCK:
+        index = _REVERSE_STATION_INDEX_CACHE.get(cell_key)
+        if index is None:
+            try:
+                index = StationIndex()
+                index.load_for_bounds(lat_f - 1.0, lon_f - 1.0, lat_f + 1.0, lon_f + 1.0, margin_deg=0.75)
+                _REVERSE_STATION_INDEX_CACHE[cell_key] = index
+            except Exception:
+                index = None
+    if index is None:
+        return None
+    try:
+        nearest = index.nearest_station(lat_f, lon_f)
+    except Exception:
+        nearest = None
+    if not nearest:
+        return None
+    station, dist_km = nearest
+    try:
+        sid = str(getattr(station, 'id', '') or '')
+        name = str(getattr(station, 'name', '') or '').strip()
+    except Exception:
+        return None
+    if not name or sid.startswith('FALLBACK_'):
+        return None
+    if not (float(dist_km) <= 35.0):
+        return None
+    return {
+        'name': name,
+        'country': '',
+        'label': name,
+    }
+
+
+def _reverse_offline_city_fallback(lat: float, lon: float) -> dict[str, str] | None:
+    global _REVERSE_OFFLINE_CITY_CANDIDATES
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except Exception:
+        return None
+    if geonamescache is None:
+        return None
+    with _REVERSE_OFFLINE_CITY_CANDIDATES_LOCK:
+        if _REVERSE_OFFLINE_CITY_CANDIDATES is None:
+            try:
+                raw = geonamescache.GeonamesCache().get_cities()
+                candidates: list[tuple[float, float, int, str, str]] = []
+                for city in raw.values():
+                    try:
+                        population = int(city.get('population') or 0)
+                        if population < 15000:
+                            continue
+                        candidates.append((
+                            float(city['latitude']),
+                            float(city['longitude']),
+                            population,
+                            str(city.get('name') or '').strip(),
+                            _normalize_location_country(city.get('countrycode')) or '',
+                        ))
+                    except Exception:
+                        continue
+                _REVERSE_OFFLINE_CITY_CANDIDATES = candidates
+            except Exception:
+                _REVERSE_OFFLINE_CITY_CANDIDATES = []
+        candidates = list(_REVERSE_OFFLINE_CITY_CANDIDATES or [])
+    best: tuple[float, int, str, str] | None = None
+    for city_lat, city_lon, population, city_name, country_code in candidates:
+        if not city_name:
+            continue
+        if abs(city_lat - lat_f) > 1.2 or abs(city_lon - lon_f) > 1.2:
+            continue
+        dist_km = haversine_km(lat_f, lon_f, city_lat, city_lon)
+        if dist_km > 35.0:
+            continue
+        score = (dist_km, -population, city_name, country_code)
+        if best is None or score < best:
+            best = score
+    if best is None:
+        return None
+    _, _, city_name, country_code = best
+    return {
+        'name': city_name,
+        'country': country_code,
+        'label': f'{city_name} ({country_code})' if country_code else city_name,
+    }
+
+
+def _reverse_offline_nearest_place_fallback(lat: float, lon: float) -> dict[str, str] | None:
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except Exception:
+        return None
+    if _offline_reverse_geocoder is None:
+        return None
+    try:
+        matches = _offline_reverse_geocoder.search((lat_f, lon_f), mode=1)
+    except Exception:
+        return None
+    if not matches or not isinstance(matches, list):
+        return None
+    match = matches[0] if isinstance(matches[0], dict) else None
+    if not isinstance(match, dict):
+        return None
+    name = str(match.get('name') or '').strip()
+    country_code = _normalize_location_country(match.get('cc')) or ''
+    try:
+        match_lat = float(match.get('lat'))
+        match_lon = float(match.get('lon'))
+    except Exception:
+        return None
+    if not name or haversine_km(lat_f, lon_f, match_lat, match_lon) > 20.0:
+        return None
+    return {
+        'name': name,
+        'country': country_code,
+        'label': f'{name} ({country_code})' if country_code else name,
+    }
+
+
+def _reverse_offline_fallback(lat: float, lon: float) -> dict[str, str] | None:
+    return (
+        _reverse_offline_city_fallback(lat, lon)
+        or _reverse_offline_nearest_place_fallback(lat, lon)
+        or _reverse_station_fallback(lat, lon)
+    )
+
+
 def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str, str] | None:
+    global _REVERSE_GEOCODE_COOLDOWN_UNTIL
     try:
         if lat is None or lon is None:
             return None
@@ -630,38 +824,87 @@ def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str,
     except Exception:
         return None
 
-    cache_key = (round(lat_f, 3), round(lon_f, 3))
+    cache_key = (round(lat_f, 2), round(lon_f, 2))
     with _REVERSE_GEOCODE_CACHE_LOCK:
         cached = _REVERSE_GEOCODE_CACHE.get(cache_key)
         if cached is not None:
             return dict(cached)
 
     try:
-        resp = requests.get(
-            'https://nominatim.openstreetmap.org/reverse',
-            params={
-                'format': 'jsonv2',
-                'lat': f'{lat_f:.6f}',
-                'lon': f'{lon_f:.6f}',
-                'zoom': '10',
-                'addressdetails': '1',
-            },
-            headers={
-                'User-Agent': 'WeatherMap/1.0 (weather profile reverse geocoding)'
-            },
-            timeout=3.5,
-        )
-        if not resp.ok:
+        with _REVERSE_GEOCODE_COOLDOWN_LOCK:
+            cooldown_until = float(_REVERSE_GEOCODE_COOLDOWN_UNTIL or 0.0)
+        if cooldown_until > time.time():
+            fallback = _reverse_offline_fallback(lat_f, lon_f)
+            if fallback:
+                with _REVERSE_GEOCODE_CACHE_LOCK:
+                    _REVERSE_GEOCODE_CACHE[cache_key] = dict(fallback)
+                return dict(fallback)
             return None
-        payload = resp.json()
-        name, country = _pick_reverse_geocode_name(payload)
-        if not name:
-            return None
-        out = {
-            'name': str(name),
-            'country': str(country or ''),
-            'label': f'{name} ({country})' if country else str(name),
+    except Exception:
+        pass
+
+    try:
+        headers = {
+            'User-Agent': 'WeatherMap/1.0 (weather profile reverse geocoding)'
         }
+        payloads: list[dict[str, Any]] = []
+        hit_rate_limit = False
+        for zoom in ('14', '13', '12', '10'):
+            resp = requests.get(
+                'https://nominatim.openstreetmap.org/reverse',
+                params={
+                    'format': 'jsonv2',
+                    'lat': f'{lat_f:.6f}',
+                    'lon': f'{lon_f:.6f}',
+                    'zoom': zoom,
+                    'addressdetails': '1',
+                },
+                headers=headers,
+                timeout=3.5,
+            )
+            if resp.status_code == 429:
+                hit_rate_limit = True
+                break
+            if not resp.ok:
+                continue
+            payload = resp.json()
+            if isinstance(payload, dict):
+                payloads.append(payload)
+
+        chosen_name: str | None = None
+        chosen_country: str | None = None
+        for payload in payloads:
+            name, country = _pick_reverse_geocode_name(payload)
+            if name:
+                chosen_name = name
+                chosen_country = country
+                break
+        if chosen_name:
+            out = {
+                'name': str(chosen_name),
+                'country': str(chosen_country or ''),
+                'label': f'{chosen_name} ({chosen_country})' if chosen_country else str(chosen_name),
+            }
+            with _REVERSE_GEOCODE_CACHE_LOCK:
+                if len(_REVERSE_GEOCODE_CACHE) >= 512:
+                    try:
+                        first_key = next(iter(_REVERSE_GEOCODE_CACHE.keys()))
+                        del _REVERSE_GEOCODE_CACHE[first_key]
+                    except Exception:
+                        pass
+                _REVERSE_GEOCODE_CACHE[cache_key] = dict(out)
+            return out
+    except Exception:
+        hit_rate_limit = True
+
+    try:
+        if hit_rate_limit:
+            with _REVERSE_GEOCODE_COOLDOWN_LOCK:
+                _REVERSE_GEOCODE_COOLDOWN_UNTIL = max(float(_REVERSE_GEOCODE_COOLDOWN_UNTIL or 0.0), time.time() + 90.0)
+    except Exception:
+        pass
+    fallback = _reverse_offline_fallback(lat_f, lon_f)
+    if fallback:
         with _REVERSE_GEOCODE_CACHE_LOCK:
             if len(_REVERSE_GEOCODE_CACHE) >= 512:
                 try:
@@ -669,10 +912,9 @@ def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str,
                     del _REVERSE_GEOCODE_CACHE[first_key]
                 except Exception:
                     pass
-            _REVERSE_GEOCODE_CACHE[cache_key] = dict(out)
-        return out
-    except Exception:
-        return None
+            _REVERSE_GEOCODE_CACHE[cache_key] = dict(fallback)
+        return dict(fallback)
+    return None
 
 
 def _is_lucky_profile_day(temp_c: float | None, rain_mm: float | None, wind_ms: float | None, *, temp_cold: float, temp_hot: float, rain_max: float, wind_max: float) -> bool:
@@ -1492,6 +1734,17 @@ def map_js():
     return resp
 
 
+@app.route('/assets/<path:filename>')
+def shared_assets(filename):
+    resp = send_from_directory(str(ASSETS_DIR), filename)
+    try:
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+    except Exception:
+        pass
+    return resp
+
+
 @app.route('/profile.js')
 def profile_js():
     resp = send_from_directory(app.static_folder, 'profile.js')
@@ -2047,14 +2300,14 @@ def api_map_stream():
             step_km = float(step_km_param) if step_km_param else 25.0
             sampled_points, route_feature = sample_route(str(gpx_path), step_km=step_km)
             # Denser sampling for elevation profile (no weather fetching)
-            # Increase sampling density by 2x: halve step_km, with sensible bounds
+            # Keep relief detail about 3x finer than the weather glyph spacing.
             try:
                 if profile_step_km_param:
                     profile_step_km = float(profile_step_km_param)
                 else:
-                    profile_step_km = max(2.5, min(step_km / 2.0, 10.0))
+                    profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
             except Exception:
-                profile_step_km = max(2.5, min(step_km / 2.0, 10.0))
+                profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
             try:
                 profile_points, _ = sample_route(str(gpx_path), step_km=profile_step_km)
             except Exception:

@@ -6,3 +6,5 @@ gpxpy
 requests
 global-land-mask
 Pillow
+geonamescache
+reverse_geocoder
