@@ -2398,6 +2398,83 @@ def api_map_stream():
             segment_length = max(0.0001, total_distance_km / tour_days)
             log.info('[PLAN] Total distance=%.1f km, Total days=%d, Segment length=%.2f km', total_distance_km, tour_days, segment_length)
 
+        try:
+            tour_planning_active = str(tour_planning_param).lower() not in ('0', 'false')
+            if tour_planning_active and sampled_points and segment_length and tour_days and tour_days > 0:
+                coords_for_fill = list(route_feature['geometry']['coordinates'] or [])
+                if len(coords_for_fill) >= 2:
+                    import bisect as _bisect
+                    import math as _m
+
+                    route_cum_km_fill = [0.0]
+                    acc_fill = 0.0
+                    for idx_fill in range(1, len(coords_for_fill)):
+                        lon1_fill, lat1_fill = coords_for_fill[idx_fill - 1]
+                        lon2_fill, lat2_fill = coords_for_fill[idx_fill]
+                        acc_fill += haversine_km(lat1_fill, lon1_fill, lat2_fill, lon2_fill)
+                        route_cum_km_fill.append(acc_fill)
+
+                    def _nearest_route_distance_km_fill(lat_value: float, lon_value: float) -> float:
+                        best_idx = 0
+                        best_d2 = float('inf')
+                        for route_idx, (lon_route, lat_route) in enumerate(coords_for_fill):
+                            mx = (lat_value + lat_route) * 0.5
+                            dx = (lon_route - lon_value) * (_m.pi / 180.0) * max(0.1, abs(_m.cos(mx * _m.pi / 180.0)))
+                            dy = (lat_route - lat_value) * (_m.pi / 180.0)
+                            d2 = dx * dx + dy * dy
+                            if d2 < best_d2:
+                                best_d2 = d2
+                                best_idx = route_idx
+                        return float(route_cum_km_fill[best_idx]) if 0 <= best_idx < len(route_cum_km_fill) else 0.0
+
+                    def _route_point_at_km_fill(target_km: float) -> tuple[float, float]:
+                        if len(coords_for_fill) < 2:
+                            lat0_fill = float(coords_for_fill[0][1])
+                            lon0_fill = float(coords_for_fill[0][0])
+                            return lat0_fill, lon0_fill
+                        clamped_km = max(0.0, min(float(route_cum_km_fill[-1]), float(target_km)))
+                        route_pos = _bisect.bisect_left(route_cum_km_fill, clamped_km)
+                        if route_pos <= 0:
+                            return float(coords_for_fill[0][1]), float(coords_for_fill[0][0])
+                        if route_pos >= len(coords_for_fill):
+                            return float(coords_for_fill[-1][1]), float(coords_for_fill[-1][0])
+                        prev_km = float(route_cum_km_fill[route_pos - 1])
+                        next_km = float(route_cum_km_fill[route_pos])
+                        lon_prev, lat_prev = coords_for_fill[route_pos - 1]
+                        lon_next, lat_next = coords_for_fill[route_pos]
+                        frac = 0.0 if next_km <= prev_km else max(0.0, min(1.0, (clamped_km - prev_km) / (next_km - prev_km)))
+                        lat_interp = float(lat_prev) + (float(lat_next) - float(lat_prev)) * frac
+                        lon_interp = float(lon_prev) + (float(lon_next) - float(lon_prev)) * frac
+                        return lat_interp, lon_interp
+
+                    marks_fill = [float(segment_length) * k for k in range(1, int(tour_days))]
+                    sampled_with_dist = []
+                    covered_days = set()
+                    for lat_fill, lon_fill in sampled_points:
+                        dist_fill = _nearest_route_distance_km_fill(float(lat_fill), float(lon_fill))
+                        day_fill = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks_fill, dist_fill))))
+                        sampled_with_dist.append((dist_fill, (float(lat_fill), float(lon_fill))))
+                        covered_days.add(day_fill)
+
+                    added_days = []
+                    for missing_day in range(int(tour_days)):
+                        if missing_day in covered_days:
+                            continue
+                        target_km_fill = (float(missing_day) + 0.5) * float(segment_length)
+                        lat_added, lon_added = _route_point_at_km_fill(target_km_fill)
+                        sampled_with_dist.append((target_km_fill, (lat_added, lon_added)))
+                        added_days.append(int(missing_day))
+
+                    if added_days:
+                        sampled_with_dist.sort(key=lambda item: float(item[0]))
+                        sampled_points = [point for _, point in sampled_with_dist]
+                        try:
+                            log.info('[PLAN] Added representative sampled points for missing days: %s', added_days)
+                        except Exception:
+                            pass
+        except Exception as fill_exc:
+            log.warning('[PLAN] Missing-day sample augmentation failed: %s', fill_exc)
+
         # Emit route first
         try:
             import json
@@ -3404,6 +3481,32 @@ def api_map_stream():
             # Per-point mode
             # Prepare per-day aggregation containers
             day_aggr: Dict[int, Dict[str, Any]] = {}
+
+            def _append_day_aggr(stats_obj: Dict[str, Any], day_idx_value: Any, assigned_date_value: Any) -> None:
+                try:
+                    if not (segment_length and start_date is not None and assigned_date_value is not None):
+                        return
+                    dkey = int(day_idx_value)
+                except Exception:
+                    return
+                ag = day_aggr.get(dkey)
+                if ag is None:
+                    ag = {"temps": [], "winds": [], "precs": [], "effs": []}
+                    day_aggr[dkey] = ag
+                try:
+                    t_day = stats_obj.get('temp_day_median')
+                    t_use = t_day if (t_day is not None) else stats_obj.get('temperature_c', 0.0)
+                    ag["temps"].append(float(t_use))
+                    ag["winds"].append(float(stats_obj.get('wind_speed_ms', 0.0)))
+                    ag["precs"].append(float(stats_obj.get('precipitation_mm', 0.0)))
+                    import math as _m
+                    seg_head = float(day_headings.get(dkey, 0.0))
+                    wdir_to = (float(stats_obj.get('wind_dir_deg', 0.0)) + 180.0) % 360.0
+                    eff = _m.cos(_m.radians(wdir_to - seg_head))
+                    ag["effs"].append(float(eff))
+                except Exception:
+                    pass
+
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
                 if (not is_dry_run) and (local_token != STREAM_TOKEN):
@@ -3500,6 +3603,7 @@ def api_map_stream():
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
                                 feature['properties']['date'] = assigned_date.isoformat()
+                            _append_day_aggr(stats, day_idx, assigned_date)
                             completed += 1
                             msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                             yield f"event: station\ndata: {msg}\n\n"
@@ -3564,6 +3668,7 @@ def api_map_stream():
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
                                 feature['properties']['date'] = assigned_date.isoformat()
+                            _append_day_aggr(stats, day_idx, assigned_date)
                             completed += 1
                             msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                             yield f"event: station\ndata: {msg}\n\n"
@@ -3610,6 +3715,7 @@ def api_map_stream():
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
                                 feature['properties']['date'] = assigned_date.isoformat()
+                            _append_day_aggr(stats, day_idx, assigned_date)
                             completed += 1
                             msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                             yield f"event: station\ndata: {msg}\n\n"
@@ -3664,6 +3770,7 @@ def api_map_stream():
                             feature['properties']['tour_day_index'] = day_idx
                             feature['properties']['tour_total_days'] = tour_days
                             feature['properties']['date'] = assigned_date.isoformat()
+                        _append_day_aggr(stats, day_idx, assigned_date)
                         completed += 1
                         msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                         yield f"event: station\ndata: {msg}\n\n"
@@ -3762,6 +3869,7 @@ def api_map_stream():
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
                                 feature['properties']['date'] = assigned_date.isoformat()
+                            _append_day_aggr(stats, day_idx, assigned_date)
                             completed += 1
                             msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                             yield f"event: station\ndata: {msg}\n\n"
@@ -3807,6 +3915,7 @@ def api_map_stream():
                             feature['properties']['tour_day_index'] = day_idx
                             feature['properties']['tour_total_days'] = tour_days
                             feature['properties']['date'] = assigned_date.isoformat()
+                        _append_day_aggr(stats, day_idx, assigned_date)
                         completed += 1
                         msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                         yield f"event: station\ndata: {msg}\n\n"
@@ -3895,30 +4004,7 @@ def api_map_stream():
                         feature['properties']['tour_total_days'] = tour_days
                         feature['properties']['date'] = assigned_date.isoformat()
                     # Aggregate per-day stats
-                    try:
-                        dkey = int(day_idx) if (segment_length and start_date is not None and assigned_date is not None) else None
-                    except Exception:
-                        dkey = None
-                    if dkey is not None:
-                        ag = day_aggr.get(dkey)
-                        if ag is None:
-                            ag = {"temps": [], "winds": [], "precs": [], "effs": []}
-                            day_aggr[dkey] = ag
-                        try:
-                            # Prefer daytime median temperature if available, else fallback to daily mean
-                            _t_day = stats.get('temp_day_median')
-                            _t_use = _t_day if (_t_day is not None) else stats.get('temperature_c', 0.0)
-                            ag["temps"].append(float(_t_use))
-                            ag["winds"].append(float(stats.get('wind_speed_ms', 0.0)))
-                            ag["precs"].append(float(stats.get('precipitation_mm', 0.0)))
-                            # eff relative vs segment heading
-                            seg_head = float(day_headings.get(dkey, 0.0))
-                            import math as _m
-                            wdir_to = (float(stats.get('wind_dir_deg', 0.0)) + 180.0) % 360.0
-                            eff = _m.cos(_m.radians(wdir_to - seg_head))
-                            ag["effs"].append(float(eff))
-                        except Exception:
-                            pass
+                    _append_day_aggr(stats, day_idx, assigned_date)
                     completed += 1
                     msg = json.dumps({"feature": feature, "completed": completed, "total": total})
                     yield f"event: station\ndata: {msg}\n\n"
