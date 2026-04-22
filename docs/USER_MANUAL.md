@@ -33,15 +33,21 @@ Depending on settings, overlays can represent:
 - rain probability / rain typical amount
 - wind (direction + speed)
 
-Hover interactions:
-- Hover points/segments to see a compact tooltip with the underlying statistics.
-- Temperature tooltips distinguish between:
-	- **Historical median/range**: the per-year daytime mean summarized across the selected historical span
-	- **Typical daytime variation**: the median daytime min/max inside the selected riding hours
+**Tour day cards** appear next to the route — one per day, placed perpendicular to the route direction. Each card shows:
+- a coloured dot (green = lucky day, grey = not lucky)
+- temperature (median for that day)
+- a weather icon (sun / partly cloudy / rain)
+- rain total in mm
+- the calendar date
+
+The legend below the mode selector always includes units: `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`.
+
+Hover and click interactions:
+- **Hover anywhere on the map** to see a location tooltip (place name + coordinates). The tooltip uses a short debounce to avoid network spam.
+- **Click within ~1 mm of the GPX route** to sync the profile cursor and grey-dot marker to that position along the route. Hovering the route does *not* trigger cursor sync — only a click does.
 
 ### 6) Read the profile strip
-Below the map, the profile canvas provides an “at-a-glance” strip of the same data along distance.
-- Hovering the profile shows the same information as hovering the map.
+Below the map, the profile canvas provides an “at-a-glance” strip of the same data along distance.- **Tour day cards** are drawn at the top of the profile at each day’s midpoint distance. They match the map cards: temperature, weather icon, rain total, date.- Hovering the profile shows the same information as hovering the map.
 - Wind is typically visualized with direction indicators and a lane whose intensity reflects effective wind relative to route direction.
 
 ### 7) Tour summary band
@@ -50,6 +56,8 @@ Between map and profile, the UI contains a persistent “summary band” that ho
 - the overlay selector (e.g., Temperature / Rain / Wind)
 
 The Tour hover tooltip labels these separately, so even a single-year selection can still show a meaningful **Typical daytime variation** without implying multi-year uncertainty.
+
+**Reversing the tour** — the Reverse button in the tour summary flips the route direction and immediately re-fetches with the reversed heading. The "Reverse" checkbox in Preferences does the same but only marks data stale without re-fetching immediately.
 
 ## Climatic Map (strategic/climate mode)
 ### 1) Switch to Climatic Map

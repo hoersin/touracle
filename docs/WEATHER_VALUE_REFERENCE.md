@@ -13,7 +13,9 @@ It is organized by:
 
 - Climatic Map values come from `GET /api/strategic_grid` and are tile-based.
 - Tour Planning values come from `/api/map_stream` and are station-based.
-- In Tour Planning, glyphs, map tooltips, and profile overlays all derive from the same station payload. The profile uses a subset of those fields.
+- In Tour Planning, glyphs, map tooltips, profile overlays, and **day cards** (both map and profile) all derive from the same station payload. The profile uses a subset of those fields.
+- Day cards prefer `temp_day_median` for their temperature label, falling back to `temperature_c` and then `temp_hist_median`.
+- Day cards show **rain total** (`precipSum`, i.e. mean `precipitation_mm` across points in the day) rather than a rain probability.
 - In Climatic Map, the tooltip shows the same aggregated tile values that drive the raster.
 - In Tour Planning, there is no single top-level `24h / Active` toggle. The payload carries historical and daytime fields in parallel, and different UI elements use different subsets of them.
 
@@ -62,7 +64,19 @@ It is organized by:
 | Multiple historical years (`hist_years > 1`) | Glyph + map tooltip | same fields as above, but now span-sensitive across the selected historical years | `rain_probability` and `rain_typical_mm`, both span-sensitive | not shown as a dedicated Tour tooltip line | `wind_speed_ms`, `wind_dir_deg`, `wind_var_deg`, all span-sensitive | not shown as a per-glyph metric | Route glyphs + hover tooltip |
 | Any year span | Profile overlay: Temperature | median line uses the Tour temperature reference; spread uses `temp_day_p25/temp_day_p75` | not used | not used | not used | not used | Profile canvas |
 | Any year span | Profile overlay: Rain | not used | bars use `rain_typical_mm`; filled area uses `rain_typical_mm * rain_probability` | implicit in the area height, but no separate sum label | not used | not used | Profile canvas |
+| Any year span | Day cards (map + profile) | `temp_day_median` → `temperature_c` → `temp_hist_median` (first finite) | not used | `precipSum` (mean of `precipitation_mm` across day’s points) | not used | shown as coloured dot (green/grey) | Map cards + profile card strip |
 | Any year span | Profile overlay: Wind | not used | not used | not used | effective wind along the route computed from `wind_speed_ms`, `wind_dir_deg`, and local route heading; tolerance band comes from `wind_var_deg` | not used | Profile canvas |
+
+### Lucky day scoring (Tour)
+A day is marked **lucky** (green dot) when:
+- `tempMedian` is in the comfort range (`tempCold` – `tempHot`, default 15–25°C)
+- `precipSum` (mean daily rain) is below the rain threshold (default 1 mm)
+- wind condition passes the comfort check:
+  - strong headwind (`effMean < -0.33`): `windMean < windHeadComfort` (default 4 m/s)
+  - strong tailwind (`effMean > 0.33`): `windMean < windTailComfort` (default 10 m/s)
+  - crosswind or calm: `windMean < windHeadComfort`
+
+If a day already has pre-computed `lucky` votes from backend station events, a majority vote is used instead.
 
 ### Tour tooltip contract
 

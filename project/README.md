@@ -8,7 +8,9 @@ Touracle is an interactive tool for planning long-distance bikepacking or cyclin
 - Upload or use the included Milano-to-Rome demo GPX route
 - Visualize route on an interactive map (Leaflet-based UI)
 - See weather glyphs (temperature, rain, wind) at sampled points along the route
+- **Per-day cards** on the map and profile: temperature, weather icon, rain total, lucky-day dot, and date — one card per tour day
 - Select any day-of-year to view typical and historical weather (uses Open-Meteo/Meteostat)
+- Click within ~1 mm of the route to sync the profile cursor; hover anywhere for a location tooltip
 - Resize the sidebar and inspect a mode-specific “How Values Are Calculated” guide directly in the UI
 - Download and share weather summaries
 - Works locally—no private data leaves your machine

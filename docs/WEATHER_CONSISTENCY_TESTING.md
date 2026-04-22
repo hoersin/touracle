@@ -44,6 +44,9 @@ The stream test asserts that widening the year span changes:
 ### 3) `/api/map_stream` must change with requested date
 The stream test also asserts that changing the selected date changes emitted weather stats.
 
+### 4) All tour days must have at least one station
+Every day index in `[0, tourDays)` must be represented by at least one station event in the SSE stream, regardless of the sampling step (`segment_length`). The backend inserts a midpoint representative sample for any missing day bucket after the initial route sampling pass. If day coverage drops, look for `[PLAN] Missing-day sample augmentation` log lines.
+
 ## Run the regression tests
 From repo root:
 ```bash

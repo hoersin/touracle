@@ -81,19 +81,22 @@ The offline store builder is:
 
 It builds a SQLite DB (schema in `project/offline/offline_store_schema.sql`) for a tile grid over a bounding box.
 
-Example (Europe-ish bbox, 50km tiles):
+Example (Europe + Iceland bbox, 50km tiles, coastal sea included):
 ```bash
 python -u project/offline/build_offline_tiles_openmeteo.py \
   --db project/cache/offline_weather_2025.sqlite \
   --start-year 2025 --end-year 2025 \
   --tile-km 50 \
   --lat-min 34 --lat-max 72 \
-  --lon-min -11 --lon-max 33 \
+  --lon-min -28 --lon-max 33 \
+  --ocean coastal \
   --min-interval-s 2.0 \
   --chunk-count 1 --chunk-index 0
 ```
 
-Notes:
+Tips:
+- `--lon-min -28` is the **current default** and includes Iceland. Older DBs built with `--lon-min -11` will not cover Iceland tiles — rebuild with the wider bbox if you need it.
+- `--pace-until-berlin-7am` auto-adjusts the request interval so the selected chunk finishes by 07:00 Europe/Berlin. Useful for nightly scheduled runs.
 - The provider can rate limit (`HTTP 429`). If that happens, retry with a higher `--min-interval-s`.
 - Builds are restart-safe: tiles are committed individually to `build_state` so you can rerun the command to continue.
 

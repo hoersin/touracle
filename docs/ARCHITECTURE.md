@@ -12,6 +12,7 @@ Core frontend responsibilities:
 - render base maps (Leaflet)
 - render route geometry
 - render weather overlays/glyphs on the map
+- render **Tour day cards** on the map (one card per tour day, offset perpendicular to the route, re-rendered on `zoomend`) and on the profile strip canvas
 - render coastline/land masks for the Climatic Map (Natural Earth GeoJSON; zoom-dependent resolution)
 - render the route profile strip and handle hover/tooltip
 - manage user preferences in local storage
@@ -25,9 +26,9 @@ Core backend responsibilities:
 - serve static frontend assets
 - serve cached coastline GeoJSON endpoints used by the frontend for land/shore rendering
 - accept GPX uploads and persist session state
-- sample routes into evenly spaced points
+- sample routes into evenly spaced points; **guarantee at least one representative point per tour day** even when the sampling step exceeds the day-segment length
 - fetch weather data from providers or offline stores
-- compute derived, app-facing statistics
+- compute derived, app-facing statistics; `_append_day_aggr` aggregates per-day stats across all emission branches
 - stream incremental results to the frontend (SSE)
 
 ### Offline tile store
@@ -39,11 +40,11 @@ This provides a precomputed, restart-safe SQLite dataset so the Climatic Map can
 ## Key data flows
 ### Tour planning (route-based)
 1. Frontend uploads/chooses GPX route
-2. Backend samples the route at a configured step (km)
+2. Backend samples the route at a configured step (km); missing day buckets are filled with representative midpoint coordinates
 3. Backend fetches weather (online APIs and/or cached results)
-4. Backend computes statistics per sampled point and day
+4. Backend computes statistics per sampled point and day; aggregates per-day summary via `_append_day_aggr`
 5. Backend returns results to frontend (in some cases via SSE)
-6. Frontend renders map + profile, and keeps hover semantics consistent
+6. Frontend renders map + profile; day cards are placed at each day’s midpoint perpendicular to the route and re-rendered on zoom
 
 ### Climatic map (tile grid)
 1. Frontend chooses layer + year + calendar day

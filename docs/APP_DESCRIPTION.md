@@ -16,7 +16,9 @@ The app focuses on weather that strongly affects cycling:
 - **Wind** (speed and direction; in Tour mode also “effective wind” vs route heading)
 
 The UI uses weather symbols/overlays on the map and a route profile strip to present the same underlying statistics from two angles.
+In Tour Planning, each tour day also gets a **day card** — a compact label placed perpendicular to the route on the map and drawn at the top of the profile strip. Each card shows: temperature, a weather icon, rain total, and the calendar date.
 
+The map colour legend labels include units (e.g. `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`) so the scale is always self-explanatory.
 ## Data sources and modes
 ### Online mode
 When running online, the backend fetches data from provider APIs (e.g. Open‑Meteo archive API; Meteostat is also in dependencies).

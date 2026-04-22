@@ -41,11 +41,22 @@ Run again with slower pacing:
 python -u project/offline/build_offline_tiles_openmeteo.py \
   --db project/cache/offline_weather_2023.sqlite \
   --start-year 2023 --end-year 2023 \
-  --tile-km 50 --lat-min 34 --lat-max 72 --lon-min -11 --lon-max 33 \
+  --tile-km 50 --lat-min 34 --lat-max 72 \
+  --lon-min -28 --lon-max 33 \
   --min-interval-s 4.0
 ```
 
+Note: `--lon-min -28` is the current default and covers Iceland. Older builds used `--lon-min -11`.
+
+### Nightly launchd runner (macOS)
+`tools/macos/run_offline_tiles_nightly.sh` selects the most incomplete DB in `project/cache/`, rotates the `--chunk-index` by day-of-year, and uses `--pace-until-berlin-7am` to auto-pace the build so it finishes by 07:00 Europe/Berlin. See `tools/macos/OFFLINE_TILES_LAUNCHD.md` for setup.
+
 ## Operational tips
 - Large sqlite files are commonly tracked with Git LFS.
-- If you change frontend JS/CSS and your browser caches aggressively, hard-refresh or bump a cache-buster query parameter in `index.html`.
+- If you change frontend JS/CSS and your browser caches aggressively, hard-refresh or **bump the cache-buster** query parameter in `project/frontend/index.html`:
+  ```js
+  const mapSrc = '/map.js?v=NNN'; // increment NNN
+  ```
+  The current version counter is in the `bootMap()` function near the bottom of `index.html`.
+- The backend guarantees at least one representative sampled point per tour day even when `--step-km` exceeds the day-segment length. If you see a day with no station, look for `[PLAN] Missing-day sample augmentation failed` in the server log.
 
