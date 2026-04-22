@@ -2967,6 +2967,7 @@
   let glyphLayer = null;
   let glyphLayerNew = null;
   let routeDayCardLayer = null;
+  let _tourDayCardsZoomHandler = null;
   // Persist years span from route event for stable progress text
   let YEARS_SPAN_TEXT = null;
   
@@ -3409,6 +3410,33 @@
     }
   }
 
+  function _ensureTourRouteDayCardTooltipStyles() {
+    try {
+      if (typeof document === 'undefined') return;
+      if (document.getElementById('wm-tour-day-card-tooltip-style')) return;
+      const style = document.createElement('style');
+      style.id = 'wm-tour-day-card-tooltip-style';
+      style.textContent = [
+        '.wm-tour-day-card-tooltip {',
+        '  background: transparent;',
+        '  border: 0;',
+        '  box-shadow: none;',
+        '  padding: 0;',
+        '  margin: 0;',
+        '}',
+        '.wm-tour-day-card-tooltip::before {',
+        '  display: none;',
+        '}',
+        '.wm-tour-day-card-tooltip .leaflet-tooltip-content {',
+        '  margin: 0;',
+        '  padding: 0;',
+        '  background: transparent;',
+        '}',
+      ].join('\n');
+      document.head.appendChild(style);
+    } catch (_) {}
+  }
+
   function _refreshTourRouteMarkerIcons(layerGroup) {
     try {
       if (!layerGroup || !layerGroup.eachLayer) return;
@@ -3432,6 +3460,10 @@
       if (routeDayCardLayer && map) map.removeLayer(routeDayCardLayer);
     } catch (_) {}
     routeDayCardLayer = null;
+    try {
+      if (_tourDayCardsZoomHandler && map) map.off('zoomend', _tourDayCardsZoomHandler);
+    } catch (_) {}
+    _tourDayCardsZoomHandler = null;
   }
 
   function _tourRouteDayCardHtml(data) {
@@ -3441,24 +3473,17 @@
     const rainLabel = Number.isFinite(Number(info.rainMm)) ? `${fmt(Number(info.rainMm), 0)} mm` : '';
     const dateLabel = String(info.dateLabel || '');
     const iconClass = String(info.iconClass || 'cloudy');
-    const iconMarkup = (() => {
-      try {
-        return resizeInlineSvgGlyphMarkup(getWeatherSvg(iconClass), 20, 20);
-      } catch (_) {
-        const iconSrc = `/assets/glyphs/weather/weather_${encodeURIComponent(iconClass)}.png`;
-        return `<img src="${iconSrc}" alt="" width="20" height="20" style="width:20px;height:20px;object-fit:contain;" />`;
-      }
-    })();
+    const iconSrc = `/assets/glyphs/weather/weather_${encodeURIComponent(iconClass)}.png`;
     return (
       `<div data-wm-route-card="1" style="width:40px;height:52px;display:flex;align-items:center;justify-content:center;overflow:visible;">`
-        + `<div style="position:relative;width:48px;height:62px;transform:scale(0.8);transform-origin:center center;border-radius:11px;background:rgba(255,255,255,0.58);border:1px solid rgba(148,163,184,0.18);box-shadow:0 4px 10px rgba(15,23,42,0.06);backdrop-filter:blur(1.5px);">`
+        + `<div style="position:relative;width:48px;height:62px;transform:scale(0.8);transform-origin:center center;border-radius:11px;background:rgba(255,255,255,0.52);border:1px solid rgba(148,163,184,0.22);box-shadow:0 4px 10px rgba(15,23,42,0.06);backdrop-filter:blur(1.5px);">`
           + (typeof lucky === 'boolean'
             ? `<span style="position:absolute;left:50%;top:6px;width:8px;height:8px;border-radius:999px;transform:translateX(-50%);background:${lucky ? '#47d764' : '#b3b3b3'};border:1.2px solid ${lucky ? 'rgba(20,126,56,0.95)' : 'rgba(120,132,145,0.72)'};"></span>`
             : '')
           + (tempLabel
             ? `<div style="position:absolute;left:0;right:0;top:14px;text-align:center;font:600 12px/1 system-ui,-apple-system,sans-serif;color:#0f172a;">${tempLabel}</div>`
             : '')
-          + `<div style="position:absolute;left:50%;top:24px;width:20px;height:20px;transform:translateX(-50%);display:flex;align-items:center;justify-content:center;">${iconMarkup}</div>`
+          + `<img src="${iconSrc}" alt="" width="20" height="20" style="position:absolute;left:50%;top:24px;width:20px;height:20px;transform:translateX(-50%);object-fit:contain;display:block;" />`
           + (rainLabel
             ? `<div style="position:absolute;left:0;right:0;top:45px;text-align:center;font:500 9px/1 system-ui,-apple-system,sans-serif;color:#64748b;">${rainLabel}</div>`
             : '')
@@ -3564,28 +3589,36 @@
     try {
       _clearTourRouteDayCards();
       if (!_tourIsActive() || !map) return;
+      _ensureTourRouteDayCardTooltipStyles();
       const entries = _tourRouteDayCardEntries(profile);
       if (!entries.length) return;
       _ensureRouteMarkerPane('wmRouteLabelPane', 650, 'auto');
       routeDayCardLayer = L.layerGroup().addTo(map);
-      const attempts = [
-        { mag: 30, up: true },
-        { mag: 54, up: false },
-        { mag: 74, up: true },
-        { mag: 96, up: false },
-      ];
+      // Card visible size after scale(0.8): inner 48×62 → ~38×50px; half-diagonal ≈ 32px.
+      // Route line is ~4px half-width. Use 42px perpendicular offset for comfortable clearance.
+      const OFFSET_PX = 42;
+      let mapBounds = null;
+      try { mapBounds = map.getBounds(); } catch (_) {}
       for (const entry of entries) {
         const baseLatLng = routeLatLngAtDistanceKm(entry.distKm);
         if (!baseLatLng) continue;
-        let chosenLatLng = baseLatLng;
-        const rotatedAttempts = attempts.map((_, index) => attempts[(index + (Number(entry && entry.dayIdx) || 0)) % attempts.length]);
-        for (const attempt of rotatedAttempts) {
-          const offset = _routeNormalOffsetPx(entry.distKm, attempt.mag, attempt.up);
-          const candidateLatLng = _routeMarkerLatLng(baseLatLng.lat, baseLatLng.lng, offset);
-          if (!candidateLatLng) continue;
-          chosenLatLng = candidateLatLng;
-          break;
+        // Try preferred side (up=true = left/north of route direction), fall back to
+        // the opposite side only when the preferred position is outside the viewport.
+        let chosenLatLng = null;
+        for (const preferUp of [true, false]) {
+          const offset = _routeNormalOffsetPx(entry.distKm, OFFSET_PX, preferUp);
+          const candidate = _routeMarkerLatLng(baseLatLng.lat, baseLatLng.lng, offset);
+          if (!candidate) continue;
+          if (!chosenLatLng) chosenLatLng = candidate; // keep as best-so-far
+          if (!mapBounds) break; // no viewport info — take first
+          try {
+            const ll = Array.isArray(candidate)
+              ? L.latLng(candidate[0], candidate[1])
+              : candidate;
+            if (mapBounds.contains(ll)) { chosenLatLng = candidate; break; }
+          } catch (_) {}
         }
+        if (!chosenLatLng) continue;
         const anchor = L.marker(chosenLatLng, {
           opacity: 0,
           pane: 'wmRouteLabelPane',
@@ -3593,8 +3626,7 @@
           keyboard: false,
           zIndexOffset: 260,
         });
-        const html = _tourRouteDayCardHtml(entry);
-        anchor.bindTooltip(html, {
+        anchor.bindTooltip(_tourRouteDayCardHtml(entry), {
           permanent: true,
           direction: 'center',
           offset: L.point(0, 0),
@@ -3605,6 +3637,11 @@
         });
         routeDayCardLayer.addLayer(anchor);
       }
+      // Re-render on zoom so pixel offsets stay geometrically correct.
+      _tourDayCardsZoomHandler = () => {
+        try { if (_tourIsActive()) _renderTourRouteDayCards(LAST_PROFILE); } catch (_) {}
+      };
+      try { map.on('zoomend', _tourDayCardsZoomHandler); } catch (_) {}
     } catch (_) {}
   }
 
