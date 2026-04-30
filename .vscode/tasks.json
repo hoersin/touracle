@@ -9,9 +9,21 @@
 			"group": "build"
 		},
 		{
+			"label": "Start Offline Tile Manager",
+			"type": "shell",
+			"command": "OFFLINE_TILE_MANAGER_PORT=5003 ${workspaceFolder}/.venv/bin/python ${workspaceFolder}/project/offline/manager_app.py",
+			"isBackground": true,
+			"group": "build"
+		},
+		{
 			"label": "Stop WeatherMap server",
 			"type": "shell",
 			"command": "pkill -f project/backend/app.py || true"
+		},
+		{
+			"label": "Stop Offline Tile Manager",
+			"type": "shell",
+			"command": "pkill -f project/offline/manager_app.py || true"
 		}
 	]
 }

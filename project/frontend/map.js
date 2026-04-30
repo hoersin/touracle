@@ -333,6 +333,7 @@
   const settingsLiveStatusText = settingsLiveStatus ? settingsLiveStatus.querySelector('.wm-pref-live-text') : null;
   const progressEl = document.getElementById('progress');
   const progressBar = progressEl ? progressEl.querySelector('.bar') : null;
+  const progressPercentEl = document.getElementById('progressPercent');
   const sseStatus = document.getElementById('sseStatus');
   const dropZone = document.getElementById('dropZone');
   const profileCanvas = document.getElementById('profileCanvas');
@@ -2446,6 +2447,7 @@
       const prev = progressBar.style.transition;
       progressBar.style.transition = 'none';
       progressBar.style.width = '0%';
+      try { if (progressPercentEl) progressPercentEl.textContent = ''; } catch (_) {}
       void progressBar.offsetWidth;
       progressBar.style.transition = prev || '';
     } catch (_) {
@@ -2536,6 +2538,7 @@
       if (!Number.isFinite(currentPct) || currentPct < 1) resetProgressInstant();
       progressEl.classList.remove('loading');
     }
+    try { if (progressPercentEl) progressPercentEl.textContent = '0%'; } catch (_) {}
   }
 
   // Weather provenance counters (updated from SSE station payload)
@@ -2596,6 +2599,9 @@
     progressEl.classList.remove('loading');
     const p = Math.max(0, Math.min(100, Number(pct) || 0));
     progressBar.style.width = `${p}%`;
+    try {
+      if (progressPercentEl) progressPercentEl.textContent = (PROGRESS_PHASE === 'weather') ? `${p}%` : '';
+    } catch (_) {}
   }
 
   function setProgressIndeterminate(on) {
@@ -2603,6 +2609,7 @@
     if (on) {
       progressBar.style.width = '0%';
       progressEl.classList.add('loading');
+      try { if (progressPercentEl) progressPercentEl.textContent = ''; } catch (_) {}
     } else {
       progressEl.classList.remove('loading');
     }

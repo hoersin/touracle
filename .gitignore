@@ -49,6 +49,7 @@ project/data/*.gpx
 data/*.gpx
 data/session_state.json
 project/data/session_state.json
+project/data/offline_tile_manager_jobs.json
 
 # --- Archives ---
 *.zip
