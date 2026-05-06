@@ -7,6 +7,7 @@
     refreshTimer: null,
     formInteractionDepth: 0,
     overviewError: '',
+    jobLogScroll: {},
   };
 
   const els = {
@@ -43,11 +44,11 @@
 
   function escapeHtml(value) {
     return String(value == null ? '' : value)
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function fmtNumber(value) {
@@ -65,6 +66,11 @@
     return Number.isFinite(num) ? `${num.toFixed(1)}%` : '0%';
   }
 
+  function fmtSeconds(value) {
+    const num = Number(value || 0);
+    return Number.isFinite(num) && num > 0 ? `${num.toFixed(num >= 10 ? 0 : 2)} s` : '—';
+  }
+
   function fmtDate(value) {
     if (!value) return '—';
     const parsed = new Date(value);
@@ -74,6 +80,59 @@
   function bboxText(bbox) {
     if (!bbox) return '—';
     return `${bbox.lat_min}..${bbox.lat_max} lat, ${bbox.lon_min}..${bbox.lon_max} lon`;
+  }
+
+  function rateLimitSummary(rateLimit) {
+    const rl = rateLimit || {};
+    const requestsTotal = Number(rl.requests_total || 0);
+    const requests429 = Number(rl.requests_429 || 0);
+    const recommended = Number(rl.decayed_recommended_min_interval_s || rl.recommended_min_interval_s || 0);
+    const firstAt = Number(rl.first_429_at_request || 0);
+    const frequentAt = Number(rl.frequent_429_at_request || 0);
+    const continuousAt = Number(rl.continuous_429_at_request || 0);
+    const maxConsecutive = Number(rl.max_consecutive_429 || 0);
+    const effective = Number(rl.effective_min_interval_s || 0);
+    const cooldownRemaining = Number(rl.cooldown_hours_remaining || 0);
+    const decayApplied = Boolean(rl.decay_applied);
+    if (!requestsTotal && !requests429 && !recommended && !firstAt && !frequentAt && !continuousAt) {
+      return {
+        primary: 'Provider learning: no telemetry yet',
+        detail: 'This database has not collected rate-limit learning under the new downloader yet.',
+      };
+    }
+    const thresholds = [];
+    if (firstAt > 0) thresholds.push(`first 429 at req ${fmtNumber(firstAt)}`);
+    if (frequentAt > 0) thresholds.push(`frequent 429 at req ${fmtNumber(frequentAt)}`);
+    if (continuousAt > 0) thresholds.push(`continuous 429 at req ${fmtNumber(continuousAt)}`);
+    if (maxConsecutive > 0) thresholds.push(`max consecutive 429 ${fmtNumber(maxConsecutive)}`);
+    if (cooldownRemaining > 0.05) {
+      thresholds.unshift(`cooldown ${fmtHours(cooldownRemaining)} remaining`);
+    } else if (decayApplied) {
+      thresholds.unshift('cooldown complete, decay active');
+    }
+    return {
+      primary: `Provider learning: active pace ${fmtSeconds(effective)} · resume suggestion ${fmtSeconds(recommended)}`,
+      detail: thresholds.length ? thresholds.join(' · ') : 'No 429 threshold markers recorded yet.',
+    };
+  }
+
+  function paceInfo(rateLimit) {
+    const rl = rateLimit || {};
+    const active = Number(rl.effective_min_interval_s || 0);
+    const resume = Number(rl.decayed_recommended_min_interval_s || rl.recommended_min_interval_s || 0);
+    const cooldownRemaining = Number(rl.cooldown_hours_remaining || 0);
+    const decayApplied = Boolean(rl.decay_applied);
+    let cooldown = '—';
+    if (cooldownRemaining > 0.05) {
+      cooldown = `${fmtHours(cooldownRemaining)} remaining`;
+    } else if (decayApplied) {
+      cooldown = 'complete';
+    }
+    return {
+      active: fmtSeconds(active),
+      resume: fmtSeconds(resume),
+      cooldown,
+    };
   }
 
   function statusClass(status) {
@@ -151,7 +210,7 @@
       if (code === 'dataset_missing') return 'No database was selected.';
       if (code === 'unsupported_action') return 'This action is not supported.';
       if (payload.message) return String(payload.message);
-      if (code) return code.replaceAll('_', ' ');
+      if (code) return code.replace(/_/g, ' ');
     } catch {
       // Fall back to raw text below.
     }
@@ -250,11 +309,26 @@
       els.jobsList.innerHTML = '<div class="empty">No managed jobs yet. Estimate one and start it here.</div>';
       return;
     }
+    const nextJobLogScroll = {};
+    els.jobsList.querySelectorAll('[data-job-log-id]').forEach((element) => {
+      const jobId = element.getAttribute('data-job-log-id');
+      if (!jobId) return;
+      const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+      nextJobLogScroll[jobId] = {
+        top: element.scrollTop,
+        max: maxScrollTop,
+        stickToBottom: maxScrollTop > 0 && (maxScrollTop - element.scrollTop) <= 24,
+      };
+    });
+    state.jobLogScroll = nextJobLogScroll;
     els.jobsList.innerHTML = state.jobs.map((job) => {
       const dbSummary = job.db_summary || {};
       const progress = Number(dbSummary.progress_pct || 0);
+      const learning = rateLimitSummary(dbSummary.rate_limit);
+      const pace = paceInfo(dbSummary.rate_limit);
+      const activePaceRaw = Number(dbSummary.rate_limit?.effective_min_interval_s || job.spec?.min_interval_s || 0.25);
       return `
-        <article class="panel job-card">
+        <article class="panel job-card" data-job-id="${escapeHtml(job.id)}">
           <div class="card-top">
             <div>
               <h3 class="card-title">${escapeHtml(job.label || job.id)}</h3>
@@ -267,9 +341,13 @@
             <div class="meta-box"><div class="k">Area</div><div class="v">${escapeHtml(job.spec?.region_label || 'Custom')}</div></div>
             <div class="meta-box"><div class="k">Tiles Present</div><div class="v">${fmtNumber(dbSummary.done || 0)} / ${fmtNumber(dbSummary.tiles_total || 0)}</div></div>
             <div class="meta-box"><div class="k">Last Start</div><div class="v">${escapeHtml(fmtDate(job.started_at))}</div></div>
+            <div class="meta-box"><div class="k">Active Pace</div><div class="v">${escapeHtml(pace.active)}</div>${job.can_stop ? `<div class="pace-adjuster"><button class="spin-btn compact" data-action="pace-down" data-job-id="${escapeHtml(job.id)}" data-pace-current="${escapeHtml(String(activePaceRaw))}">-</button><button class="spin-btn compact" data-action="pace-up" data-job-id="${escapeHtml(job.id)}" data-pace-current="${escapeHtml(String(activePaceRaw))}">+</button></div>` : ''}</div>
+            <div class="meta-box"><div class="k">Resume Pace</div><div class="v">${escapeHtml(pace.resume)}</div></div>
           </div>
           <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, progress))}%;"></div></div>
           <div class="card-subtitle">${fmtPct(progress)} complete · errors ${fmtNumber(dbSummary.error || 0)} · running tiles ${fmtNumber(dbSummary.building || 0)}</div>
+          <div class="card-subtitle">${escapeHtml(learning.primary)}</div>
+          <div class="card-subtitle">Cooldown: ${escapeHtml(pace.cooldown)} · last 429 ${escapeHtml(fmtDate(dbSummary.rate_limit?.last_429_at))}</div>
           <div class="actions" data-job-actions="${escapeHtml(job.id)}">
             <button class="ghost" data-action="refresh-log">Refresh Log</button>
             ${job.can_resume ? '<button class="ghost" data-action="resume">Resume</button>' : ''}
@@ -277,10 +355,27 @@
             ${job.can_kill ? '<button class="danger" data-action="kill">Kill</button>' : ''}
             ${job.can_remove_job ? '<button class="danger" data-action="remove">Remove Job</button>' : ''}
           </div>
-          <pre>${escapeHtml(job.log_tail || 'No log output yet.')}</pre>
+          <pre data-job-log-id="${escapeHtml(job.id)}">${escapeHtml(job.log_tail || 'No log output yet.')}</pre>
         </article>
       `;
     }).join('');
+    els.jobsList.querySelectorAll('[data-job-log-id]').forEach((element) => {
+      const jobId = element.getAttribute('data-job-log-id');
+      if (!jobId) return;
+      const previous = state.jobLogScroll[jobId];
+      if (!previous) return;
+      const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+      if (previous.stickToBottom) {
+        element.scrollTop = maxScrollTop;
+        return;
+      }
+      if (previous.max > 0 && maxScrollTop > 0) {
+        const ratio = previous.top / previous.max;
+        element.scrollTop = Math.max(0, Math.min(maxScrollTop, ratio * maxScrollTop));
+        return;
+      }
+      element.scrollTop = Math.max(0, Math.min(maxScrollTop, previous.top || 0));
+    });
   }
 
   function renderDatasets() {
@@ -291,6 +386,8 @@
     }
     els.datasetsList.innerHTML = state.datasets.map((dataset) => {
       const years = dataset.years || {};
+      const learning = rateLimitSummary(dataset.rate_limit);
+      const pace = paceInfo(dataset.rate_limit);
       return `
         <article class="panel dataset-card">
           <div class="card-top">
@@ -306,9 +403,13 @@
             <div class="meta-box"><div class="k">Tiles Present</div><div class="v">${fmtNumber(dataset.done || 0)} / ${fmtNumber(dataset.tiles_present || dataset.tiles_total || 0)}</div></div>
             <div class="meta-box"><div class="k">Runtime</div><div class="v">${dataset.active_pid ? `PID ${escapeHtml(String(dataset.active_pid))}` : 'idle'}</div></div>
             <div class="meta-box"><div class="k">Expected Full</div><div class="v">${fmtNumber(dataset.expected_full_tiles || 0)}</div></div>
+            <div class="meta-box"><div class="k">Active Pace</div><div class="v">${escapeHtml(pace.active)}</div></div>
+            <div class="meta-box"><div class="k">Resume Pace</div><div class="v">${escapeHtml(pace.resume)}</div></div>
           </div>
           <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, Number(dataset.progress_pct || 0)))}%;"></div></div>
           <div class="card-subtitle">${fmtPct(dataset.progress_pct)} complete · errors ${fmtNumber(dataset.error || 0)} · last finish ${escapeHtml(fmtDate(dataset.last_build_finished_at))}</div>
+          <div class="card-subtitle">${escapeHtml(learning.primary)}</div>
+          <div class="card-subtitle">Cooldown: ${escapeHtml(pace.cooldown)} · ${escapeHtml(learning.detail)}</div>
           <div class="actions" data-dataset-actions="${escapeHtml(dataset.db_relpath || '')}">
             ${dataset.can_load_missing ? '<button class="ghost" data-action="load-missing">Load Missing</button>' : ''}
             ${dataset.can_stop ? '<button class="ghost" data-action="stop">Stop</button>' : ''}
@@ -389,6 +490,65 @@
     return response.json();
   }
 
+  async function updateJobPace(jobId, minInterval) {
+    return api(`/api/jobs/${jobId}/pace`, {
+      method: 'POST',
+      body: JSON.stringify({ min_interval_s: minInterval }),
+    });
+  }
+
+  function applyLocalJobPace(jobId, minInterval) {
+    const requested = Math.max(0.25, Number(minInterval) || 0.25);
+    state.jobs = state.jobs.map((job) => {
+      if (String(job.id) !== String(jobId)) {
+        return job;
+      }
+      const nextJob = { ...job };
+      nextJob.spec = { ...(job.spec || {}), min_interval_s: requested };
+      const dbSummary = { ...(job.db_summary || {}) };
+      const rateLimit = { ...(dbSummary.rate_limit || {}) };
+      rateLimit.effective_min_interval_s = requested;
+      dbSummary.rate_limit = rateLimit;
+      nextJob.db_summary = dbSummary;
+      return nextJob;
+    });
+    state.datasets = state.datasets.map((dataset) => {
+      const datasetPath = String(dataset.db_relpath || dataset.db_path || '');
+      const job = state.jobs.find((entry) => String(entry.id) === String(jobId));
+      const jobPath = String(job?.db_relpath || '');
+      if (!jobPath || datasetPath !== jobPath) {
+        return dataset;
+      }
+      const nextDataset = { ...dataset };
+      nextDataset.rate_limit = {
+        ...(dataset.rate_limit || {}),
+        effective_min_interval_s: requested,
+      };
+      return nextDataset;
+    });
+  }
+
+  function mergeUpdatedJob(updatedJob) {
+    if (!updatedJob || !updatedJob.id) return;
+    state.jobs = state.jobs.map((job) => String(job.id) === String(updatedJob.id) ? updatedJob : job);
+    const jobPath = String(updatedJob.db_relpath || '');
+    const updatedRateLimit = updatedJob.db_summary?.rate_limit;
+    if (!jobPath || !updatedRateLimit) return;
+    state.datasets = state.datasets.map((dataset) => {
+      const datasetPath = String(dataset.db_relpath || dataset.db_path || '');
+      if (datasetPath !== jobPath) {
+        return dataset;
+      }
+      return {
+        ...dataset,
+        rate_limit: {
+          ...(dataset.rate_limit || {}),
+          ...updatedRateLimit,
+        },
+      };
+    });
+  }
+
   async function postDatasetAction(dbRelpath, action) {
     const response = await fetch('/api/datasets/control', {
       method: 'POST',
@@ -419,6 +579,23 @@
     els.estimateBtn.addEventListener('click', () => estimate().catch((err) => window.alert(err.message)));
     els.startBtn.addEventListener('click', () => startJob().catch((err) => window.alert(err.message)));
     els.refreshBtn.addEventListener('click', () => loadOverview());
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-spin-target]');
+      if (!button) return;
+      const targetId = button.getAttribute('data-spin-target');
+      const direction = button.getAttribute('data-spin-direction');
+      const input = targetId ? document.getElementById(targetId) : null;
+      if (!(input instanceof HTMLInputElement)) return;
+      const min = Number(input.min || 0.25);
+      const step = Number(input.step || 0.05) || 0.05;
+      const current = Number(input.value || min);
+      const nextValue = direction === 'down'
+        ? Math.max(min, current - step)
+        : current + step;
+      input.value = String(Math.round(nextValue / step) * step);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
 
     document.addEventListener('focusin', (event) => {
       if (event.target instanceof HTMLElement && event.target.closest('.composer')) {
@@ -439,14 +616,28 @@
       const button = event.target.closest('button[data-action]');
       if (!button) return;
       const wrapper = button.closest('[data-job-actions]');
-      const jobId = wrapper?.getAttribute('data-job-actions');
+      const card = button.closest('.job-card');
+      const jobId = button.getAttribute('data-job-id') || wrapper?.getAttribute('data-job-actions') || card?.getAttribute('data-job-id') || card?.querySelector('[data-job-actions]')?.getAttribute('data-job-actions');
       const action = button.getAttribute('data-action');
       if (!jobId || !action) return;
       if (action === 'remove' && !confirmJobRemoval()) {
         return;
       }
       try {
-        if (action === 'refresh-log') {
+        if (action === 'pace-down' || action === 'pace-up') {
+          event.preventDefault();
+          const current = Number(button.getAttribute('data-pace-current') || 0.25);
+          const step = current >= 20 ? 2.5 : current >= 10 ? 1 : current >= 2 ? 0.25 : 0.05;
+          const nextValue = action === 'pace-down'
+            ? Math.max(0.25, current - step)
+            : current + step;
+          applyLocalJobPace(jobId, nextValue);
+          renderAll();
+          const updatedJob = await updateJobPace(jobId, nextValue);
+          mergeUpdatedJob(updatedJob);
+          renderAll();
+          await loadOverview();
+        } else if (action === 'refresh-log') {
           await refreshJobLog(jobId);
         } else {
           await postJobAction(jobId, action);

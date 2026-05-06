@@ -152,6 +152,12 @@
       margin-bottom: 12px;
     }
 
+    .field-hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
     .field.full { grid-column: 1 / -1; }
 
     label {
@@ -173,6 +179,40 @@
       border: 1px solid rgba(15, 23, 42, 0.12);
       background: rgba(255, 255, 255, 0.95);
       color: var(--text);
+    }
+
+    .spin-control {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .spin-control input {
+      text-align: center;
+    }
+
+    .spin-btn {
+      min-width: 42px;
+      padding: 12px 0;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.06);
+      color: var(--text);
+      box-shadow: none;
+    }
+
+    .spin-btn.compact {
+      min-width: 30px;
+      padding: 6px 0;
+      border-radius: 10px;
+      font-size: 14px;
+    }
+
+    .pace-adjuster {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
     }
 
     .bbox-grid {
@@ -486,7 +526,12 @@
           </div>
           <div class="field">
             <label for="minInterval">Min Interval sec</label>
-            <input id="minInterval" type="number" min="0.25" step="0.05" value="1.15" />
+            <div class="spin-control">
+              <button class="spin-btn" type="button" data-spin-target="minInterval" data-spin-direction="down" aria-label="Decrease pace interval">-</button>
+              <input id="minInterval" type="number" min="0.25" step="0.05" value="1.15" />
+              <button class="spin-btn" type="button" data-spin-target="minInterval" data-spin-direction="up" aria-label="Increase pace interval">+</button>
+            </div>
+            <div class="field-hint">Manual pace override. Active and decayed resume pace are shown in the job and dataset cards below.</div>
           </div>
           <div class="field">
             <label for="chunkCount">Chunk Count</label>

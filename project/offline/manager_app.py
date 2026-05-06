@@ -15,7 +15,7 @@ import subprocess
 import threading
 import uuid
 
-from build_offline_tiles_openmeteo import _is_coastal_sea, _try_make_is_land_fn, tile_grid_approx_50km
+from build_offline_tiles_openmeteo import _is_coastal_sea, _rate_limit_decay_state, _try_make_is_land_fn, tile_grid_approx_50km
 
 
 OFFLINE_DIR = Path(__file__).resolve().parent
@@ -336,6 +336,48 @@ def _read_db_summary(db_path: Path) -> Dict[str, Any]:
     summary["tile_km"] = _safe_float(summary["meta"].get("tile_km"), 0.0)
     summary["last_build_started_at"] = summary["meta"].get("last_build_started_at")
     summary["last_build_finished_at"] = summary["meta"].get("last_build_finished_at")
+    manager_requested_min_interval_s = _safe_float(summary["meta"].get("manager_requested_min_interval_s"), 0.0)
+    manager_applied_min_interval_s = _safe_float(summary["meta"].get("manager_applied_min_interval_s"), 0.0)
+    effective_min_interval_s = _safe_float(summary["meta"].get("min_interval_s_effective"), 0.0)
+    override_pending = (
+        manager_requested_min_interval_s > 0.0
+        and (
+            manager_applied_min_interval_s <= 0.0
+            or abs(manager_applied_min_interval_s - manager_requested_min_interval_s) > 1e-9
+        )
+    )
+    summary["rate_limit"] = {
+        "requests_total": _safe_int(summary["meta"].get("provider_rate_limit_requests_total"), 0),
+        "requests_success": _safe_int(summary["meta"].get("provider_rate_limit_requests_success"), 0),
+        "requests_429": _safe_int(summary["meta"].get("provider_rate_limit_requests_429"), 0),
+        "requests_5xx": _safe_int(summary["meta"].get("provider_rate_limit_requests_5xx"), 0),
+        "requests_network_error": _safe_int(summary["meta"].get("provider_rate_limit_requests_network_error"), 0),
+        "max_consecutive_429": _safe_int(summary["meta"].get("provider_rate_limit_max_consecutive_429"), 0),
+        "first_429_at_request": _safe_int(summary["meta"].get("provider_rate_limit_first_429_at_request"), 0),
+        "frequent_429_at_request": _safe_int(summary["meta"].get("provider_rate_limit_frequent_429_at_request"), 0),
+        "continuous_429_at_request": _safe_int(summary["meta"].get("provider_rate_limit_continuous_429_at_request"), 0),
+        "first_429_min_interval_s": _safe_float(summary["meta"].get("provider_rate_limit_first_429_min_interval_s"), 0.0),
+        "frequent_429_min_interval_s": _safe_float(summary["meta"].get("provider_rate_limit_frequent_429_min_interval_s"), 0.0),
+        "continuous_429_min_interval_s": _safe_float(summary["meta"].get("provider_rate_limit_continuous_429_min_interval_s"), 0.0),
+        "max_min_interval_s_seen": _safe_float(summary["meta"].get("provider_rate_limit_max_min_interval_s_seen"), 0.0),
+        "recommended_min_interval_s": _safe_float(summary["meta"].get("provider_rate_limit_recommended_min_interval_s"), 0.0),
+        "effective_min_interval_s": manager_requested_min_interval_s if override_pending else effective_min_interval_s,
+        "manager_requested_min_interval_s": manager_requested_min_interval_s,
+        "manager_applied_min_interval_s": manager_applied_min_interval_s,
+        "manager_override_pending": override_pending,
+        "last_429_at": summary["meta"].get("provider_rate_limit_last_429_at"),
+    }
+    requested_for_decay = manager_requested_min_interval_s or effective_min_interval_s or 1.15
+    decay = _rate_limit_decay_state(summary["meta"], requested_for_decay)
+    summary["rate_limit"].update({
+        "historical_recommended_min_interval_s": _safe_float(decay.get("historical_recommended_min_interval_s"), 0.0),
+        "decayed_recommended_min_interval_s": _safe_float(decay.get("decayed_recommended_min_interval_s"), 0.0),
+        "requested_min_interval_s": _safe_float(decay.get("requested_min_interval_s"), 1.15),
+        "cooldown_hours_elapsed": _safe_float(decay.get("cooldown_hours_elapsed"), 0.0),
+        "cooldown_hours_remaining": _safe_float(decay.get("cooldown_hours_remaining"), 0.0),
+        "decay_active": bool(decay.get("decay_active")),
+        "decay_applied": bool(decay.get("decay_applied")),
+    })
     return summary
 
 
@@ -431,11 +473,14 @@ def _spec_from_db_summary(summary: Dict[str, Any], active_process: Optional[Dict
     meta = dict(summary.get("meta") or {})
     years = dict(summary.get("years") or {})
     bbox = dict(summary.get("bbox") or {})
+    rate_limit = dict(summary.get("rate_limit") or {})
     if not years:
         years = _infer_years_from_relpath(str(summary.get("db_relpath") or ""))
     if not bbox:
         bbox = dict((_preset_by_slug("europe-iceland") or {}).get("bbox") or {})
     region = _infer_region_from_bbox(bbox)
+    default_requested_min_interval_s = 1.15
+    decay = _rate_limit_decay_state(meta, default_requested_min_interval_s)
     spec = {
         "region_slug": region["slug"],
         "region_label": region["label"],
@@ -451,7 +496,16 @@ def _spec_from_db_summary(summary: Dict[str, Any], active_process: Optional[Dict
         "ocean": "coastal",
         "coastal_sea_km": 50.0,
         "chunk_years": max(1, _safe_int(meta.get("chunk_years"), 2)),
-        "min_interval_s": max(0.25, _safe_float(meta.get("min_interval_s_effective"), 1.15)),
+        "min_interval_s": max(
+            0.25,
+            _safe_float(
+                decay.get("decayed_recommended_min_interval_s"),
+                _safe_float(
+                    rate_limit.get("recommended_min_interval_s"),
+                    _safe_float(meta.get("min_interval_s_effective"), default_requested_min_interval_s),
+                ),
+            ),
+        ),
         "chunk_count": 1,
         "chunk_index": 0,
         "pace_until_berlin_7am": False,
@@ -690,8 +744,24 @@ def _discover_datasets(registry: Dict[str, Any], active_processes: Optional[Dict
     return datasets
 
 
+def _effective_spec_for_launch(job: Dict[str, Any]) -> Dict[str, Any]:
+    spec = dict(job.get("spec") or {})
+    db_relpath = str(job.get("db_relpath") or "")
+    if not db_relpath:
+        return spec
+    db_summary = _read_db_summary(_abs_from_rel(db_relpath))
+    meta = dict(db_summary.get("meta") or {})
+    requested_min_interval_s = max(0.25, _safe_float(spec.get("min_interval_s"), 1.15))
+    decay = _rate_limit_decay_state(meta, requested_min_interval_s)
+    spec["min_interval_s"] = max(
+        requested_min_interval_s,
+        _safe_float(decay.get("decayed_recommended_min_interval_s"), requested_min_interval_s),
+    )
+    return spec
+
+
 def _command_for_job(job: Dict[str, Any]) -> List[str]:
-    spec = job["spec"]
+    spec = _effective_spec_for_launch(job)
     py = REPO_DIR / ".venv" / "bin" / "python"
     python_cmd = str(py if py.exists() else "python3")
     command = [
@@ -787,6 +857,39 @@ def _dataset_for_control(registry: Dict[str, Any], db_relpath: str) -> Dict[str,
 def _restart_job(job: Dict[str, Any], reason: str) -> Dict[str, Any]:
     job[f"{reason}_at"] = utc_now_iso()
     return _start_job_process(job)
+
+
+def _set_job_min_interval(job: Dict[str, Any], min_interval_s: float) -> Dict[str, Any]:
+    requested = max(0.25, float(min_interval_s))
+    spec = dict(job.get("spec") or {})
+    spec["min_interval_s"] = requested
+    job["spec"] = spec
+    try:
+        job["estimate"] = _estimate(spec)
+    except Exception:
+        pass
+
+    db_relpath = str(job.get("db_relpath") or "")
+    if db_relpath:
+        db_path = _abs_from_rel(db_relpath)
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                try:
+                    conn.execute(
+                        "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        ("manager_requested_min_interval_s", str(round(requested, 3))),
+                    )
+                    conn.execute(
+                        "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        ("min_interval_s_effective", str(round(requested, 3))),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+    return job
 
 
 @app.route("/")
@@ -891,6 +994,21 @@ def api_restart_job(job_id: str):
 @app.post("/api/jobs/<job_id>/resume")
 def api_resume_job(job_id: str):
     return api_restart_job(job_id)
+
+
+@app.post("/api/jobs/<job_id>/pace")
+def api_update_job_pace(job_id: str):
+    payload = _parse_json_request()
+    requested = max(0.25, _safe_float(payload.get("min_interval_s"), 1.15))
+    with LOCK:
+        registry = _sync_registry_state(_load_registry())
+        job = _find_job(registry, job_id)
+        if not job:
+            return jsonify({"error": "job_not_found"}), 404
+        _set_job_min_interval(job, requested)
+        _save_registry(registry)
+        refreshed = _job_runtime_state(job, _read_db_summary(_abs_from_rel(str(job.get("db_relpath") or ""))))
+    return jsonify(refreshed)
 
 
 @app.delete("/api/jobs/<job_id>")

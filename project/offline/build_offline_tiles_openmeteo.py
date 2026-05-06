@@ -41,6 +41,8 @@ from weather import compute_wind_statistics  # type: ignore
 
 
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
+RATE_LIMIT_DECAY_COOLDOWN_HOURS = 24.0
+RATE_LIMIT_DECAY_HALF_LIFE_HOURS = 24.0
 
 
 def utc_now_iso() -> str:
@@ -80,6 +82,195 @@ class RateLimiter:
         self._last_ts = time.time()
 
 
+@dataclass
+class ProviderRateLimitTelemetry:
+    initial_min_interval_s: float
+    requests_total: int = 0
+    requests_success: int = 0
+    requests_429: int = 0
+    requests_5xx: int = 0
+    requests_network_error: int = 0
+    consecutive_429_current: int = 0
+    max_consecutive_429: int = 0
+    first_429_at_request: Optional[int] = None
+    first_429_min_interval_s: Optional[float] = None
+    frequent_429_at_request: Optional[int] = None
+    frequent_429_min_interval_s: Optional[float] = None
+    continuous_429_at_request: Optional[int] = None
+    continuous_429_min_interval_s: Optional[float] = None
+    last_429_at: Optional[str] = None
+    max_min_interval_s_seen: float = 0.0
+    recommended_min_interval_s: float = 0.0
+
+    def __post_init__(self) -> None:
+        base = max(0.25, float(self.initial_min_interval_s))
+        self.max_min_interval_s_seen = base
+        self.recommended_min_interval_s = base
+
+    def _touch_interval(self, rl: RateLimiter) -> None:
+        try:
+            cur = max(0.25, float(rl.min_interval_s))
+        except Exception:
+            cur = max(0.25, float(self.initial_min_interval_s))
+        self.max_min_interval_s_seen = max(float(self.max_min_interval_s_seen), cur)
+
+    def record_success(self, rl: RateLimiter) -> None:
+        self.requests_total += 1
+        self.requests_success += 1
+        self.consecutive_429_current = 0
+        self._touch_interval(rl)
+
+    def record_network_error(self, rl: RateLimiter) -> None:
+        self.requests_total += 1
+        self.requests_network_error += 1
+        self.consecutive_429_current = 0
+        self._touch_interval(rl)
+
+    def record_server_error(self, rl: RateLimiter) -> None:
+        self.requests_total += 1
+        self.requests_5xx += 1
+        self.consecutive_429_current = 0
+        self._touch_interval(rl)
+
+    def record_429(self, rl: RateLimiter) -> None:
+        self.requests_total += 1
+        self.requests_429 += 1
+        self.consecutive_429_current += 1
+        self.max_consecutive_429 = max(self.max_consecutive_429, self.consecutive_429_current)
+        self.last_429_at = utc_now_iso()
+        self._touch_interval(rl)
+        cur = float(self.max_min_interval_s_seen)
+        self.recommended_min_interval_s = max(float(self.recommended_min_interval_s), cur * 1.15)
+        if self.first_429_at_request is None:
+            self.first_429_at_request = int(self.requests_total)
+            self.first_429_min_interval_s = cur
+        if self.requests_429 >= 5 and self.frequent_429_at_request is None:
+            self.frequent_429_at_request = int(self.requests_total)
+            self.frequent_429_min_interval_s = cur
+        if self.consecutive_429_current >= 3 and self.continuous_429_at_request is None:
+            self.continuous_429_at_request = int(self.requests_total)
+            self.continuous_429_min_interval_s = cur
+
+
+def _safe_meta_float(raw: Any) -> Optional[float]:
+    try:
+        val = float(raw)
+        if val > 0.0 and math.isfinite(val):
+            return float(val)
+    except Exception:
+        pass
+    return None
+
+
+def _historical_recommended_min_interval_s(meta: Dict[str, Any]) -> Optional[float]:
+    candidates = [
+        meta.get("provider_rate_limit_recommended_min_interval_s"),
+        meta.get("provider_rate_limit_continuous_429_min_interval_s"),
+        meta.get("provider_rate_limit_frequent_429_min_interval_s"),
+        meta.get("provider_rate_limit_first_429_min_interval_s"),
+    ]
+    vals = [v for v in (_safe_meta_float(item) for item in candidates) if v is not None]
+    if not vals:
+        return None
+    return max(vals)
+
+
+def _parse_utc_iso_datetime(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _rate_limit_decay_state(
+    meta: Dict[str, Any],
+    requested_min_interval_s: float,
+    now_utc: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    requested = max(0.25, float(requested_min_interval_s))
+    historical = _historical_recommended_min_interval_s(meta)
+    last_429_at = _parse_utc_iso_datetime(meta.get("provider_rate_limit_last_429_at"))
+    state: Dict[str, Any] = {
+        "requested_min_interval_s": requested,
+        "historical_recommended_min_interval_s": historical,
+        "decayed_recommended_min_interval_s": historical,
+        "last_429_at": last_429_at.isoformat(timespec="seconds") if last_429_at is not None else None,
+        "cooldown_hours_elapsed": 0.0,
+        "cooldown_hours_remaining": 0.0,
+        "decay_active": False,
+        "decay_applied": False,
+    }
+    if historical is None or historical <= requested or last_429_at is None:
+        if historical is not None:
+            state["decayed_recommended_min_interval_s"] = max(requested, float(historical))
+        return state
+
+    now = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    elapsed_hours = max(0.0, (now - last_429_at).total_seconds() / 3600.0)
+    remaining_hours = max(0.0, RATE_LIMIT_DECAY_COOLDOWN_HOURS - elapsed_hours)
+    state["cooldown_hours_elapsed"] = elapsed_hours
+    state["cooldown_hours_remaining"] = remaining_hours
+    state["decay_active"] = remaining_hours <= 0.0
+
+    if remaining_hours > 0.0:
+        state["decayed_recommended_min_interval_s"] = float(historical)
+        return state
+
+    decay_hours = max(0.0, elapsed_hours - RATE_LIMIT_DECAY_COOLDOWN_HOURS)
+    decay_factor = math.pow(0.5, decay_hours / RATE_LIMIT_DECAY_HALF_LIFE_HOURS) if RATE_LIMIT_DECAY_HALF_LIFE_HOURS > 0 else 0.0
+    decayed = requested + (float(historical) - requested) * decay_factor
+    decayed = max(requested, float(decayed))
+    state["decayed_recommended_min_interval_s"] = decayed
+    state["decay_applied"] = decayed < float(historical) - 1e-9
+    return state
+
+
+def _decayed_recommended_min_interval_s(
+    meta: Dict[str, Any],
+    requested_min_interval_s: float,
+    now_utc: Optional[datetime] = None,
+) -> Optional[float]:
+    return _rate_limit_decay_state(meta, requested_min_interval_s, now_utc=now_utc).get("decayed_recommended_min_interval_s")
+
+
+def _store_provider_rate_limit_telemetry(conn: sqlite3.Connection, telemetry: ProviderRateLimitTelemetry) -> None:
+    entries = {
+        "provider_rate_limit_requests_total": telemetry.requests_total,
+        "provider_rate_limit_requests_success": telemetry.requests_success,
+        "provider_rate_limit_requests_429": telemetry.requests_429,
+        "provider_rate_limit_requests_5xx": telemetry.requests_5xx,
+        "provider_rate_limit_requests_network_error": telemetry.requests_network_error,
+        "provider_rate_limit_max_consecutive_429": telemetry.max_consecutive_429,
+        "provider_rate_limit_current_consecutive_429": telemetry.consecutive_429_current,
+        "provider_rate_limit_max_min_interval_s_seen": round(float(telemetry.max_min_interval_s_seen), 3),
+        "provider_rate_limit_recommended_min_interval_s": round(float(telemetry.recommended_min_interval_s), 3),
+    }
+    optional_entries = {
+        "provider_rate_limit_first_429_at_request": telemetry.first_429_at_request,
+        "provider_rate_limit_first_429_min_interval_s": telemetry.first_429_min_interval_s,
+        "provider_rate_limit_frequent_429_at_request": telemetry.frequent_429_at_request,
+        "provider_rate_limit_frequent_429_min_interval_s": telemetry.frequent_429_min_interval_s,
+        "provider_rate_limit_continuous_429_at_request": telemetry.continuous_429_at_request,
+        "provider_rate_limit_continuous_429_min_interval_s": telemetry.continuous_429_min_interval_s,
+        "provider_rate_limit_last_429_at": telemetry.last_429_at,
+    }
+    for key, value in entries.items():
+        meta_set(conn, key, str(value))
+    for key, value in optional_entries.items():
+        if value is None:
+            continue
+        if isinstance(value, float):
+            meta_set(conn, key, str(round(float(value), 3)))
+        else:
+            meta_set(conn, key, str(value))
+
+
 def build_url_daily(lat: float, lon: float, start: date, end: date) -> str:
     params = (
         f"latitude={lat:.6f}&longitude={lon:.6f}"
@@ -100,7 +291,12 @@ def build_url_hourly(lat: float, lon: float, start: date, end: date) -> str:
     return f"{OPEN_METEO_ARCHIVE}?{params}"
 
 
-def get_json_with_retries(url: str, rl: RateLimiter, timeout_s: int = 90) -> dict:
+def get_json_with_retries(
+    url: str,
+    rl: RateLimiter,
+    timeout_s: int = 90,
+    telemetry: Optional[ProviderRateLimitTelemetry] = None,
+) -> dict:
     """GET JSON with retries.
 
     - On HTTP 429: exponentially back off and also slow down subsequent requests via RateLimiter.bump().
@@ -115,17 +311,23 @@ def get_json_with_retries(url: str, rl: RateLimiter, timeout_s: int = 90) -> dic
             resp = requests.get(url, timeout=timeout_s)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_err = e
+            if telemetry is not None:
+                telemetry.record_network_error(rl)
             if attempt < len(delays):
                 time.sleep(delays[attempt])
                 continue
             raise RuntimeError(f"Network error: {e}")
 
         if resp.status_code == 200:
+            if telemetry is not None:
+                telemetry.record_success(rl)
             return resp.json()
 
         if resp.status_code == 429:
             # We are being rate-limited; slow down future requests.
             rl.bump(factor=1.35)
+            if telemetry is not None:
+                telemetry.record_429(rl)
             if attempt < len(delays):
                 # Add small jitter to avoid synchronizing with other clients.
                 jitter = 0.25 * (1.0 + (attempt % 3))
@@ -135,6 +337,8 @@ def get_json_with_retries(url: str, rl: RateLimiter, timeout_s: int = 90) -> dic
 
         # Retry on transient server errors.
         if resp.status_code in (500, 502, 503, 504):
+            if telemetry is not None:
+                telemetry.record_server_error(rl)
             if attempt < len(delays):
                 time.sleep(delays[attempt])
                 continue
@@ -292,6 +496,29 @@ def meta_set(conn: sqlite3.Connection, key: str, value: str) -> None:
         "INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (str(key), str(value)),
     )
+
+
+def _apply_runtime_pace_override(conn: sqlite3.Connection, rl: RateLimiter) -> bool:
+    try:
+        meta = {str(row[0]): row[1] for row in conn.execute("SELECT key, value FROM meta WHERE key IN (?, ?)", (
+            "manager_requested_min_interval_s",
+            "manager_applied_min_interval_s",
+        )).fetchall()}
+    except Exception:
+        return False
+
+    requested = _safe_meta_float(meta.get("manager_requested_min_interval_s"))
+    applied = _safe_meta_float(meta.get("manager_applied_min_interval_s"))
+    if requested is None:
+        return False
+    requested = max(0.25, float(requested))
+    if applied is not None and abs(float(applied) - requested) < 1e-9:
+        return False
+
+    rl.min_interval_s = requested
+    meta_set(conn, "manager_applied_min_interval_s", str(round(requested, 3)))
+    meta_set(conn, "min_interval_s_effective", str(round(requested, 3)))
+    return True
 
 
 def tile_mark_state(conn: sqlite3.Connection, tile_id: str, status: str, error: Optional[str] = None) -> None:
@@ -600,6 +827,7 @@ def process_tile(
     end_year: int,
     chunk_years: int,
     rl: RateLimiter,
+    telemetry: Optional[ProviderRateLimitTelemetry] = None,
 ) -> Tuple[List[dict], List[dict]]:
     """Download inputs for one tile and compute all derived outputs.
 
@@ -609,9 +837,9 @@ def process_tile(
     """
     acc = make_empty_accumulators()
     for d0, d1 in iter_year_chunks(start_year, end_year, chunk_years):
-        j_daily = get_json_with_retries(build_url_daily(t.lat, t.lon, d0, d1), rl)
+        j_daily = get_json_with_retries(build_url_daily(t.lat, t.lon, d0, d1), rl, telemetry=telemetry)
         parse_daily_into_accumulators(j_daily, acc)
-        j_hourly = get_json_with_retries(build_url_hourly(t.lat, t.lon, d0, d1), rl)
+        j_hourly = get_json_with_retries(build_url_hourly(t.lat, t.lon, d0, d1), rl, telemetry=telemetry)
         parse_hourly_into_accumulators(j_hourly, acc)
     return compute_climatology_rows(acc), compute_riding_hourly_rows(acc)
 
@@ -805,11 +1033,21 @@ def main() -> None:
         )
     )
 
-    rl = RateLimiter(min_interval_s_effective)
-
     conn = sqlite3.connect(str(db_path))
     try:
         ensure_schema(conn, schema_path)
+
+        try:
+            existing_meta = {str(row[0]): row[1] for row in conn.execute("SELECT key, value FROM meta").fetchall()}
+        except Exception:
+            existing_meta = {}
+
+        historical_min_interval_s = _decayed_recommended_min_interval_s(existing_meta, float(min_interval_s_effective))
+        if historical_min_interval_s is not None:
+            min_interval_s_effective = max(float(min_interval_s_effective), float(historical_min_interval_s))
+
+        rl = RateLimiter(min_interval_s_effective)
+        telemetry = ProviderRateLimitTelemetry(min_interval_s_effective)
 
         # Meta
         meta_set(conn, "provider", "open-meteo")
@@ -825,6 +1063,7 @@ def main() -> None:
         meta_set(conn, "hourly_riding_hours", json.dumps([10, 12, 14, 16]))
         meta_set(conn, "min_interval_s_effective", str(float(min_interval_s_effective)))
         meta_set(conn, "last_build_started_at", utc_now_iso())
+        _store_provider_rate_limit_telemetry(conn, telemetry)
         conn.commit()
 
         processed = 0
@@ -833,6 +1072,9 @@ def main() -> None:
         t_start = time.time()
         last_progress_len = 0
         for idx, t in enumerate(selected, start=1):
+            if _apply_runtime_pace_override(conn, rl):
+                _store_provider_rate_limit_telemetry(conn, telemetry)
+                conn.commit()
             if tile_is_done(conn, t.tile_id):
                 continue
             upsert_tile(conn, t)
@@ -840,12 +1082,14 @@ def main() -> None:
             conn.commit()
             try:
                 t0 = time.time()
-                rows, riding_rows = process_tile(t, args.start_year, args.end_year, args.chunk_years, rl)
+                rows, riding_rows = process_tile(t, args.start_year, args.end_year, args.chunk_years, rl, telemetry=telemetry)
                 # Atomic replace per tile
                 conn.execute("BEGIN")
                 replace_climatology_rows(conn, t.tile_id, rows)
                 replace_riding_hourly_rows(conn, t.tile_id, riding_rows)
                 tile_mark_state(conn, t.tile_id, "done", error=None)
+                meta_set(conn, "min_interval_s_effective", str(round(float(rl.min_interval_s), 3)))
+                _store_provider_rate_limit_telemetry(conn, telemetry)
                 conn.commit()
                 processed += 1
                 attempted += 1
@@ -871,6 +1115,8 @@ def main() -> None:
                 except Exception:
                     pass
                 tile_mark_state(conn, t.tile_id, "error", error=str(e))
+                meta_set(conn, "min_interval_s_effective", str(round(float(rl.min_interval_s), 3)))
+                _store_provider_rate_limit_telemetry(conn, telemetry)
                 conn.commit()
                 errors += 1
                 attempted += 1
@@ -893,8 +1139,19 @@ def main() -> None:
             pass
 
         meta_set(conn, "last_build_finished_at", utc_now_iso())
+        meta_set(conn, "min_interval_s_effective", str(round(float(rl.min_interval_s), 3)))
+        _store_provider_rate_limit_telemetry(conn, telemetry)
         conn.commit()
-        print(json.dumps({"processed_tiles": processed, "finished_at": utc_now_iso()}, indent=2))
+        print(json.dumps({
+            "processed_tiles": processed,
+            "finished_at": utc_now_iso(),
+            "provider_rate_limit": {
+                "requests_total": telemetry.requests_total,
+                "requests_429": telemetry.requests_429,
+                "max_consecutive_429": telemetry.max_consecutive_429,
+                "recommended_min_interval_s": round(float(telemetry.recommended_min_interval_s), 3),
+            },
+        }, indent=2))
     finally:
         conn.close()
 
