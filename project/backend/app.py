@@ -1774,30 +1774,65 @@ def _get_offline_stats(lat: float, lon: float, month: int, day: int) -> Optional
 PROGRESS: Dict[str, Dict[str, Any]] = {}
 PROGRESS_LOCK = threading.Lock()
 
-# Global SSE stream control to prevent parallel heavy streams
+# Session-scoped SSE stream control to prevent parallel heavy streams
 STREAM_LOCK = threading.Lock()
-STREAM_TOKEN = 0
+STREAM_TOKENS_BY_SESSION: Dict[str, int] = {}
 
-def progress_init(job_id: str, total: int) -> None:
-    with PROGRESS_LOCK:
-        PROGRESS[job_id] = {"total": int(total), "completed": 0, "done": False}
+def _progress_key(job_id: str, session_id: Optional[str]) -> str:
+    sid = str(session_id) if _is_valid_session_id(session_id) else 'global'
+    return f'{sid}:{job_id}'
 
-def progress_tick(job_id: str, inc: int = 1) -> None:
+
+def _empty_progress() -> Dict[str, Any]:
+    return {"total": 0, "completed": 0, "done": True}
+
+
+def _issue_stream_token(session_id: Optional[str], is_dry_run: bool) -> int:
+    if is_dry_run:
+        return 0
+    sid = str(session_id) if _is_valid_session_id(session_id) else 'global'
+    with STREAM_LOCK:
+        token = int(STREAM_TOKENS_BY_SESSION.get(sid, 0)) + 1
+        STREAM_TOKENS_BY_SESSION[sid] = token
+        return token
+
+
+def _is_stream_token_current(session_id: Optional[str], token: int, is_dry_run: bool) -> bool:
+    if is_dry_run:
+        return True
+    sid = str(session_id) if _is_valid_session_id(session_id) else 'global'
+    with STREAM_LOCK:
+        return int(STREAM_TOKENS_BY_SESSION.get(sid, 0)) == int(token)
+
+
+def progress_init(job_id: str, total: int, session_id: Optional[str] = None) -> None:
     with PROGRESS_LOCK:
-        st = PROGRESS.get(job_id)
+        PROGRESS[_progress_key(job_id, session_id)] = {
+            "total": int(total),
+            "completed": 0,
+            "done": False,
+            "session_id": str(session_id) if _is_valid_session_id(session_id) else '',
+        }
+
+def progress_tick(job_id: str, inc: int = 1, session_id: Optional[str] = None) -> None:
+    with PROGRESS_LOCK:
+        st = PROGRESS.get(_progress_key(job_id, session_id))
         if st:
             st["completed"] = min(st["completed"] + inc, st["total"])
 
-def progress_done(job_id: str) -> None:
+def progress_done(job_id: str, session_id: Optional[str] = None) -> None:
     with PROGRESS_LOCK:
-        st = PROGRESS.get(job_id)
+        st = PROGRESS.get(_progress_key(job_id, session_id))
         if st:
             st["completed"] = st.get("total", st.get("completed", 0))
             st["done"] = True
 
-def _get_progress(job_id: str) -> Dict[str, Any]:
+def _get_progress(job_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     with PROGRESS_LOCK:
-        return dict(PROGRESS.get(job_id, {"total": 0, "completed": 0, "done": False}))
+        st = PROGRESS.get(_progress_key(job_id, session_id))
+        if not st:
+            return _empty_progress()
+        return dict(st)
 
 
 # -------------------- Session persistence --------------------
@@ -1994,6 +2029,7 @@ def api_map():
     gpx_override = request.args.get('gpx_path')
     tour_planning_param = request.args.get('tour_planning', '1')  # default ON
     job_id = request.args.get('job_id')
+    session_id = _resolve_request_session_id(create=True)
     if not date or len(date) != 5 or '-' not in date:
         return jsonify({"error": "Provide date as MM-DD"}), 400
     try:
@@ -2002,7 +2038,7 @@ def api_map():
         return jsonify({"error": "Invalid date format"}), 400
 
     try:
-        gpx_path = _resolve_session_gpx(gpx_override)
+        gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
         log.info('[STEP] Loading GPX track: %s', gpx_path)
         # Optional sampling controls
         step_km_param = request.args.get('step_km')
@@ -2029,7 +2065,7 @@ def api_map():
             grid_deg = 0.25
         log.info('[STEP] Sampling route points: %d points sampled; first=%s', len(sampled_points), sampled_points[0])
         if job_id:
-            progress_init(job_id, len(sampled_points))
+            progress_init(job_id, len(sampled_points), session_id=str(session_id) if session_id else None)
     except Exception as e:
         return jsonify({"error": f"Route error: {e}"}), 500
 
@@ -2267,7 +2303,7 @@ def api_map():
                         "stats_preview": feature["properties"],
                     })
                 if job_id:
-                    progress_tick(job_id, 1)
+                    progress_tick(job_id, 1, session_id=str(session_id) if session_id else None)
                 # Write per-point debug artifacts
                 try:
                     (DEBUG_DIR / f'weather_raw_point_{i}.csv').write_text(df.to_csv(index=False))
@@ -2277,7 +2313,7 @@ def api_map():
             except Exception as e:
                 log.warning('Point %d: weather/stats error: %s', i, e)
                 if job_id:
-                    progress_tick(job_id, 1)
+                    progress_tick(job_id, 1, session_id=str(session_id) if session_id else None)
                 continue
 
     stations_collection = {"type": "FeatureCollection", "features": stations_features}
@@ -2302,7 +2338,7 @@ def api_map():
         pass
 
     if job_id:
-        progress_done(job_id)
+        progress_done(job_id, session_id=str(session_id) if session_id else None)
     return jsonify({
         "route": route_feature,
         "stations": stations_collection,
@@ -2318,10 +2354,12 @@ def debug_files(filename: str):
 
 @app.route('/api/progress/<job_id>')
 def api_progress(job_id: str):
+    session_id = _resolve_request_session_id(create=True)
+
     def event_stream():
         # Emit progress until done
         while True:
-            st = _get_progress(job_id)
+            st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
             msg = __import__('json').dumps(st)
             yield f"data: {msg}\n\n"
             if st.get('done'):
@@ -2405,14 +2443,9 @@ def api_map_stream():
         log.info('[SSE] map_stream start date=%s mode=%s', date, fetch_mode)
         session_state = load_session_state(session_id=str(session_id) if session_id else None)
         # Prevent parallel heavy streams: assign token; dry-run streams do not cancel main
-        local_token = None
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
         offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
-        with STREAM_LOCK:
-            global STREAM_TOKEN
-            if not is_dry_run:
-                STREAM_TOKEN += 1
-            local_token = STREAM_TOKEN
+        local_token = _issue_stream_token(str(session_id) if session_id else None, is_dry_run)
         try:
             gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
             gpx_path_str = str(gpx_path)
@@ -2780,7 +2813,7 @@ def api_map_stream():
                 "total": total
             })
             # Abort if a newer non-dry-run stream started
-            if (not is_dry_run) and (local_token != STREAM_TOKEN):
+            if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
                 log.info('[SSE] stream cancelled before route emit')
                 return
             yield f"event: route\ndata: {route_msg}\n\n"
@@ -2958,7 +2991,7 @@ def api_map_stream():
                 }
             })
             # Cancel check before profile emit
-            if (not is_dry_run) and (local_token != STREAM_TOKEN):
+            if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
                 log.info('[SSE] stream cancelled before profile emit')
                 return
             yield f"event: profile\ndata: {prof_msg}\n\n"
@@ -3471,7 +3504,7 @@ def api_map_stream():
 
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
-                if (not is_dry_run) and (local_token != STREAM_TOKEN):
+                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
                     log.info('[SSE] stream cancelled during station loop')
                     return
                 try:
@@ -3673,7 +3706,7 @@ def api_map_stream():
 
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
-                if (not is_dry_run) and (local_token != STREAM_TOKEN):
+                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
                     log.info('[SSE] stream cancelled during station loop')
                     return
                 try:
