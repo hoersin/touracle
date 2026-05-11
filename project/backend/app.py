@@ -1,9 +1,10 @@
-from flask import Flask, jsonify, send_from_directory, request, Response
+from flask import Flask, jsonify, send_from_directory, request, Response, g, has_request_context
 from pathlib import Path
 from typing import Dict, Any, Optional
 import os
 import time
 import threading
+import uuid
 import pandas as pd
 import datetime as _dt
 import math
@@ -151,7 +152,9 @@ def _ensure_temperature_summary_fields(stats: Any) -> Any:
 UPLOAD_DIR = BASE_DIR / 'data'
 UPLOAD_DIR.mkdir(exist_ok=True)
 SESSION_FILE = DATA_DIR / 'session_state.json'
-SESSION_STATE: Dict[str, Any] = {
+SESSION_COOKIE_NAME = 'touracle_session_id'
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
+SESSION_STATE_DEFAULTS: Dict[str, Any] = {
     "last_gpx_path": "",
     "last_gpx_name": "",
     "start_date": "",
@@ -161,6 +164,177 @@ SESSION_STATE: Dict[str, Any] = {
     "num_years": 10,
     "reverse": False,
 }
+SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+SESSION_STORE_LOCK = threading.Lock()
+SESSION_STORE_LOADED = False
+
+
+def _new_session_state() -> Dict[str, Any]:
+    return dict(SESSION_STATE_DEFAULTS)
+
+
+def _is_valid_session_id(value: Any) -> bool:
+    try:
+        text = str(value or '').strip()
+        if len(text) < 16 or len(text) > 64:
+            return False
+        return all(ch.isalnum() or ch in ('-', '_') for ch in text)
+    except Exception:
+        return False
+
+
+def _new_session_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _normalize_session_state(state: Dict[str, Any] | None) -> Dict[str, Any]:
+    normalized = _new_session_state()
+    if isinstance(state, dict):
+        for key, value in state.items():
+            if value is not None:
+                normalized[key] = value
+    if 'tour_days' in normalized:
+        try:
+            normalized['tour_days'] = int(normalized['tour_days'])
+        except Exception:
+            normalized['tour_days'] = SESSION_STATE_DEFAULTS['tour_days']
+    if 'glyph_spacing_km' in normalized:
+        try:
+            normalized['glyph_spacing_km'] = float(normalized['glyph_spacing_km'])
+        except Exception:
+            normalized['glyph_spacing_km'] = SESSION_STATE_DEFAULTS['glyph_spacing_km']
+    if 'first_year' in normalized:
+        try:
+            normalized['first_year'] = int(normalized['first_year'])
+        except Exception:
+            normalized['first_year'] = SESSION_STATE_DEFAULTS['first_year']
+    if 'num_years' in normalized:
+        try:
+            normalized['num_years'] = int(normalized['num_years'])
+        except Exception:
+            normalized['num_years'] = SESSION_STATE_DEFAULTS['num_years']
+    normalized['reverse'] = bool(normalized.get('reverse'))
+    try:
+        normalized['_updated_at'] = float(normalized.get('_updated_at') or time.time())
+    except Exception:
+        normalized['_updated_at'] = time.time()
+    return normalized
+
+
+def _write_session_store_locked() -> None:
+    import json
+
+    payload = {
+        'sessions': {sid: _normalize_session_state(state) for sid, state in SESSION_STORE.items() if _is_valid_session_id(sid)}
+    }
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = SESSION_FILE.with_name(f'{SESSION_FILE.name}.tmp')
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, SESSION_FILE)
+
+
+def _load_session_store_locked() -> None:
+    import json
+
+    global SESSION_STORE_LOADED, SESSION_STORE
+    if SESSION_STORE_LOADED:
+        return
+    SESSION_STORE = {}
+    try:
+        if SESSION_FILE.exists():
+            with open(SESSION_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get('sessions'), dict):
+                for session_id, state in data['sessions'].items():
+                    if _is_valid_session_id(session_id) and isinstance(state, dict):
+                        SESSION_STORE[session_id] = _normalize_session_state(state)
+            elif isinstance(data, dict):
+                # Backward-compatible migration from the previous single-session file.
+                SESSION_STORE['legacy_session'] = _normalize_session_state(data)
+        SESSION_STORE_LOADED = True
+    except Exception:
+        logging.getLogger('pipeline').warning('[SESSION] Corrupted session JSON; starting fresh')
+        SESSION_STORE = {}
+        SESSION_STORE_LOADED = True
+
+
+def _select_restore_session_id_locked() -> Optional[str]:
+    if not SESSION_STORE:
+        return None
+    try:
+        return max(
+            SESSION_STORE.items(),
+            key=lambda item: float(item[1].get('_updated_at') or 0.0),
+        )[0]
+    except Exception:
+        try:
+            return next(iter(SESSION_STORE.keys()))
+        except Exception:
+            return None
+
+
+def _resolve_request_session_id(create: bool = True) -> Optional[str]:
+    if not has_request_context():
+        return None
+    current = getattr(g, 'touracle_session_id', None)
+    if _is_valid_session_id(current):
+        return str(current)
+    cookie_sid = request.cookies.get(SESSION_COOKIE_NAME)
+    if _is_valid_session_id(cookie_sid):
+        g.touracle_session_id = str(cookie_sid)
+        g.touracle_session_cookie_needs_set = False
+        return str(cookie_sid)
+    if not create:
+        return None
+    session_id = _new_session_id()
+    g.touracle_session_id = session_id
+    g.touracle_session_cookie_needs_set = True
+    return session_id
+
+
+@app.after_request
+def _attach_session_cookie(response: Response) -> Response:
+    try:
+        if has_request_context() and getattr(g, 'touracle_session_cookie_needs_set', False):
+            session_id = getattr(g, 'touracle_session_id', None)
+            if _is_valid_session_id(session_id):
+                response.set_cookie(
+                    SESSION_COOKIE_NAME,
+                    str(session_id),
+                    max_age=SESSION_COOKIE_MAX_AGE,
+                    httponly=True,
+                    samesite='Lax',
+                )
+    except Exception:
+        pass
+    return response
+
+
+def _session_upload_dir(session_id: str) -> Path:
+    path = DATA_DIR / 'sessions' / session_id / 'uploads'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _resolve_session_gpx(preferred: str | Path | None = None, session_id: Optional[str] = None) -> Path:
+    try:
+        if preferred:
+            preferred_path = Path(preferred)
+            if preferred_path.exists() and preferred_path.suffix.lower() == '.gpx':
+                return preferred_path
+    except Exception:
+        pass
+    try:
+        st = load_session_state(session_id=session_id)
+        session_path = st.get('last_gpx_path')
+        if session_path:
+            path = Path(str(session_path))
+            if path.exists() and path.suffix.lower() == '.gpx':
+                return path
+    except Exception:
+        pass
+    return GPX_FILE
 
 
 def _latest_available_gpx() -> Optional[Path]:
@@ -1627,58 +1801,42 @@ def _get_progress(job_id: str) -> Dict[str, Any]:
 
 
 # -------------------- Session persistence --------------------
-def load_session_state() -> Dict[str, Any]:
-    import json
-    global SESSION_STATE
-    try:
-        if SESSION_FILE.exists():
-            with open(SESSION_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    SESSION_STATE.update(data)
-                    logging.getLogger('pipeline').info('[SESSION] Restored state')
-        else:
-            # Create with defaults
-            try:
-                with open(SESSION_FILE, 'w', encoding='utf-8') as f:
-                    json.dump(SESSION_STATE, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-    except Exception:
-        logging.getLogger('pipeline').warning('[SESSION] Corrupted session JSON; starting fresh')
-    return dict(SESSION_STATE)
+def load_session_state(session_id: Optional[str] = None) -> Dict[str, Any]:
+    if session_id is None:
+        session_id = _resolve_request_session_id(create=True)
+    with SESSION_STORE_LOCK:
+        _load_session_store_locked()
+        selected_session_id = session_id
+        if not _is_valid_session_id(selected_session_id):
+            selected_session_id = _select_restore_session_id_locked()
+        if not _is_valid_session_id(selected_session_id):
+            selected_session_id = _new_session_id()
+        state = SESSION_STORE.get(str(selected_session_id))
+        if state is None:
+            state = _normalize_session_state(None)
+            SESSION_STORE[str(selected_session_id)] = state
+            _write_session_store_locked()
+        return dict(state)
 
 
-def save_session_state(updates: Dict[str, Any]) -> None:
-    import json
-    global SESSION_STATE
+def save_session_state(updates: Dict[str, Any], session_id: Optional[str] = None) -> None:
     try:
         log.info('[SESSION] Saving state')
-        # Merge updates into current state and normalize types
-        st = dict(SESSION_STATE)
-        st.update({
-            k: (v if not isinstance(v, str) else v)
-            for k, v in updates.items()
-            if v is not None
-        })
-        # Normalize booleans/ints for known keys
-        if 'tour_days' in st:
-            try: st['tour_days'] = int(st['tour_days'])
-            except Exception: pass
-        if 'glyph_spacing_km' in st:
-            try: st['glyph_spacing_km'] = float(st['glyph_spacing_km'])
-            except Exception: pass
-        if 'first_year' in st:
-            try: st['first_year'] = int(st['first_year'])
-            except Exception: pass
-        if 'num_years' in st:
-            try: st['num_years'] = int(st['num_years'])
-            except Exception: pass
-        if 'reverse' in st:
-            st['reverse'] = bool(st['reverse'])
-        SESSION_STATE.update(st)
-        with open(SESSION_FILE, 'w', encoding='utf-8') as f:
-            json.dump(SESSION_STATE, f, ensure_ascii=False, indent=2)
+        if session_id is None:
+            session_id = _resolve_request_session_id(create=True)
+        with SESSION_STORE_LOCK:
+            _load_session_store_locked()
+            if not _is_valid_session_id(session_id):
+                session_id = _select_restore_session_id_locked() or _new_session_id()
+            state = dict(SESSION_STORE.get(str(session_id)) or _normalize_session_state(None))
+            state.update({
+                key: value
+                for key, value in updates.items()
+                if value is not None
+            })
+            state['_updated_at'] = time.time()
+            SESSION_STORE[str(session_id)] = _normalize_session_state(state)
+            _write_session_store_locked()
     except Exception as e:
         log.warning('[SESSION] Save failed: %s', e)
 
@@ -1803,6 +1961,7 @@ def ne_10m_land_europe_geojson():
 @app.route('/api/upload_gpx', methods=['POST'])
 def upload_gpx():
     try:
+        session_id = _resolve_request_session_id(create=True)
         f = request.files.get('file')
         if not f:
             return jsonify({"error": "No file uploaded"}), 400
@@ -1814,13 +1973,14 @@ def upload_gpx():
         if not name.lower().endswith('.gpx'):
             return jsonify({"error": "Only .gpx files allowed"}), 400
         ts = int(time.time())
-        safe_name = f"uploaded_{ts}.gpx"
-        out_path = UPLOAD_DIR / safe_name
+        upload_dir = _session_upload_dir(str(session_id))
+        safe_name = f"uploaded_{ts}_{uuid.uuid4().hex[:12]}.gpx"
+        out_path = upload_dir / safe_name
         f.save(str(out_path))
         log.info('[UPLOAD] Saved %s', out_path)
         # Persist session update
         try:
-            save_session_state({"last_gpx_path": str(out_path), "last_gpx_name": str(original_name)})
+            save_session_state({"last_gpx_path": str(out_path), "last_gpx_name": str(original_name)}, session_id=str(session_id))
         except Exception:
             pass
         return jsonify({"path": str(out_path), "name": safe_name, "original_name": str(original_name)})
@@ -1842,9 +2002,7 @@ def api_map():
         return jsonify({"error": "Invalid date format"}), 400
 
     try:
-        gpx_path = GPX_FILE
-        if gpx_override and gpx_override.endswith('.gpx') and Path(gpx_override).exists():
-            gpx_path = Path(gpx_override)
+        gpx_path = _resolve_session_gpx(gpx_override)
         log.info('[STEP] Loading GPX track: %s', gpx_path)
         # Optional sampling controls
         step_km_param = request.args.get('step_km')
@@ -2182,10 +2340,11 @@ def api_session():
     """Return persisted session state. Includes a convenience flag if GPX exists."""
     import json
     try:
-        st = load_session_state()
+        session_id = _resolve_request_session_id(create=True)
+        st = load_session_state(session_id=str(session_id) if session_id else None)
         p = st.get('last_gpx_path')
         exists = bool(p) and Path(p).exists()
-        st_out = {**st, 'gpx_exists': exists}
+        st_out = {**st, 'gpx_exists': exists, 'session_id': session_id}
         return Response(json.dumps(st_out), mimetype='application/json')
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2219,6 +2378,8 @@ def api_map_stream():
     wind_tail_comfort_param = request.args.get('wind_tail_comfort')
     reuse_per_day_param = request.args.get('reuse_per_day')
 
+    session_id = _resolve_request_session_id(create=True)
+
     if not date or len(date) != 5 or '-' not in date:
         return Response("data: {\"error\": \"Provide date as MM-DD\"}\n\n", mimetype='text/event-stream')
     try:
@@ -2242,6 +2403,7 @@ def api_map_stream():
 
     def event_stream():
         log.info('[SSE] map_stream start date=%s mode=%s', date, fetch_mode)
+        session_state = load_session_state(session_id=str(session_id) if session_id else None)
         # Prevent parallel heavy streams: assign token; dry-run streams do not cancel main
         local_token = None
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
@@ -2252,9 +2414,7 @@ def api_map_stream():
                 STREAM_TOKEN += 1
             local_token = STREAM_TOKEN
         try:
-            gpx_path = GPX_FILE
-            if gpx_override and gpx_override.endswith('.gpx') and Path(gpx_override).exists():
-                gpx_path = Path(gpx_override)
+            gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
             gpx_path_str = str(gpx_path)
             try:
                 gpx_is_uploaded = Path(gpx_path_str).name.startswith('uploaded_')
@@ -2269,21 +2429,22 @@ def api_map_stream():
                 try:
                     td = _parse_tour_days(tour_days_param)
                     if td is None:
-                        td = int(SESSION_STATE.get('tour_days', 7))
+                        td = int(session_state.get('tour_days', 7))
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
                         "last_gpx_name": (
-                            (SESSION_STATE.get('last_gpx_name') or '')
+                            (session_state.get('last_gpx_name') or '')
                             if gpx_is_uploaded
                             else Path(gpx_path_str).name
                         ),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
-                        "start_date": (start_date_param or SESSION_STATE.get('start_date') or ''),
+                        "start_date": (start_date_param or session_state.get('start_date') or ''),
                         "tour_days": int(td),
                         "first_year": int(first_year),
                         "num_years": int(num_years)
-                    })
+                    }, session_id=str(session_id) if session_id else None)
+                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
                 except Exception:
                     pass
             # Optional: force online/offline for debugging.
@@ -2317,7 +2478,7 @@ def api_map_stream():
                 try:
                     # Derive years start if provided; otherwise compute from current year
                     import datetime as _dt
-                    num_years = int(hist_years_param) if hist_years_param else SESSION_STATE.get('num_years', 10)
+                    num_years = int(hist_years_param) if hist_years_param else session_state.get('num_years', 10)
                     first_year = None
                     if hist_start_param:
                         try:
@@ -2329,21 +2490,22 @@ def api_map_stream():
                             today_year = _dt.date.today().year
                             first_year = today_year - num_years
                         except Exception:
-                            first_year = SESSION_STATE.get('first_year', 2016)
+                            first_year = session_state.get('first_year', 2016)
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
                         "last_gpx_name": (
-                            (SESSION_STATE.get('last_gpx_name') or '')
+                            (session_state.get('last_gpx_name') or '')
                             if gpx_is_uploaded
                             else Path(gpx_path_str).name
                         ),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
-                        "start_date": (start_date_param or SESSION_STATE.get('start_date') or ''),
-                        "tour_days": (int(tour_days_param) if (tour_days_param and tour_days_param.isdigit()) else SESSION_STATE.get('tour_days', 7)),
+                        "start_date": (start_date_param or session_state.get('start_date') or ''),
+                        "tour_days": (int(tour_days_param) if (tour_days_param and tour_days_param.isdigit()) else session_state.get('tour_days', 7)),
                         "first_year": int(first_year),
                         "num_years": int(num_years)
-                    })
+                    }, session_id=str(session_id) if session_id else None)
+                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
                 except Exception:
                     pass
             # Optional reverse tour order
@@ -2579,7 +2741,7 @@ def api_map_stream():
             # Years span used by fetchers
             try:
                 # Derive span from request params if provided; fallback to recent years ending last year
-                num_years = int(hist_years_param) if hist_years_param else SESSION_STATE.get('num_years', 10)
+                num_years = int(hist_years_param) if hist_years_param else session_state.get('num_years', 10)
                 start_year = None
                 if hist_start_param:
                     try:
@@ -2605,11 +2767,11 @@ def api_map_stream():
                 # "Loaded GPX" label consistent even when an override is missing.
                 "gpx_path": str(gpx_path),
                 "gpx_name": (
-                    (SESSION_STATE.get('last_gpx_name') or '')
+                    (session_state.get('last_gpx_name') or '')
                     if (
-                        (str(SESSION_STATE.get('last_gpx_path') or '') == str(gpx_path))
+                        (str(session_state.get('last_gpx_path') or '') == str(gpx_path))
                         and (Path(str(gpx_path)).name.startswith('uploaded_'))
-                        and (SESSION_STATE.get('last_gpx_name') or '')
+                        and (session_state.get('last_gpx_name') or '')
                     )
                     else Path(str(gpx_path)).name
                 ),
@@ -3472,7 +3634,8 @@ def api_map_stream():
                     "mean_wind_speed": mean_wind
                 }
                 try:
-                    save_session_state({"tour_summary": tour_summary})
+                    save_session_state({"tour_summary": tour_summary}, session_id=str(session_id) if session_id else None)
+                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
                 except Exception:
                     pass
                 yield f"event: tour_summary\ndata: {_json.dumps(tour_summary)}\n\n"
@@ -4079,7 +4242,8 @@ def api_map_stream():
                     "mean_wind_speed": mean_wind
                 }
                 try:
-                    save_session_state({"tour_summary": tour_summary})
+                    save_session_state({"tour_summary": tour_summary}, session_id=str(session_id) if session_id else None)
+                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
                 except Exception:
                     pass
                 yield f"event: tour_summary\ndata: {_json.dumps(tour_summary)}\n\n"
@@ -4090,7 +4254,7 @@ def api_map_stream():
             import json as _json
             done_payload = {"stations_count": completed}
             try:
-                done_payload["tour_summary"] = SESSION_STATE.get('tour_summary')
+                done_payload["tour_summary"] = session_state.get('tour_summary')
             except Exception:
                 pass
             try:
