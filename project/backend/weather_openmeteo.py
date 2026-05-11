@@ -31,6 +31,7 @@ _MAX_INTERVAL_SEC: float = 1.0
 # Circuit breaker: temporarily disable outbound API calls after 429s
 _API_DISABLED_UNTIL: float = 0.0
 _FORCE_ONLINE: bool = False
+_REQUEST_CONTEXT = threading.local()
 
 # Cache directory for raw daily responses
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -75,10 +76,21 @@ def reset_api_disable():
     except Exception:
         pass
 
+def _force_online_enabled() -> bool:
+    try:
+        override = getattr(_REQUEST_CONTEXT, 'force_online', None)
+    except Exception:
+        override = None
+    if override is None:
+        return bool(_FORCE_ONLINE)
+    return bool(override)
+
 def set_force_online(flag: bool):
-    global _FORCE_ONLINE
-    _FORCE_ONLINE = bool(flag)
-    log.info('[API] force_online=%s', _FORCE_ONLINE)
+    try:
+        _REQUEST_CONTEXT.force_online = bool(flag)
+    except Exception:
+        pass
+    log.info('[API] force_online=%s (thread-local)', bool(flag))
 
 def _sync_disabled_from_file():
     global _API_DISABLED_UNTIL
@@ -161,7 +173,7 @@ def rate_limited_request(url: str) -> requests.Response:
     """
     global _LAST_REQUEST_TS
     _sync_disabled_from_file()
-    if (not _FORCE_ONLINE) and (time_module.time() < _API_DISABLED_UNTIL):
+    if (not _force_online_enabled()) and (time_module.time() < _API_DISABLED_UNTIL):
         class _DummyResp:
             status_code = 429
             def json(self):
