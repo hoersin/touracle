@@ -62,9 +62,10 @@ The build output is published as an Actions artifact named **Touracle-windows** 
 
 If you want to commit the built Windows bundle into the repository, place it under `releases/windows/Touracle/`.
 
-### Git LFS (offline SQL + Windows binaries)
+### Git LFS (Windows binaries only)
 
-This repo is configured to store offline weather databases (`project/cache/offline_weather*.sqlite`) in **Git LFS**.
+Offline weather databases in `project/cache/offline_weather*.sqlite` are local builder outputs and are intentionally ignored by git.
+They must not be committed from the cache directory because repeated snapshots create very large repository and local Git LFS growth.
 
 On your machine (once):
 
@@ -72,15 +73,15 @@ On your machine (once):
 git lfs install
 ```
 
-Then you can commit the offline DB (example):
+Windows build outputs under `releases/windows/` are also tracked via Git LFS.
+
+If you still have previously tracked offline cache DBs in your index, remove them from git tracking while keeping the local files:
 
 ```bash
-git add project/cache/offline_weather_2025.sqlite
-git commit -m "Add offline weather DB (LFS)"
-git push
+tools/untrack_offline_cache_dbs.sh --apply
+git commit -m "Stop tracking generated offline cache DBs"
+git lfs prune
 ```
-
-Windows build outputs under `releases/windows/` are also tracked via Git LFS.
 
 Note: committing `.exe` binaries directly into the git repo is usually discouraged (large diffs, repo bloat). A common alternative is attaching the artifact to a GitHub Release.
 

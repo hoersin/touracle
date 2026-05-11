@@ -51,8 +51,13 @@ Note: `--lon-min -28` is the current default and covers Iceland. Older builds us
 ### Nightly launchd runner (macOS)
 `tools/macos/run_offline_tiles_nightly.sh` selects the most incomplete DB in `project/cache/`, rotates the `--chunk-index` by day-of-year, and uses `--pace-until-berlin-7am` to auto-pace the build so it finishes by 07:00 Europe/Berlin. See `tools/macos/OFFLINE_TILES_LAUNCHD.md` for setup.
 
+### Storage policy for offline DBs
+- `project/cache/offline_weather*.sqlite` is local generated state and is git-ignored by default.
+- If older clones still track these files, run `tools/untrack_offline_cache_dbs.sh --apply` and then `git lfs prune` after committing the index cleanup.
+- Do not use cache DB snapshots as routine Git LFS artifacts; keep only intentionally published deliverables under a dedicated release path or external artifact store.
+
 ## Operational tips
-- Large sqlite files are commonly tracked with Git LFS.
+- Large sqlite files in the cache directory should stay local unless you are intentionally publishing a release artifact.
 - If you change frontend JS/CSS and your browser caches aggressively, hard-refresh or **bump the cache-buster** query parameter in `project/frontend/index.html`:
   ```js
   const mapSrc = '/map.js?v=NNN'; // increment NNN

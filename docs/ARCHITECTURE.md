@@ -58,9 +58,9 @@ This provides a precomputed, restart-safe SQLite dataset so the Climatic Map can
 - Session state: `project/data/session_state.json`
 - Debug artifacts: `project/debug_output/`
 - Stats caches (online requests / derived stats): `project/cache/stats/` (backend-managed)
-- Offline tile DBs: `project/cache/offline_weather_*.sqlite`
+- Offline tile DBs: `project/cache/offline_weather_*.sqlite` (generated locally, git-ignored)
 
 ## Operational considerations
 - Offline builder is single-threaded by design and can be rate-limited (HTTP 429). It is restart-safe using `build_state`.
-- The repo supports Git LFS for large SQLite artifacts.
+- The repo does not version offline cache DB snapshots from `project/cache/`; only release artifacts that are intentionally published should be versioned.
 
