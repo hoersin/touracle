@@ -101,3 +101,50 @@ def test_map_stream_emits_fatal_stream_error_for_invalid_gpx(isolated_route_back
     assert stream_error_payload['code'] == 'route_setup_failed'
     assert stream_error_payload['fatal'] is True
     assert stream_error_payload['gpx_path'] == str(invalid_gpx)
+
+
+def test_map_stream_emits_stream_error_for_outer_route_setup_failures(isolated_route_backend, monkeypatch):
+    client = isolated_route_backend.app.test_client()
+    session_id = client.get('/api/session').get_json()['session_id']
+    valid_gpx = isolated_route_backend._session_upload_dir(session_id) / 'uploaded_valid.gpx'
+    valid_gpx.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<gpx version="1.1" creator="pytest">\n'
+        '  <trk><name>Demo</name><trkseg>'
+        '    <trkpt lat="48.0" lon="11.0"></trkpt>'
+        '    <trkpt lat="48.1" lon="11.1"></trkpt>'
+        '  </trkseg></trk></gpx>\n',
+        encoding='utf-8',
+    )
+
+    isolated_route_backend.save_session_state(
+        {'last_gpx_path': str(valid_gpx), 'last_gpx_name': 'uploaded_valid.gpx'},
+        session_id=session_id,
+    )
+
+    original_resolve = isolated_route_backend._resolve_session_gpx
+
+    def broken_resolve(preferred=None, session_id=None):
+        path = original_resolve(preferred, session_id=session_id)
+        raise ValueError(f'Error parsing XML: synthetic failure for {path.name}')
+
+    monkeypatch.setattr(isolated_route_backend, '_resolve_session_gpx', broken_resolve)
+
+    response = client.get(
+        '/api/map_stream',
+        query_string={
+            'date': '05-14',
+            'dry_run': '1',
+        },
+        buffered=True,
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_blocks(response.data.decode('utf-8'))
+    event_names = [name for name, _ in events]
+
+    assert 'stream_error' in event_names
+    stream_error_payload = next(payload for name, payload in events if name == 'stream_error')
+    assert stream_error_payload['code'] == 'route_setup_failed'
+    assert stream_error_payload['fatal'] is True
+    assert stream_error_payload['message'].startswith('Route error: Error parsing XML: synthetic failure')

@@ -160,6 +160,7 @@ SESSION_STATE_DEFAULTS: Dict[str, Any] = {
     "last_gpx_path": "",
     "last_gpx_name": "",
     "start_date": "",
+    "tour_weather_mode": "climatology",
     "tour_days": 7,
     "glyph_spacing_km": 60,
     "first_year": 2016,
@@ -215,6 +216,10 @@ def _normalize_session_state(state: Dict[str, Any] | None) -> Dict[str, Any]:
             normalized['num_years'] = int(normalized['num_years'])
         except Exception:
             normalized['num_years'] = SESSION_STATE_DEFAULTS['num_years']
+    if str(normalized.get('tour_weather_mode') or '').strip().lower() == 'forecast':
+        normalized['tour_weather_mode'] = 'forecast'
+    else:
+        normalized['tour_weather_mode'] = SESSION_STATE_DEFAULTS['tour_weather_mode']
     normalized['reverse'] = bool(normalized.get('reverse'))
     try:
         normalized['_updated_at'] = float(normalized.get('_updated_at') or time.time())
@@ -1043,7 +1048,7 @@ def _reverse_offline_fallback(lat: float, lon: float) -> dict[str, str] | None:
     )
 
 
-def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str, str] | None:
+def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_online: bool = True) -> dict[str, str] | None:
     global _REVERSE_GEOCODE_COOLDOWN_UNTIL
     try:
         if lat is None or lon is None:
@@ -1058,6 +1063,20 @@ def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str,
         cached = _REVERSE_GEOCODE_CACHE.get(cache_key)
         if cached is not None:
             return dict(cached)
+
+    if not allow_online:
+        fallback = _reverse_offline_fallback(lat_f, lon_f)
+        if fallback:
+            with _REVERSE_GEOCODE_CACHE_LOCK:
+                if len(_REVERSE_GEOCODE_CACHE) >= 512:
+                    try:
+                        first_key = next(iter(_REVERSE_GEOCODE_CACHE.keys()))
+                        del _REVERSE_GEOCODE_CACHE[first_key]
+                    except Exception:
+                        pass
+                _REVERSE_GEOCODE_CACHE[cache_key] = dict(fallback)
+            return dict(fallback)
+        return None
 
     try:
         with _REVERSE_GEOCODE_COOLDOWN_LOCK:
@@ -1566,6 +1585,11 @@ def api_weather_profile():
     if OfflineWeatherStore is None:
         return jsonify({"error": "Offline store unavailable"}), 400
 
+    session_id = _resolve_request_session_id(create=True)
+    job_id = str(request.args.get('job_id') or '').strip()
+    progress_session_id = str(session_id) if session_id else None
+    progress_active = False
+
     try:
         lat = float(request.args.get('lat', ''))
         lon = float(request.args.get('lon', ''))
@@ -1637,6 +1661,9 @@ def api_weather_profile():
         return jsonify({"error": "Selected point is outside offline weather coverage"}), 400
 
     total_days = (end_date - start_date).days + 1
+    if job_id:
+        progress_init(job_id, total_days * len(stores_by_year), session_id=progress_session_id)
+        progress_active = True
     series: list[dict[str, Any]] = []
     summary_temps: list[float] = []
     summary_rains: list[float] = []
@@ -1648,155 +1675,154 @@ def api_weather_profile():
     rain_days = 0
     calm_days = 0
 
-    for idx in range(total_days):
-        d = start_date + _dt.timedelta(days=idx)
-        day_temp_vals: list[float] = []
-        day_temp_low_vals: list[float] = []
-        day_temp_high_vals: list[float] = []
-        day_rain_vals: list[float] = []
-        day_wind_vals: list[float] = []
-        day_dir_vals: list[float] = []
-        day_lucky_votes = 0
-        day_samples = 0
+    try:
+        for idx in range(total_days):
+            d = start_date + _dt.timedelta(days=idx)
+            day_temp_vals: list[float] = []
+            day_temp_low_vals: list[float] = []
+            day_temp_high_vals: list[float] = []
+            day_rain_vals: list[float] = []
+            day_wind_vals: list[float] = []
+            day_dir_vals: list[float] = []
+            for _year, store, tile_id in stores_by_year:
+                try:
+                    stats = store.get_stats_for_tile(tile_id, int(d.month), int(d.day))
+                except Exception:
+                    stats = None
+                if progress_active:
+                    progress_tick(job_id, 1, session_id=progress_session_id)
+                if not stats:
+                    continue
 
-        for _year, store, tile_id in stores_by_year:
-            try:
-                stats = store.get_stats_for_tile(tile_id, int(d.month), int(d.day))
-            except Exception:
-                stats = None
-            if not stats:
-                continue
-
-            if mode == 'full_day':
-                temp_val = _finite_float(stats.get('temperature_c'))
-                temp_low = _finite_float(stats.get('temp_hist_p25'))
-                temp_high = _finite_float(stats.get('temp_hist_p75'))
-            else:
-                temp_val = _finite_float(stats.get('temp_day_median'))
-                temp_low = _finite_float(stats.get('temp_day_p25'))
-                temp_high = _finite_float(stats.get('temp_day_p75'))
-                if temp_low is None:
+                if mode == 'full_day':
+                    temp_val = _finite_float(stats.get('temperature_c'))
                     temp_low = _finite_float(stats.get('temp_hist_p25'))
-                if temp_high is None:
                     temp_high = _finite_float(stats.get('temp_hist_p75'))
-            if temp_val is None and temp_low is not None and temp_high is not None:
-                temp_val = 0.5 * (temp_low + temp_high)
+                else:
+                    temp_val = _finite_float(stats.get('temp_day_median'))
+                    temp_low = _finite_float(stats.get('temp_day_p25'))
+                    temp_high = _finite_float(stats.get('temp_day_p75'))
+                    if temp_low is None:
+                        temp_low = _finite_float(stats.get('temp_hist_p25'))
+                    if temp_high is None:
+                        temp_high = _finite_float(stats.get('temp_hist_p75'))
+                if temp_val is None and temp_low is not None and temp_high is not None:
+                    temp_val = 0.5 * (temp_low + temp_high)
 
-            rain_val = _finite_float(stats.get('precipitation_mm'))
-            if rain_val is None:
-                rain_val = _finite_float(stats.get('rain_typical_mm'))
-            wind_speed = _finite_float(stats.get('wind_speed_ms'))
-            wind_dir = _finite_float(stats.get('wind_dir_deg'))
+                rain_val = _finite_float(stats.get('precipitation_mm'))
+                if rain_val is None:
+                    rain_val = _finite_float(stats.get('rain_typical_mm'))
+                wind_speed = _finite_float(stats.get('wind_speed_ms'))
+                wind_dir = _finite_float(stats.get('wind_dir_deg'))
 
-            if temp_val is not None:
-                day_temp_vals.append(temp_val)
-            if temp_low is not None:
-                day_temp_low_vals.append(temp_low)
-            if temp_high is not None:
-                day_temp_high_vals.append(temp_high)
-            if rain_val is not None:
-                day_rain_vals.append(max(0.0, rain_val))
-            if wind_speed is not None:
-                day_wind_vals.append(max(0.0, wind_speed))
-            if wind_dir is not None:
-                day_dir_vals.append(wind_dir)
+                if temp_val is not None:
+                    day_temp_vals.append(temp_val)
+                if temp_low is not None:
+                    day_temp_low_vals.append(temp_low)
+                if temp_high is not None:
+                    day_temp_high_vals.append(temp_high)
+                if rain_val is not None:
+                    day_rain_vals.append(max(0.0, rain_val))
+                if wind_speed is not None:
+                    day_wind_vals.append(max(0.0, wind_speed))
+                if wind_dir is not None:
+                    day_dir_vals.append(wind_dir)
 
-            if _is_lucky_profile_day(
-                temp_val,
-                rain_val,
-                wind_speed,
+            temp_series = _median_value(day_temp_vals)
+            temp_p25 = _percentile(day_temp_vals, 25.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_low_vals)
+            temp_p75 = _percentile(day_temp_vals, 75.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_high_vals)
+            rain_series = _mean_value(day_rain_vals)
+            wind_speed_series = _mean_value(day_wind_vals)
+            wind_dir_series = _circular_mean_deg(day_dir_vals)
+            lucky = _is_lucky_profile_day(
+                temp_series,
+                rain_series,
+                wind_speed_series,
                 temp_cold=float(temp_cold),
                 temp_hot=float(temp_hot),
                 rain_max=float(rain_max),
                 wind_max=float(wind_max),
-            ):
-                day_lucky_votes += 1
-            day_samples += 1
+            )
 
-        temp_series = _median_value(day_temp_vals)
-        temp_p25 = _percentile(day_temp_vals, 25.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_low_vals)
-        temp_p75 = _percentile(day_temp_vals, 75.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_high_vals)
-        rain_series = _mean_value(day_rain_vals)
-        wind_speed_series = _mean_value(day_wind_vals)
-        wind_dir_series = _circular_mean_deg(day_dir_vals)
-        lucky = bool(day_samples > 0 and day_lucky_votes >= max(1, math.ceil(day_samples / 2.0)))
+            if temp_series is not None:
+                summary_temps.append(temp_series)
+            if rain_series is not None:
+                summary_rains.append(rain_series)
+                if rain_series >= 1.0:
+                    rain_days += 1
+            if wind_speed_series is not None:
+                summary_winds.append(wind_speed_series)
+                if wind_speed_series <= 2.0:
+                    calm_days += 1
+            if wind_dir_series is not None:
+                summary_dirs.append(wind_dir_series)
+            if temp_p25 is not None:
+                summary_temp_p25s.append(temp_p25)
+            if temp_p75 is not None:
+                summary_temp_p75s.append(temp_p75)
+            if lucky:
+                lucky_days += 1
 
-        if temp_series is not None:
-            summary_temps.append(temp_series)
-        if rain_series is not None:
-            summary_rains.append(rain_series)
-            if rain_series >= 1.0:
-                rain_days += 1
-        if wind_speed_series is not None:
-            summary_winds.append(wind_speed_series)
-            if wind_speed_series <= 2.0:
-                calm_days += 1
-        if wind_dir_series is not None:
-            summary_dirs.append(wind_dir_series)
-        if temp_p25 is not None:
-            summary_temp_p25s.append(temp_p25)
-        if temp_p75 is not None:
-            summary_temp_p75s.append(temp_p75)
-        if lucky:
-            lucky_days += 1
+            series.append(
+                {
+                    "day_index": int(idx + 1),
+                    "date": d.isoformat(),
+                    "temp": temp_series,
+                    "temp_p25": temp_p25,
+                    "temp_p75": temp_p75,
+                    "rain": rain_series,
+                    "wind_speed": wind_speed_series,
+                    "wind_dir": wind_dir_series,
+                    "lucky": lucky,
+                }
+            )
 
-        series.append(
+        if not series:
+            return jsonify({"error": "No profile data available for selected point"}), 404
+
+        resolved_location = _reverse_geocode_location(float(lat), float(lon), allow_online=False)
+        resolved_label = resolved_location.get('label') if isinstance(resolved_location, dict) else None
+
+        summary = {
+            "temp_mean": _mean_value(summary_temps),
+            "temp_min": min(summary_temps) if summary_temps else None,
+            "temp_max": max(summary_temps) if summary_temps else None,
+            "rain_mean": _mean_value(summary_rains),
+            "rain_sum": float(sum(summary_rains)) if summary_rains else 0.0,
+            "rain_days": int(rain_days),
+            "wind_speed": _mean_value(summary_winds),
+            "wind_dir": _circular_mean_deg(summary_dirs),
+            "calm_days": int(calm_days),
+            "lucky_days": int(lucky_days),
+            "total_days": int(total_days),
+            "typical_temp_min": _mean_value(summary_temp_p25s),
+            "typical_temp_max": _mean_value(summary_temp_p75s),
+            "typical_rain": _median_value(summary_rains),
+        }
+
+        return jsonify(
             {
-                "day_index": int(idx + 1),
-                "date": d.isoformat(),
-                "temp": temp_series,
-                "temp_p25": temp_p25,
-                "temp_p75": temp_p75,
-                "rain": rain_series,
-                "wind_speed": wind_speed_series,
-                "wind_dir": wind_dir_series,
-                "lucky": lucky,
+                "meta": {
+                    "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
+                    "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
+                    "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
+                    "point": {"lat": float(lat), "lon": float(lon)},
+                    "tile_center": {
+                        "lat": tile_center_lat,
+                        "lon": tile_center_lon,
+                    },
+                    "years": [int(y) for (y, _store, _tile) in stores_by_year],
+                    "mode": str(mode),
+                    "start": start_date.isoformat(),
+                    "end": end_date.isoformat(),
+                },
+                "summary": summary,
+                "series": series,
             }
         )
-
-    if not series:
-        return jsonify({"error": "No profile data available for selected point"}), 404
-
-    resolved_location = _reverse_geocode_location(float(lat), float(lon))
-    resolved_label = resolved_location.get('label') if isinstance(resolved_location, dict) else None
-
-    summary = {
-        "temp_mean": _mean_value(summary_temps),
-        "temp_min": min(summary_temps) if summary_temps else None,
-        "temp_max": max(summary_temps) if summary_temps else None,
-        "rain_mean": _mean_value(summary_rains),
-        "rain_sum": float(sum(summary_rains)) if summary_rains else 0.0,
-        "rain_days": int(rain_days),
-        "wind_speed": _mean_value(summary_winds),
-        "wind_dir": _circular_mean_deg(summary_dirs),
-        "calm_days": int(calm_days),
-        "lucky_days": int(lucky_days),
-        "total_days": int(total_days),
-        "typical_temp_min": _mean_value(summary_temp_p25s),
-        "typical_temp_max": _mean_value(summary_temp_p75s),
-        "typical_rain": _median_value(summary_rains),
-    }
-
-    return jsonify(
-        {
-            "meta": {
-                "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
-                "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
-                "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
-                "point": {"lat": float(lat), "lon": float(lon)},
-                "tile_center": {
-                    "lat": tile_center_lat,
-                    "lon": tile_center_lon,
-                },
-                "years": [int(y) for (y, _store, _tile) in stores_by_year],
-                "mode": str(mode),
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat(),
-            },
-            "summary": summary,
-            "series": series,
-        }
-    )
+    finally:
+        if progress_active:
+            progress_done(job_id, session_id=progress_session_id)
 
 
 @app.route('/api/strategy_map')
@@ -2126,7 +2152,7 @@ def _progress_key(job_id: str, session_id: Optional[str]) -> str:
 
 
 def _empty_progress() -> Dict[str, Any]:
-    return {"total": 0, "completed": 0, "done": True}
+    return {"total": 0, "completed": 0, "done": False, "known": False}
 
 
 def _issue_stream_token(session_id: Optional[str], is_dry_run: bool) -> int:
@@ -2153,6 +2179,7 @@ def progress_init(job_id: str, total: int, session_id: Optional[str] = None) -> 
             "total": int(total),
             "completed": 0,
             "done": False,
+            "known": True,
             "session_id": str(session_id) if _is_valid_session_id(session_id) else '',
         }
 
@@ -2174,7 +2201,9 @@ def _get_progress(job_id: str, session_id: Optional[str] = None) -> Dict[str, An
         st = PROGRESS.get(_progress_key(job_id, session_id))
         if not st:
             return _empty_progress()
-        return dict(st)
+        out = dict(st)
+        out['known'] = True
+        return out
 
 
 # -------------------- Session persistence --------------------
@@ -2740,9 +2769,9 @@ def api_progress(job_id: str):
             st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
             msg = __import__('json').dumps(st)
             yield f"data: {msg}\n\n"
-            if st.get('done'):
+            if st.get('known') and st.get('done'):
                 break
-            time.sleep(0.5)
+            time.sleep(0.1)
     headers = {
         'Cache-Control': 'no-cache',
         'Content-Type': 'text/event-stream',
@@ -2790,6 +2819,7 @@ def api_map_stream():
     profile_step_km_param = request.args.get('profile_step_km')
     # Tour-day assignment params
     start_date_param = request.args.get('start_date')  # YYYY-MM-DD
+    tour_weather_mode_param = request.args.get('tour_weather_mode')
     tour_days_param = request.args.get('total_days')
     hist_years_param = request.args.get('hist_years')
     hist_start_param = request.args.get('hist_start')
@@ -2836,6 +2866,7 @@ def api_map_stream():
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
         offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
         force_online = str(force_online_param).lower() in ('1', 'true', 'yes', 'on')
+        tour_weather_mode = 'forecast' if str(tour_weather_mode_param or session_state.get('tour_weather_mode') or '').strip().lower() == 'forecast' else 'climatology'
         local_token = _issue_stream_token(str(session_id) if session_id else None, is_dry_run)
         try:
             gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
@@ -2860,6 +2891,7 @@ def api_map_stream():
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
                         "start_date": (start_date_param or session_state.get('start_date') or ''),
+                        "tour_weather_mode": tour_weather_mode,
                         "tour_days": int(td),
                         "first_year": int(first_year),
                         "num_years": int(num_years)
@@ -2937,6 +2969,7 @@ def api_map_stream():
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
                         "start_date": (start_date_param or session_state.get('start_date') or ''),
+                        "tour_weather_mode": tour_weather_mode,
                         "tour_days": (int(tour_days_param) if (tour_days_param and tour_days_param.isdigit()) else session_state.get('tour_days', 7)),
                         "first_year": int(first_year),
                         "num_years": int(num_years)
@@ -2968,8 +3001,22 @@ def api_map_stream():
                     grid_deg = 0.25
             except Exception:
                 grid_deg = 0.25
-        except Exception as e:
-            yield f"data: {{\"error\": \"Route error: {str(e)}\"}}\n\n"
+        except Exception as exc:
+            try:
+                active_gpx = str(session_state.get('last_gpx_path') or '')
+                if gpx_path_str and active_gpx == gpx_path_str:
+                    save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
+                    session_state['last_gpx_path'] = ''
+                    session_state['last_gpx_name'] = ''
+            except Exception:
+                pass
+            err_payload = json.dumps({
+                'code': 'route_setup_failed',
+                'message': f'Route error: {str(exc)}',
+                'fatal': True,
+                'gpx_path': gpx_path_str if 'gpx_path_str' in locals() else '',
+            })
+            yield f"event: stream_error\ndata: {err_payload}\n\n"
             return
 
         total = len(sampled_points)

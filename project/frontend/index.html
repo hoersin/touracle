@@ -1020,6 +1020,58 @@
       white-space: normal;
       overflow-wrap: anywhere;
     }
+    .wm-climate-loading {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      min-height: 58px;
+      padding: 4px 0;
+    }
+    .wm-climate-loading-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.2;
+    }
+    .wm-climate-loading-meta {
+      font-size: 10px;
+      line-height: 1.15;
+      color: #64748b;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .wm-climate-loading-progress {
+      font-size: 10px;
+      line-height: 1.15;
+      color: #334155;
+      font-weight: 600;
+    }
+    .wm-climate-loading-bar {
+      position: relative;
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(226, 232, 240, 0.95);
+      border: 1px solid rgba(148, 163, 184, 0.26);
+      box-shadow: inset 0 1px 1px rgba(255,255,255,0.6);
+    }
+    .wm-climate-loading-bar-fill {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, rgba(14, 165, 233, 0.18) 0%, rgba(14, 165, 233, 0.82) 48%, rgba(37, 99, 235, 0.95) 100%);
+      transition: width 180ms ease-out;
+      box-shadow: 0 0 10px rgba(37, 99, 235, 0.28);
+    }
+    .wm-climate-loading-progress-meta {
+      font-size: 10px;
+      line-height: 1.15;
+      color: #64748b;
+    }
     .wm-climate-legends {
       display: flex;
       flex-direction: column;
@@ -2092,6 +2144,19 @@
                         </label>
                         <div class="wm-pref-control">
                           <input type="date" id="startDate" class="wm-pref-date" />
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="tourWeatherMode">
+                          <span class="wm-pref-name">Weather source</span>
+                          <span class="wm-pref-sub">Climatology uses selected historical years. Forecast will use near-term Open-Meteo forecast data.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="tourWeatherMode" class="wm-pref-select" aria-label="Tour weather source" title="Choose historical climatology or forecast weather for the tour">
+                            <option value="climatology" selected>Climatology: typical weather from selected years</option>
+                            <option value="forecast">Forecast: near-term Open-Meteo forecast</option>
+                          </select>
                         </div>
                       </div>
 

@@ -271,6 +271,7 @@
   }
 
   const startDateInput = document.getElementById('startDate');
+  const tourWeatherModeSelect = document.getElementById('tourWeatherMode');
   const tourDaysInput = document.getElementById('tourDays');
   const fetchWeatherBtn = document.getElementById('fetchWeather');
   const stopWeatherBtn = document.getElementById('stopWeather');
@@ -363,6 +364,8 @@
   const CLIMATE_PROFILE_HEIGHT = 280;
   const CLIMATE_CLICK_DEBOUNCE_MS = 100;
   const CLIMATE_PROFILE_FETCH_TIMEOUT_MS = 30000;
+  const CLIMATE_PROFILE_LOADING_MIN_MS = 180;
+  const CLIMATE_PROFILE_LOADING_COMPLETE_MIN_MS = 140;
   const CLIMATE_PROFILE_CACHE_MAX = 128;
   const CLIMATE_PROFILE_CACHE = new Map();
   const CLIMATE_PROFILE_STATE = {
@@ -371,6 +374,10 @@
     fetchAbort: null,
     selectedMarker: null,
     loadingPoint: null,
+    progressJobId: '',
+    progressSource: null,
+    progressCompleted: 0,
+    progressTotal: 0,
     hoverIndex: null,
   };
   const CLIMATE_DEFAULT_POINT = { lat: 47.999, lon: 7.842 };
@@ -794,6 +801,13 @@
     SSE_RETRY_TIMER = 0;
   }
 
+  function _clearActiveGpxSelection() {
+    LAST_GPX_PATH = null;
+    LAST_GPX_NAME = null;
+    try { _persistLastGpxSelection(); } catch (_) {}
+    try { updateDropZoneLabel(); } catch (_) {}
+  }
+
   function _currentTourSnapshotKey() {
     try {
       const years = _tourSelectedYearsSpan();
@@ -801,6 +815,7 @@
         String(LAST_GPX_PATH || ''),
         String(LAST_GPX_NAME || ''),
         String(startDateInput && startDateInput.value || ''),
+        String(tourWeatherModeSelect && tourWeatherModeSelect.value || ''),
         String(tourDaysInput && tourDaysInput.value || ''),
         String(REVERSED ? '1' : '0'),
         String(STEP_KM || ''),
@@ -886,6 +901,24 @@
     } catch (_) {
       return 'standard';
     }
+  }
+
+  function getTourWeatherMode() {
+    try {
+      const v = tourWeatherModeSelect ? String(tourWeatherModeSelect.value || '') : '';
+      if (v === 'forecast') return 'forecast';
+      return 'climatology';
+    } catch (_) {
+      return 'climatology';
+    }
+  }
+
+  function _tourUsingForecastMode() {
+    return getTourWeatherMode() === 'forecast';
+  }
+
+  function _applyTourWeatherModeUi() {
+    try { _updateStrategicLegend(); } catch (_) {}
   }
 
   function updateFetchWeatherLabel() {
@@ -2236,7 +2269,7 @@
           <div class="wm-tour-route-meta">${startTxt}–${endTxt} • ${Math.max(1, totalDays)}d • ${yearsText} • ${String(meta.mode || 'active') === 'full_day' ? '24h' : 'Active'}</div>
         </div>
       `,
-      _whiteBandEmptyCardMarkup(),
+      _climateCompletedStatusMarkup(payload),
       `
         <div class="wm-climate-metrics">
           <div class="wm-climate-metric">
@@ -2271,13 +2304,123 @@
     _reflowBottomLayout();
   }
 
+  function _climateProfileExpectedTileTotal() {
+    try {
+      const range = _climateCurrentRangeIso();
+      const years = _strategicGetSelectedYears();
+      const startMs = Date.parse(`${String(range && range.start || '')}T00:00:00Z`);
+      const endMs = Date.parse(`${String(range && range.end || '')}T00:00:00Z`);
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+        return Math.max(1, years.length || 1);
+      }
+      const totalDays = Math.max(1, Math.round((endMs - startMs) / 86400000) + 1);
+      return Math.max(1, totalDays * Math.max(1, years.length || 1));
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  function _newClimateProfileJobId() {
+    return `climate-profile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function _closeClimateProfileProgressSource() {
+    try {
+      if (CLIMATE_PROFILE_STATE.progressSource) CLIMATE_PROFILE_STATE.progressSource.close();
+    } catch (_) {}
+    CLIMATE_PROFILE_STATE.progressSource = null;
+  }
+
+  function _startClimateProfileProgressSource(jobId, point) {
+    if (!jobId) return;
+    _closeClimateProfileProgressSource();
+    try {
+      const source = new EventSource(`/api/progress/${encodeURIComponent(String(jobId))}`);
+      CLIMATE_PROFILE_STATE.progressSource = source;
+      source.onmessage = (event) => {
+        if (CLIMATE_PROFILE_STATE.progressJobId !== jobId) {
+          try { source.close(); } catch (_) {}
+          return;
+        }
+        let payload = null;
+        try { payload = JSON.parse(event.data || '{}'); } catch (_) { payload = null; }
+        if (!payload || typeof payload !== 'object') return;
+        const completed = Math.max(0, Number(payload.completed) || 0);
+        const total = Math.max(0, Number(payload.total) || 0);
+        CLIMATE_PROFILE_STATE.progressCompleted = completed;
+        if (total > 0) CLIMATE_PROFILE_STATE.progressTotal = total;
+        if (_climateProfileIsActive()
+            && CLIMATE_PROFILE_STATE.loadingPoint
+            && Number(CLIMATE_PROFILE_STATE.loadingPoint.lat) === Number(point.lat)
+            && Number(CLIMATE_PROFILE_STATE.loadingPoint.lon) === Number(point.lon)) {
+          _renderClimateLoading(point);
+        }
+        if (payload.known && payload.done) {
+          try { source.close(); } catch (_) {}
+          if (CLIMATE_PROFILE_STATE.progressSource === source) {
+            CLIMATE_PROFILE_STATE.progressSource = null;
+          }
+        }
+      };
+      source.onerror = () => {
+        if (CLIMATE_PROFILE_STATE.progressJobId !== jobId) {
+          try { source.close(); } catch (_) {}
+        }
+      };
+    } catch (_) {}
+  }
+
+  function _climateLoadingStatusMarkup() {
+    const range = _climateCurrentRangeIso();
+    const years = _strategicGetSelectedYears();
+    const yearsLabel = years.length ? years.join(' + ') : 'selected years';
+    const startLabel = range && range.start ? _fmtIsoDayMonthCompact(range.start) : 'start';
+    const endLabel = range && range.end ? _fmtIsoDayMonthCompact(range.end) : startLabel;
+    const totalTiles = Math.max(1, Number(CLIMATE_PROFILE_STATE.progressTotal) || _climateProfileExpectedTileTotal());
+    const completedTiles = Math.max(0, Math.min(totalTiles, Number(CLIMATE_PROFILE_STATE.progressCompleted) || 0));
+    const progressPct = Math.max(0, Math.min(100, (completedTiles / totalTiles) * 100));
+    return `
+      <div class="wm-climate-loading" aria-live="polite">
+        <div class="wm-climate-loading-label">Loading weather data...</div>
+        <div class="wm-climate-loading-meta">${startLabel}${startLabel !== endLabel ? `–${endLabel}` : ''} • ${yearsLabel}</div>
+        <div class="wm-climate-loading-progress">${completedTiles}/${totalTiles} offline weather tiles</div>
+        <div class="wm-climate-loading-bar" role="progressbar" aria-label="Loading weather tile data" aria-valuemin="0" aria-valuemax="${totalTiles}" aria-valuenow="${completedTiles}">
+          <span class="wm-climate-loading-bar-fill" style="width:${progressPct.toFixed(1)}%"></span>
+        </div>
+        <div class="wm-climate-loading-progress-meta">${progressPct.toFixed(progressPct >= 10 ? 0 : 1)}% loaded</div>
+      </div>
+    `;
+  }
+
+  function _climateCompletedStatusMarkup(payload) {
+    const meta = payload && payload.meta ? payload.meta : {};
+    const summary = payload && payload.summary ? payload.summary : {};
+    const years = Array.isArray(meta.years) ? meta.years : [];
+    const yearsLabel = years.length ? years.join(' + ') : 'selected years';
+    const startLabel = meta && meta.start ? _fmtIsoDayMonthCompact(meta.start) : 'start';
+    const endLabel = meta && meta.end ? _fmtIsoDayMonthCompact(meta.end) : startLabel;
+    const totalDays = Math.max(1, Number(summary.total_days) || 0);
+    const totalTiles = Math.max(1, totalDays * Math.max(1, years.length || 1));
+    return `
+      <div class="wm-climate-loading" aria-live="polite">
+        <div class="wm-climate-loading-label">Weather data loaded</div>
+        <div class="wm-climate-loading-meta">${startLabel}${startLabel !== endLabel ? `–${endLabel}` : ''} • ${yearsLabel}</div>
+        <div class="wm-climate-loading-progress">${totalTiles}/${totalTiles} offline weather tiles</div>
+        <div class="wm-climate-loading-bar" role="progressbar" aria-label="Loaded weather tile data" aria-valuemin="0" aria-valuemax="${totalTiles}" aria-valuenow="${totalTiles}">
+          <span class="wm-climate-loading-bar-fill" style="width:100.0%"></span>
+        </div>
+        <div class="wm-climate-loading-progress-meta">100% loaded</div>
+      </div>
+    `;
+  }
+
   function _renderClimateLoading(point) {
     _setBottomPanelUiMode('climate');
     _hideClimateProfileTooltip();
     _setWhiteBandSlots(
       '<div class="wm-tour-band-card"><div class="wm-tour-route-kicker">Click Location</div><div class="wm-tour-route-meta">Loading weather data...</div></div>',
+      _climateLoadingStatusMarkup(),
       _whiteBandEmptyCardMarkup(),
-      '<div style="font-size:12px; color:#555; align-self:center;">Loading weather data...</div>',
       `<div class="wm-climate-legends">${_climateTempLegendMarkup()}${_climateRainLegendMarkup()}</div>`
     );
     try { if (profileLegendHost) profileLegendHost.style.display = 'none'; } catch (_) {}
@@ -2459,13 +2602,20 @@
       }
     }
 
-    _renderClimateLoading(point);
+    const progressJobId = _newClimateProfileJobId();
+    CLIMATE_PROFILE_STATE.progressJobId = progressJobId;
+    CLIMATE_PROFILE_STATE.progressCompleted = 0;
+    CLIMATE_PROFILE_STATE.progressTotal = _climateProfileExpectedTileTotal();
+    const loadingStartedAt = Date.now();
     CLIMATE_PROFILE_STATE.loadingPoint = { lat: Number(point.lat), lon: Number(point.lon) };
     try {
       if (CLIMATE_PROFILE_STATE.fetchAbort) CLIMATE_PROFILE_STATE.fetchAbort.abort();
     } catch (_) {}
+    _closeClimateProfileProgressSource();
+    _renderClimateLoading(point);
     const ac = new AbortController();
     CLIMATE_PROFILE_STATE.fetchAbort = ac;
+    _startClimateProfileProgressSource(progressJobId, point);
     let timedOut = false;
     const timeoutId = setTimeout(() => {
       timedOut = true;
@@ -2481,6 +2631,7 @@
       + `&mode=${encodeURIComponent(String(mode))}`
       + `&start_date=${encodeURIComponent(String(range.start || ''))}`
       + `&end_date=${encodeURIComponent(String(range.end || ''))}`
+      + `&job_id=${encodeURIComponent(String(progressJobId))}`
       + `&lucky_temp_cold=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.tempCold)))}`
       + `&lucky_temp_hot=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.tempHot)))}`
       + `&lucky_rain_max=${encodeURIComponent(String(Number(SETTINGS && SETTINGS.rainHigh)))}`
@@ -2492,6 +2643,18 @@
       if (!resp.ok) {
         throw new Error(payload && payload.error ? payload.error : `HTTP ${resp.status}`);
       }
+      if (CLIMATE_PROFILE_STATE.progressJobId === progressJobId) {
+        CLIMATE_PROFILE_STATE.progressCompleted = Math.max(
+          Number(CLIMATE_PROFILE_STATE.progressCompleted) || 0,
+          Number(CLIMATE_PROFILE_STATE.progressTotal) || 0,
+        );
+        _renderClimateLoading(point);
+      }
+      const remainingLoadingMs = CLIMATE_PROFILE_LOADING_MIN_MS - (Date.now() - loadingStartedAt);
+      const completionHoldMs = Math.max(remainingLoadingMs, CLIMATE_PROFILE_LOADING_COMPLETE_MIN_MS);
+      if (completionHoldMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, completionHoldMs));
+      }
       if (!_climateProfileIsActive()) return;
       _cacheClimateProfileSet(key, payload);
       LAST_CLIMATE_PROFILE = payload;
@@ -2500,8 +2663,7 @@
     } catch (err) {
       if (err && err.name === 'AbortError') {
         if (!timedOut) return;
-        _renderClimateLoading(point);
-        return;
+        throw new Error('Climate profile loading timed out.');
       }
       throw err;
     } finally {
@@ -2509,11 +2671,17 @@
       if (CLIMATE_PROFILE_STATE.fetchAbort === ac) {
         CLIMATE_PROFILE_STATE.fetchAbort = null;
       }
-      if (timedOut) return;
-      if (CLIMATE_PROFILE_STATE.loadingPoint
-          && Number(CLIMATE_PROFILE_STATE.loadingPoint.lat) === Number(point.lat)
-          && Number(CLIMATE_PROFILE_STATE.loadingPoint.lon) === Number(point.lon)) {
-        CLIMATE_PROFILE_STATE.loadingPoint = null;
+      if (CLIMATE_PROFILE_STATE.progressJobId === progressJobId) {
+        _closeClimateProfileProgressSource();
+        if (!timedOut && CLIMATE_PROFILE_STATE.progressTotal > 0) {
+          CLIMATE_PROFILE_STATE.progressCompleted = CLIMATE_PROFILE_STATE.progressTotal;
+        }
+        CLIMATE_PROFILE_STATE.progressJobId = '';
+        if (CLIMATE_PROFILE_STATE.loadingPoint
+            && Number(CLIMATE_PROFILE_STATE.loadingPoint.lat) === Number(point.lat)
+            && Number(CLIMATE_PROFILE_STATE.loadingPoint.lon) === Number(point.lon)) {
+          CLIMATE_PROFILE_STATE.loadingPoint = null;
+        }
       }
     }
   }
@@ -4394,6 +4562,7 @@
     return {
       // Tour setup
       startDate: todayIso,
+      tourWeatherMode: 'climatology',
       tourDays: 7,
       reverse: false,
       weatherQuality: 'standard',
@@ -4470,9 +4639,14 @@
       const weatherQuality = (weatherQualityRaw === 'premium')
         ? 'premium'
         : 'standard';
+      const tourWeatherModeRaw = (typeof j.tourWeatherMode === 'string') ? String(j.tourWeatherMode) : String(defaults.tourWeatherMode || 'climatology');
+      const tourWeatherMode = (tourWeatherModeRaw === 'forecast')
+        ? 'forecast'
+        : 'climatology';
       return {
         ...defaults,
         startDate: (typeof j.startDate === 'string' && j.startDate) ? j.startDate : defaults.startDate,
+        tourWeatherMode,
         tourDays: Number.isFinite(Number(j.tourDays)) ? Number(j.tourDays) : defaults.tourDays,
         reverse: (typeof j.reverse === 'boolean') ? j.reverse : defaults.reverse,
         weatherQuality,
@@ -4650,6 +4824,7 @@
   const SETTINGS_LIVE_APPLY_DEBOUNCE_MS = 200;
   const SETTINGS_REFETCH_KEYS = [
     'startDate',
+    'tourWeatherMode',
     'tourDays',
     'reverse',
     'weatherQuality',
@@ -6024,6 +6199,14 @@
     try {
       const modeRow = el.querySelector('#wmStrategicLegendModeRow');
       if (modeRow) modeRow.style.display = _tourIsActive() ? 'none' : '';
+    } catch (_) {}
+    try {
+      const yearsRow = el.querySelector('#wmStrategicLegendYearsRow');
+      if (yearsRow) yearsRow.style.display = (_tourIsActive() && _tourUsingForecastMode()) ? 'none' : '';
+    } catch (_) {}
+    try {
+      const timescaleRow = el.querySelector('#wmStrategicLegendTimescaleRow');
+      if (timescaleRow) timescaleRow.style.display = _tourIsActive() ? 'none' : '';
     } catch (_) {}
 
     // Keep legend's layer select in sync (and keep its options current).
@@ -12936,6 +13119,7 @@
   function applySettingsToForm(s) {
     if (!s) return;
     if (startDateInput && s.startDate) startDateInput.value = String(s.startDate);
+    if (tourWeatherModeSelect && s.tourWeatherMode) tourWeatherModeSelect.value = String(s.tourWeatherMode);
     if (tourDaysInput && s.tourDays !== undefined) tourDaysInput.value = String(Number(s.tourDays) || 7);
     if (weatherQualitySelect && s.weatherQuality) weatherQualitySelect.value = String(s.weatherQuality);
     try {
@@ -12980,12 +13164,14 @@
 
     if (setOverlayMode) setOverlayMode.value = _normalizeOverlayMode(String(s.overlayMode || 'temperature'));
     if (profileOverlaySelect) profileOverlaySelect.value = _normalizeOverlayMode(String(s.overlayMode || 'temperature'));
+    try { _applyTourWeatherModeUi(); } catch (_) {}
     try { _refreshPreferencesUi(); } catch (_) {}
   }
 
   function readSettingsFromForm(prev) {
     const base = prev ? { ...prev } : {};
     base.startDate = (startDateInput && startDateInput.value) ? String(startDateInput.value) : (new Date()).toISOString().slice(0, 10);
+    base.tourWeatherMode = (tourWeatherModeSelect && tourWeatherModeSelect.value) ? String(tourWeatherModeSelect.value) : 'climatology';
     base.tourDays = Number(tourDaysInput && tourDaysInput.value) || 7;
     base.weatherQuality = (weatherQualitySelect && weatherQualitySelect.value) ? String(weatherQualitySelect.value) : 'standard';
     try {
@@ -15109,6 +15295,7 @@
     // Subscribe to streaming map data (route + per-station glyphs)
     const tourDays = Number(tourDaysInput?.value || 7);
     const startDateStr = startDateInput && startDateInput.value ? startDateInput.value : new Date().toISOString().slice(0,10);
+    const tourWeatherMode = getTourWeatherMode();
     const gpxParam = LAST_GPX_PATH ? `&gpx_path=${encodeURIComponent(LAST_GPX_PATH)}` : '';
       const revParam = REVERSED ? '&reverse=1' : '';
 
@@ -15124,6 +15311,7 @@
       const offlineOnlyParam = loadOpts.offlineOnly ? '&offline_only=1' : '';
       const forceOnlineParam = loadOpts.forceOnline ? '&force_online=1' : '';
       const reusePerDayParam = loadOpts.reusePerDay ? '&reuse_per_day=1' : '';
+      const tourWeatherModeParam = `&tour_weather_mode=${encodeURIComponent(tourWeatherMode)}`;
       const z = map.getZoom();
       const profileStep = (function(zoom){
         // Use a denser elevation profile than weather glyph sampling so local relief stays visible.
@@ -15165,7 +15353,7 @@
       if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
       OVERLAY_POINTS = [];
       TOUR_HOVER_POINTS_DIRTY = true;
-      const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}`;
+      const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${tourWeatherModeParam}`;
       let evtSourcePrime = new EventSource(urlPrime);
       window.__WM_PRIME_EVT_SOURCE__ = evtSourcePrime;
       PRIME_IN_PROGRESS = true;
@@ -15234,7 +15422,7 @@
       }
 
       const qsComfort = `&temp_cold=${encodeURIComponent(SETTINGS.tempCold)}&temp_hot=${encodeURIComponent(SETTINGS.tempHot)}&rain_high=${encodeURIComponent(SETTINGS.rainHigh)}&wind_head_comfort=${encodeURIComponent(SETTINGS.windHeadComfort)}&wind_tail_comfort=${encodeURIComponent(SETTINGS.windTailComfort)}`;
-      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${qsComfort}`);
+      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${tourWeatherModeParam}${qsComfort}`);
     let streamHadFatalError = false;
     let stationCount = 0;
     let stationTotal = 0;
@@ -15393,6 +15581,10 @@
         let payload = null;
         try { payload = ev && ev.data ? JSON.parse(ev.data) : null; } catch (_) {}
         const message = String((payload && payload.message) || 'Route setup failed').trim();
+        const errorCode = String((payload && payload.code) || '').trim();
+        if (errorCode === 'route_setup_failed') {
+          try { _clearActiveGpxSelection(); } catch (_) {}
+        }
         try { _resetTourRouteDisplay(message); } catch (_) {}
         try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
         try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
@@ -15882,6 +16074,17 @@
   if (weatherQualitySelect) {
     weatherQualitySelect.addEventListener('change', markDataStale);
   }
+  if (tourWeatherModeSelect) {
+    tourWeatherModeSelect.addEventListener('change', () => {
+      try {
+        if (SETTINGS) SETTINGS.tourWeatherMode = getTourWeatherMode();
+        saveSettings(SETTINGS);
+      } catch (_) {}
+      try { _applyTourWeatherModeUi(); } catch (_) {}
+      markDataStale();
+    });
+  }
+  try { _applyTourWeatherModeUi(); } catch (_) {}
   updateFetchWeatherLabel();
 
   // Tour Summary: badges panel rendering
