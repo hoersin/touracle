@@ -721,7 +721,7 @@
 
     #tourSummaryBadges {
       display: grid;
-      grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 0.7fr);
+      grid-template-columns: minmax(0, 0.875fr) minmax(0, 1.125fr) minmax(0, 1.3fr) minmax(0, 0.7fr);
       align-items: stretch;
       gap: 14px;
       padding: 7px 10px;
@@ -781,9 +781,9 @@
       line-height: 1.2;
       font-weight: 700;
       color: #0f172a;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
     }
     .wm-tour-route-meta,
     .wm-tour-vdl-meta,
@@ -791,9 +791,16 @@
       font-size: 10px;
       line-height: 1.15;
       color: #64748b;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: clip;
+    }
+    .wm-tour-summary-route {
+      gap: 6px;
+    }
+    .wm-tour-route-file {
+      color: #475569;
+      font-weight: 600;
     }
     .wm-tour-route-actions {
       display: flex;
@@ -826,7 +833,7 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
-      gap: 4px;
+      gap: 6px;
       width: 100%;
     }
     .wm-tour-vdl-meta {
@@ -2135,13 +2142,13 @@
 
                       <div class="wm-pref-row" data-wm-scope="tour">
                         <label class="wm-pref-label" for="weatherQuality">
-                          <span class="wm-pref-name">Weather quality</span>
-                          <span class="wm-pref-sub">Choose preview speed versus multi-year accuracy.</span>
+                          <span class="wm-pref-name">Route weather mode</span>
+                          <span class="wm-pref-sub">Standard uses offline tiles only. Premium samples weather day by day along the route.</span>
                         </label>
                         <div class="wm-pref-control">
-                          <select id="weatherQuality" class="wm-pref-select" aria-label="Weather data quality" title="Choose fast preview vs multi-year">
-                            <option value="fast">Fast preview</option>
-                            <option value="best" selected>Best multi-year</option>
+                          <select id="weatherQuality" class="wm-pref-select" aria-label="Route weather mode" title="Choose standard offline tiles or premium route sampling">
+                            <option value="standard" selected>Standard: offline tiles only</option>
+                            <option value="premium">Premium: day by day along route</option>
                           </select>
                         </div>
                       </div>

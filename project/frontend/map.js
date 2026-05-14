@@ -354,6 +354,8 @@
   let LAST_PROFILE = null;
   let LAST_CLIMATE_PROFILE = null;
   let LAST_TOUR_SUMMARY = null;
+  let LAST_TOUR_DAY_SUMMARIES = null;
+  let LAST_TOUR_PROVENANCE = null;
   let LAST_TOUR_CURSOR_READOUT = null;
   let TOUR_SUMMARY_LOCATION_TOKEN = 0;
   let LAST_EFFECTIVE_MODE = _getAppMode();
@@ -747,9 +749,11 @@
   let PROFILE_ZOOM_REFRESH_BOUND = false;
   let PRIME_IN_PROGRESS = false;
   let MAIN_IN_PROGRESS = false;
+  let ACTIVE_LOAD_SERIAL = 0;
   let ACTIVE_TOUR_SNAPSHOT_KEY = null;
   let LAST_GPX_PATH = null;
   let LAST_GPX_NAME = null;
+  let SSE_RETRY_TIMER = 0;
   const LAST_GPX_STORAGE_KEY = 'wm_last_gpx_selection';
   let LAST_LOAD_OPTS = null;
   let OFFLINE_FALLBACK_ACTIVE = false;
@@ -781,6 +785,13 @@
     } catch (_) {
       return false;
     }
+  }
+
+  function _clearSseRetryTimer() {
+    try {
+      if (SSE_RETRY_TIMER) clearTimeout(SSE_RETRY_TIMER);
+    } catch (_) {}
+    SSE_RETRY_TIMER = 0;
   }
 
   function _currentTourSnapshotKey() {
@@ -839,6 +850,7 @@
         savedAt: Date.now(),
         profile: LAST_PROFILE,
         overlayPoints: OVERLAY_POINTS,
+        tourDaySummaries: Array.isArray(LAST_TOUR_DAY_SUMMARIES) ? LAST_TOUR_DAY_SUMMARIES : null,
         tourSummary: _normalizeTourSummary(LAST_TOUR_SUMMARY || _tourFallbackSummary() || null),
       });
     } catch (_) {
@@ -854,6 +866,7 @@
       if (!snapshot.profile || !Array.isArray(snapshot.overlayPoints) || !snapshot.overlayPoints.length) return false;
       LAST_PROFILE = snapshot.profile;
       OVERLAY_POINTS = snapshot.overlayPoints.slice();
+      LAST_TOUR_DAY_SUMMARIES = Array.isArray(snapshot.tourDaySummaries) ? snapshot.tourDaySummaries.slice() : null;
       LAST_TOUR_SUMMARY = _normalizeTourSummary(snapshot.tourSummary || null);
       try { drawProfile(LAST_PROFILE); } catch (_) {}
       try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
@@ -868,9 +881,10 @@
   function getWeatherQualityMode() {
     try {
       const v = weatherQualitySelect ? String(weatherQualitySelect.value || '') : '';
-      return (v === 'best') ? 'best' : 'fast';
+      if (v === 'premium') return 'premium';
+      return 'standard';
     } catch (_) {
-      return 'fast';
+      return 'standard';
     }
   }
 
@@ -879,7 +893,7 @@
       if (!fetchWeatherBtn) return;
       if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return;
       const mode = getWeatherQualityMode();
-      fetchWeatherBtn.textContent = (mode === 'best') ? 'Get Multi-year Weather Data' : 'Get Weather Data';
+      fetchWeatherBtn.textContent = (mode === 'premium') ? 'Get Premium Route Weather' : 'Get Offline Route Weather';
     } catch (_) {}
   }
 
@@ -1038,6 +1052,48 @@
     return arr.reduce((sum, value) => sum + value, 0) / arr.length;
   }
 
+  function _tourLuckyThresholds() {
+    const tempCold = Number(SETTINGS && SETTINGS.tempCold);
+    const tempHot = Number(SETTINGS && SETTINGS.tempHot);
+    const rainHigh = Number(SETTINGS && SETTINGS.rainHigh);
+    const windHeadComfort = Number(SETTINGS && SETTINGS.windHeadComfort);
+    const windTailComfort = Number(SETTINGS && SETTINGS.windTailComfort);
+    return {
+      tempCold: Number.isFinite(tempCold) ? tempCold : 5,
+      tempHot: Number.isFinite(tempHot) ? tempHot : 30,
+      rainHigh: Number.isFinite(rainHigh) ? rainHigh : 10,
+      windHeadComfort: Number.isFinite(windHeadComfort) ? windHeadComfort : 4,
+      windTailComfort: Number.isFinite(windTailComfort) ? windTailComfort : 10,
+    };
+  }
+
+  function _tourLuckyFromDaySummary(daySummary) {
+    try {
+      const summary = daySummary && typeof daySummary === 'object' ? daySummary : null;
+      if (!summary) return null;
+      if (typeof summary.lucky === 'boolean') return summary.lucky;
+      const tempMedian = Number(summary.tempMedian);
+      const precipSum = Number(summary.precipSum);
+      const windMean = Number(summary.windMean);
+      const effMean = Number(summary.effMean);
+      if (!Number.isFinite(tempMedian) || !Number.isFinite(precipSum)) return null;
+      const thresholds = _tourLuckyThresholds();
+      let lucky = false;
+      if (tempMedian >= thresholds.tempCold && tempMedian <= thresholds.tempHot && precipSum < thresholds.rainHigh) {
+        if (Number.isFinite(effMean)) {
+          if (effMean < -0.33) lucky = Number.isFinite(windMean) && windMean < thresholds.windHeadComfort;
+          else if (effMean > 0.33) lucky = Number.isFinite(windMean) && windMean < thresholds.windTailComfort;
+          else lucky = Number.isFinite(windMean) && windMean < thresholds.windHeadComfort;
+        } else {
+          lucky = Number.isFinite(windMean) && windMean < thresholds.windHeadComfort;
+        }
+      }
+      return lucky;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function _tourSummarizeDayPoints(dayPoints) {
     try {
       const points = Array.isArray(dayPoints) ? dayPoints : [];
@@ -1052,7 +1108,7 @@
       const temps = points.map((point) => pickFinite(point && point.temp_day_median, point && point.temperature));
       const winds = points.map((point) => pickFinite(point && point.windSpeed));
       const precs = points.map((point) => {
-        return pickFinite(point && point.rainTypical, point && point.precipMm);
+        return pickFinite(point && point.precipMm, point && point.rainTypical);
       });
       const luckyVotes = points
         .map((point) => {
@@ -1064,7 +1120,7 @@
       const effs = points.map((point) => {
         const dist = Number(point && point.dist);
         if (!Number.isFinite(dist)) return NaN;
-        const eff = _tourEffectiveWind({ windSpeed: point && point.windSpeed, windDir: point && point.windDir }, dist);
+        const eff = _tourEffectiveWindAlignment({ windDir: point && point.windDir }, dist);
         return Number.isFinite(eff) ? eff : NaN;
       });
       const rainProb = _tourMean(points.map((point) => pickFinite(point && point.rainProb)));
@@ -1073,26 +1129,12 @@
       const precipSum = precs.map(Number).filter(Number.isFinite).reduce((sum, value) => sum + value, 0);
       const precipMean = precs.map(Number).filter(Number.isFinite).length ? (precipSum / precs.map(Number).filter(Number.isFinite).length) : null;
       const effMean = _tourMean(effs);
-      const cold = 15.0;
-      const hot = 25.0;
-      const rainThresh = 1.0;
-      const headLimit = Number(SETTINGS.windHeadComfort || 4);
-      const tailLimit = Number(SETTINGS.windTailComfort || 10);
       let lucky = null;
       if (luckyVotes.length) {
         const luckyCount = luckyVotes.reduce((sum, value) => sum + value, 0);
         lucky = luckyCount >= Math.max(1, Math.ceil(luckyVotes.length / 2));
-      } else if (Number.isFinite(tempMedian) && Number.isFinite(precipSum)) {
-        lucky = false;
-        if (tempMedian >= cold && tempMedian <= hot && precipSum < rainThresh) {
-          if (Number.isFinite(effMean)) {
-            if (effMean < -0.33) lucky = Number.isFinite(windMean) && windMean < headLimit;
-            else if (effMean > 0.33) lucky = Number.isFinite(windMean) && windMean < tailLimit;
-            else lucky = Number.isFinite(windMean) && windMean < headLimit;
-          } else {
-            lucky = Number.isFinite(windMean) && windMean < headLimit;
-          }
-        }
+      } else {
+        lucky = _tourLuckyFromDaySummary({ tempMedian, windMean, precipSum, effMean });
       }
       return {
         tempMedian,
@@ -1108,8 +1150,84 @@
     }
   }
 
+  function _tourDaySummaryNumber(daySummary, ...keys) {
+    for (const key of keys) {
+      const num = Number(daySummary && daySummary[key]);
+      if (Number.isFinite(num)) return num;
+    }
+    return null;
+  }
+
+  function _tourBackendDaySummary(dayIdx) {
+    try {
+      const list = Array.isArray(LAST_TOUR_DAY_SUMMARIES) ? LAST_TOUR_DAY_SUMMARIES : [];
+      const wanted = Number(dayIdx);
+      if (!Number.isFinite(wanted)) return null;
+      for (const entry of list) {
+        const idx = _tourDaySummaryNumber(entry, 'day_index', 'dayIdx');
+        if (Number.isFinite(idx) && Number(idx) === wanted) return entry;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   function _tourFallbackSummary() {
     try {
+      const backendDaySummaries = Array.isArray(LAST_TOUR_DAY_SUMMARIES) ? LAST_TOUR_DAY_SUMMARIES : [];
+      if (backendDaySummaries.length) {
+        const dayTemps = [];
+        const dayWinds = [];
+        const dayPrecip = [];
+        let rainDays = 0;
+        let headwindDays = 0;
+        let tailwindDays = 0;
+        let comfortDays = 0;
+        let extremeHot = 0;
+        let extremeCold = 0;
+
+        for (const daySummary of backendDaySummaries) {
+          const tempMedian = _tourDaySummaryNumber(daySummary, 'temp_median', 'tempMedian');
+          const windMean = _tourDaySummaryNumber(daySummary, 'wind_mean', 'windMean');
+          const precipSum = _tourDaySummaryNumber(daySummary, 'precip_sum', 'precipSum', 'precip_mean', 'precipMean');
+          const effMean = _tourDaySummaryNumber(daySummary, 'eff_mean', 'effMean');
+          const lucky = daySummary && daySummary.lucky === true;
+
+          if (Number.isFinite(tempMedian)) {
+            dayTemps.push(tempMedian);
+            if (tempMedian >= 30.0) extremeHot += 1;
+            if (tempMedian <= 5.0) extremeCold += 1;
+          }
+          if (Number.isFinite(windMean)) dayWinds.push(windMean);
+          if (Number.isFinite(precipSum)) {
+            dayPrecip.push(precipSum);
+            if (precipSum >= 1.0) rainDays += 1;
+          }
+          if (Number.isFinite(effMean)) {
+            if (effMean <= -0.33) headwindDays += 1;
+            else if (effMean >= 0.33) tailwindDays += 1;
+          }
+          if (lucky) comfortDays += 1;
+        }
+
+        return {
+          total_days: Number.isFinite(Number(LAST_TOUR_SUMMARY && LAST_TOUR_SUMMARY.total_days))
+            ? Number(LAST_TOUR_SUMMARY.total_days)
+            : backendDaySummaries.length,
+          rain_days: rainDays,
+          headwind_days: headwindDays,
+          tailwind_days: tailwindDays,
+          comfort_days: comfortDays,
+          lucky_days: comfortDays,
+          extreme_days_hot: extremeHot,
+          extreme_days_cold: extremeCold,
+          median_temperature: _tourMedian(dayTemps),
+          max_temperature: dayTemps.length ? Math.max(...dayTemps) : null,
+          min_temperature: dayTemps.length ? Math.min(...dayTemps) : null,
+          total_precipitation: dayPrecip.reduce((total, value) => total + value, 0),
+          mean_wind_speed: _tourMean(dayWinds),
+        };
+      }
+
       const grouped = new Map();
       const points = Array.isArray(OVERLAY_POINTS) ? OVERLAY_POINTS : [];
       for (const point of points) {
@@ -1158,6 +1276,9 @@
             }
           : _tourSummarizeDayPoints(pointsForDay);
         if (!daySummary) continue;
+        if (typeof daySummary.lucky !== 'boolean') {
+          daySummary.lucky = _tourLuckyFromDaySummary(daySummary);
+        }
         const tempMedian = daySummary.tempMedian;
         const windMean = daySummary.windMean;
         const precipSum = Number.isFinite(Number(daySummary.precipSum)) ? Number(daySummary.precipSum) : Number(daySummary.precipMean);
@@ -1315,7 +1436,6 @@
 
   function _renderTourEmptyState(message) {
     const routeLabels = _tourRouteDisplayLabels();
-    const years = _tourSelectedYearsSpan();
     const rangeInfo = _tourDateRangeInfo();
     const distanceKm = _tourRouteDistanceKm();
     const gpxName = _tourDisplayGpxName();
@@ -1325,8 +1445,8 @@
         <div class="wm-tour-band-card wm-tour-summary-route">
           <div class="wm-tour-route-kicker">GPX Route Info</div>
           <div class="wm-tour-route-title"><span data-role="start">${_htmlEsc(routeLabels.fromLabel)}</span> → <span data-role="end">${_htmlEsc(routeLabels.toLabel)}</span></div>
-          <div class="wm-tour-route-file">${_htmlEsc(gpxName)}${Number.isFinite(distanceKm) ? ` • ${fmt(distanceKm, 0)} km` : ''}</div>
-          <div class="wm-tour-route-meta">${_fmtIsoDayMonthCompact(rangeInfo.startIso)}–${_fmtIsoDayMonthCompact(rangeInfo.endIso)} • ${Math.max(1, rangeInfo.totalDays)}d • ${years.discontiguous ? years.exactLabel : years.spanLabel}</div>
+          <div class="wm-tour-route-file">${_htmlEsc(gpxName)}</div>
+          <div class="wm-tour-route-meta">${_fmtIsoDayMonthCompact(rangeInfo.startIso)}–${_fmtIsoDayMonthCompact(rangeInfo.endIso)} • ${Math.max(1, rangeInfo.totalDays)}d${Number.isFinite(distanceKm) ? ` • ${fmt(distanceKm, 0)} km` : ''}</div>
         </div>
       `,
       `
@@ -2534,8 +2654,7 @@
     stopProgressAnim();
     PROGRESS_PHASE = 'weather';
     if (progressEl && progressBar) {
-      const currentPct = Number(String(progressBar.style.width || '0').replace('%', ''));
-      if (!Number.isFinite(currentPct) || currentPct < 1) resetProgressInstant();
+      resetProgressInstant();
       progressEl.classList.remove('loading');
     }
     try { if (progressPercentEl) progressPercentEl.textContent = '0%'; } catch (_) {}
@@ -2684,6 +2803,72 @@
     });
   }
 
+  function _bindGpxUiHandlers() {
+    if (GPX_UI_BOUND) return;
+    GPX_UI_BOUND = true;
+
+    if (dropZone) {
+      dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.background = 'rgba(0,255,128,0.12)'; });
+      dropZone.addEventListener('dragleave', () => { dropZone.style.background = 'rgba(0,255,128,0.06)'; });
+      dropZone.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        dropZone.style.background = 'rgba(0,255,128,0.06)';
+        const f = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!f) return;
+        if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please drop a .gpx file'); return; }
+        try {
+          const j = await uploadGpxFileWithProgress(f);
+          LAST_GPX_PATH = j.path;
+          LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
+          _persistLastGpxSelection();
+          updateDropZoneLabel();
+          try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
+          try { applyPrefsFromFormAndPersist(); } catch (_) {}
+          try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
+          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
+        } catch (err) {
+          console.error('Upload error', err);
+          alert('Upload error: ' + err);
+          setProgressIndeterminate(false);
+        }
+      });
+    }
+
+    const gpxInput = document.getElementById('gpxFileInput');
+    if (dropZone && gpxInput) {
+      dropZone.addEventListener('click', (e) => {
+        try {
+          e.preventDefault();
+          e.stopPropagation();
+        } catch (_) {}
+        if (GPX_UPLOAD_IN_PROGRESS) return;
+        gpxInput.click();
+      });
+      gpxInput.addEventListener('change', async () => {
+        const f = gpxInput.files && gpxInput.files[0];
+        if (!f) return;
+        if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please choose a .gpx file'); return; }
+        try {
+          const j = await uploadGpxFileWithProgress(f);
+          LAST_GPX_PATH = j.path;
+          LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
+          _persistLastGpxSelection();
+          updateDropZoneLabel();
+          try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
+          try { applyPrefsFromFormAndPersist(); } catch (_) {}
+          try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
+          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
+        } catch (err) {
+          console.error('Upload error', err);
+          alert('Upload error: ' + err);
+          setProgressIndeterminate(false);
+        } finally {
+          try { gpxInput.value = ''; } catch (_) {}
+        }
+      });
+    }
+  }
+
   function getBaseName(p) {
     try {
       const s = String(p || '');
@@ -2707,6 +2892,34 @@
     } catch (_) {}
   }
 
+  function _hasActiveGpxSelection() {
+    try {
+      return Boolean(LAST_GPX_PATH && String(LAST_GPX_PATH).trim());
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _applyTourNoGpxIdleState() {
+    try {
+      _renderTourEmptyState('No GPX route loaded. Click or drop a .gpx file to begin.');
+    } catch (_) {}
+    try { _clearRouteWindRibbons(); } catch (_) {}
+    try { stopProgressAnim(); } catch (_) {}
+    try { if (progressBar) progressBar.style.width = '0%'; } catch (_) {}
+    try { if (progressEl) progressEl.classList.remove('loading'); } catch (_) {}
+    PRIME_IN_PROGRESS = false;
+    MAIN_IN_PROGRESS = false;
+    try {
+      if (fetchWeatherBtn) {
+        updateFetchWeatherLabel();
+        fetchWeatherBtn.disabled = true;
+      }
+    } catch (_) {}
+    try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
+    try { if (sseStatus) sseStatus.textContent = 'No GPX route loaded'; } catch (_) {}
+  }
+
   function syncActiveGpxFromStreamPayload(payload) {
     try {
       if (!payload) return;
@@ -2718,17 +2931,25 @@
         : null;
 
       let changed = false;
+      let pathChanged = false;
       if (p) {
         const sp = String(p);
         if (sp && sp !== String(LAST_GPX_PATH || '')) {
           LAST_GPX_PATH = sp;
           changed = true;
+          pathChanged = true;
         }
       }
       if (n) {
         const sn = String(n);
         if (sn && sn !== String(LAST_GPX_NAME || '')) {
           LAST_GPX_NAME = sn;
+          changed = true;
+        }
+      } else if (pathChanged) {
+        const derivedName = getBaseName(LAST_GPX_PATH || '');
+        if (derivedName && derivedName !== String(LAST_GPX_NAME || '')) {
+          LAST_GPX_NAME = derivedName;
           changed = true;
         }
       }
@@ -2935,6 +3156,7 @@
       if (startDateInput) startDateInput.value = nextIso;
       if (tourDaysInput) tourDaysInput.value = String(durationDays);
     } catch (_) {}
+    try { _refreshPreferencesUi(); } catch (_) {}
     try {
       SETTINGS.startDate = nextIso;
       SETTINGS.tourDays = durationDays;
@@ -3067,6 +3289,10 @@
   let glyphLayer = null;
   let glyphLayerNew = null;
   let routeDayCardLayer = null;
+  let routeWindRibbonLayer = null;
+  let ROUTE_WIND_RIBBON_POINTS = null;
+  let ROUTE_WIND_RIBBON_REDRAW_QUEUED = false;
+  let ROUTE_WIND_RIBBON_REFRESH_BOUND = false;
   let _tourDayCardsZoomHandler = null;
   // Persist years span from route event for stable progress text
   let YEARS_SPAN_TEXT = null;
@@ -3394,6 +3620,35 @@
     }
   }
 
+  function _routeWeatherCardHtml(data) {
+    const info = (data && typeof data === 'object') ? data : {};
+    const lucky = (typeof info.lucky === 'boolean') ? info.lucky : null;
+    const tempLabel = String(info.tempLabel || '');
+    const rainLabel = String(info.rainLabel || '');
+    const dateLabel = String(info.dateLabel || '');
+    const iconClass = String(info.iconClass || 'cloudy');
+    const iconSrc = `/assets/glyphs/weather/weather_${encodeURIComponent(iconClass)}.png`;
+    return (
+      `<div data-wm-route-card="1" style="width:47px;height:61px;display:flex;align-items:center;justify-content:center;overflow:hidden;">`
+        + `<div style="position:relative;width:44px;height:57px;box-sizing:border-box;border-radius:10px;background:rgba(255,255,255,0.56);border:1px solid rgba(148,163,184,0.24);box-shadow:0 4px 10px rgba(15,23,42,0.07);backdrop-filter:blur(1.5px);overflow:hidden;">`
+          + (typeof lucky === 'boolean'
+            ? `<span style="position:absolute;left:50%;top:3px;width:7px;height:7px;border-radius:999px;transform:translateX(-50%);background:${lucky ? '#47d764' : '#b3b3b3'};border:1.1px solid ${lucky ? 'rgba(20,126,56,0.95)' : 'rgba(120,132,145,0.72)'};"></span>`
+            : '')
+          + (tempLabel
+            ? `<div style="position:absolute;left:0;right:0;top:12px;height:12px;text-align:center;font:600 11px/12px system-ui,-apple-system,sans-serif;color:#0f172a;letter-spacing:-0.015em;white-space:nowrap;">${tempLabel}</div>`
+            : '')
+          + `<img src="${iconSrc}" alt="" width="18" height="18" style="position:absolute;left:50%;top:22px;width:18px;height:18px;transform:translateX(-50%);object-fit:contain;display:block;" />`
+          + (rainLabel
+            ? `<div style="position:absolute;left:3px;right:3px;top:40px;height:7px;text-align:center;font:500 8px/7px system-ui,-apple-system,sans-serif;color:#64748b;letter-spacing:-0.01em;white-space:nowrap;overflow:hidden;">${rainLabel}</div>`
+            : '')
+          + (dateLabel
+            ? `<div style="position:absolute;left:2px;right:2px;top:47px;height:8px;text-align:center;font:500 8px/8px system-ui,-apple-system,sans-serif;color:#64748b;letter-spacing:-0.01em;white-space:nowrap;overflow:hidden;">${dateLabel}</div>`
+            : '')
+        + `</div>`
+      + `</div>`
+    );
+  }
+
   function _routeStationMarkerHtml(props) {
     const rainProb = (props && props.rain_probability !== undefined) ? Number(props.rain_probability) : Number(props && props.rainProb);
     const temp = (props && props.temp_day_median !== undefined)
@@ -3403,46 +3658,29 @@
         : (props && props.temperature_c !== undefined)
           ? Number(props.temperature_c)
           : null;
-    const tempLabel = Number.isFinite(temp) ? `${Math.round(temp)}°` : '';
-    const iconClass = mapWeatherByProb(rainProb);
-    const iconSrc = `/assets/glyphs/weather/weather_${encodeURIComponent(String(iconClass || 'cloudy'))}.png`;
     const rainValue = (props && props.rain_typical_mm !== undefined)
       ? Number(props.rain_typical_mm)
       : (props && props.precipitation_mm !== undefined)
         ? Number(props.precipitation_mm)
         : null;
-    const rainLabel = Number.isFinite(rainValue) ? `${fmt(rainValue, 0)} mm` : '';
     const dateLabel = (() => {
       try {
         if (props && props.date) return _fmtIsoDayMonthCompact(String(props.date));
       } catch (_) {}
       return '';
     })();
-    const lucky = (props && typeof props.lucky === 'boolean') ? props.lucky : null;
-    return (
-      `<div data-wm-route-card="1" style="width:40px;height:52px;display:flex;align-items:center;justify-content:center;overflow:visible;">`
-        + `<div style="position:relative;width:48px;height:62px;transform:scale(0.8);transform-origin:center center;border-radius:11px;background:rgba(255,255,255,0.58);border:1px solid rgba(148,163,184,0.18);box-shadow:0 4px 10px rgba(15,23,42,0.06);backdrop-filter:blur(1.5px);">`
-          + (typeof lucky === 'boolean'
-            ? `<span style="position:absolute;left:50%;top:6px;width:8px;height:8px;border-radius:999px;transform:translateX(-50%);background:${lucky ? '#47d764' : '#b3b3b3'};border:1.2px solid ${lucky ? 'rgba(20,126,56,0.95)' : 'rgba(120,132,145,0.72)'};"></span>`
-            : '')
-          + (tempLabel
-            ? `<div style="position:absolute;left:0;right:0;top:14px;text-align:center;font:600 12px/1 system-ui,-apple-system,sans-serif;color:#0f172a;">${tempLabel}</div>`
-            : '')
-          + `<img src="${iconSrc}" alt="" width="20" height="20" style="position:absolute;left:50%;top:24px;width:20px;height:20px;transform:translateX(-50%);object-fit:contain;" />`
-          + (rainLabel
-            ? `<div style="position:absolute;left:0;right:0;top:45px;text-align:center;font:500 9px/1 system-ui,-apple-system,sans-serif;color:#64748b;">${rainLabel}</div>`
-            : '')
-          + (dateLabel
-            ? `<div style="position:absolute;left:0;right:0;top:54px;text-align:center;font:500 10px/1 system-ui,-apple-system,sans-serif;color:#64748b;">${dateLabel}</div>`
-            : '')
-        + `</div>`
-      + `</div>`
-    );
+    return _routeWeatherCardHtml({
+      tempLabel: Number.isFinite(temp) ? `${Math.round(temp)}°` : '',
+      rainLabel: Number.isFinite(rainValue) ? `${fmt(rainValue, 0)} mm` : '',
+      dateLabel,
+      iconClass: mapWeatherByProb(rainProb),
+      lucky: (props && typeof props.lucky === 'boolean') ? props.lucky : null,
+    });
   }
 
   function _createRouteStationIcon(props) {
     const html = _routeStationMarkerHtml(props);
-    return L.divIcon({ html, className: 'glyph-map', iconSize: [40, 52], iconAnchor: [20, 26] });
+    return L.divIcon({ html, className: 'glyph-map', iconSize: [47, 61], iconAnchor: [24, 31] });
   }
 
   function _routeStationWindMarkerHtml(props) {
@@ -3510,6 +3748,236 @@
     }
   }
 
+  function _ensureRouteWindRibbonLayer() {
+    try {
+      if (!map) return null;
+      _ensureRouteMarkerPane('wmRouteWindRibbonPane', 638, 'none');
+      if (!routeWindRibbonLayer) routeWindRibbonLayer = L.layerGroup().addTo(map);
+      if (!ROUTE_WIND_RIBBON_REFRESH_BOUND) {
+        const redraw = () => {
+          try { _scheduleRouteWindRibbonRedraw(); } catch (_) {}
+        };
+        map.on('zoomend moveend resize', redraw);
+        ROUTE_WIND_RIBBON_REFRESH_BOUND = true;
+      }
+      return routeWindRibbonLayer;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _clearRouteWindRibbons() {
+    ROUTE_WIND_RIBBON_POINTS = null;
+    try {
+      if (routeWindRibbonLayer) routeWindRibbonLayer.clearLayers();
+    } catch (_) {}
+  }
+
+  function _routeWindRibbonPalette(effWindMs) {
+    const eff = Math.abs(Number(effWindMs) || 0);
+    const alpha = Math.max(0.28, Math.min(0.64, 0.28 + eff * 0.035));
+    if (Number(effWindMs) >= 0) {
+      return {
+        fill: `rgba(47, 133, 126, ${alpha})`,
+        stroke: 'rgba(20, 76, 72, 0.78)',
+      };
+    }
+    return {
+      fill: `rgba(191, 111, 74, ${alpha})`,
+      stroke: 'rgba(116, 61, 37, 0.78)',
+    };
+  }
+
+  function _routeWindRibbonZoomScale() {
+    try {
+      const zoom = Number(map && map.getZoom && map.getZoom());
+      if (!Number.isFinite(zoom)) return 1;
+      const minZoom = 6;
+      const maxZoom = 13;
+      const t = Math.max(0, Math.min(1, (zoom - minZoom) / Math.max(1, maxZoom - minZoom)));
+      return 0.7 + 0.6 * t;
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  function _routeWindSampleAtDist(points, dkm) {
+    try {
+      if (!Array.isArray(points) || !points.length) return null;
+      const x = Number(dkm);
+      if (!Number.isFinite(x)) return null;
+      const pts = points
+        .filter(p => Number.isFinite(Number(p && p.dist)))
+        .slice()
+        .sort((a, b) => Number(a.dist) - Number(b.dist));
+      if (!pts.length) return null;
+      if (pts.length === 1) return { ...pts[0], dist: x };
+      let lo = 0;
+      let hi = pts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (Number(pts[mid].dist) <= x) lo = mid; else hi = mid - 1;
+      }
+      const i0 = lo;
+      const i1 = Math.min(pts.length - 1, i0 + 1);
+      const p0 = pts[i0];
+      const p1 = pts[i1];
+      const d0 = Number(p0.dist);
+      const d1 = Number(p1.dist);
+      if (!Number.isFinite(d0) || !Number.isFinite(d1) || d1 <= d0) return { ...p0, dist: x };
+      const t = Math.max(0, Math.min(1, (x - d0) / (d1 - d0)));
+      const lerpNum = (a, b) => {
+        const na = Number(a);
+        const nb = Number(b);
+        if (Number.isFinite(na) && Number.isFinite(nb)) return na + (nb - na) * t;
+        if (Number.isFinite(na)) return na;
+        if (Number.isFinite(nb)) return nb;
+        return null;
+      };
+      return {
+        dist: x,
+        windSpeed: lerpNum(p0.windSpeed, p1.windSpeed),
+        windDir: lerpNum(p0.windDir, p1.windDir),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _routeWindRibbonPolygon(dkm, effWindMs) {
+    try {
+      if (!map || !Number.isFinite(Number(dkm)) || !Number.isFinite(Number(effWindMs))) return null;
+      const total = Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length
+        ? Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0)
+        : 0;
+      if (!(total > 0)) return null;
+      const centerKm = Math.max(0, Math.min(total, Number(dkm)));
+      const absEff = Math.abs(Number(effWindMs));
+      const centerLatLng = routeLatLngAtDistanceKm(centerKm);
+      if (!centerLatLng) return null;
+      const centerPointRaw = map.latLngToContainerPoint(centerLatLng);
+      const tangentProbeKm = Math.max(0.4, Math.min(1.2, total * 0.004));
+      const prevLatLng = routeLatLngAtDistanceKm(Math.max(0, centerKm - tangentProbeKm));
+      const nextLatLng = routeLatLngAtDistanceKm(Math.min(total, centerKm + tangentProbeKm));
+      if (!prevLatLng || !nextLatLng) return null;
+      const prevPoint = map.latLngToContainerPoint(prevLatLng);
+      const nextPoint = map.latLngToContainerPoint(nextLatLng);
+      let dirX = Number(nextPoint.x) - Number(prevPoint.x);
+      let dirY = Number(nextPoint.y) - Number(prevPoint.y);
+      let segLen = Math.hypot(dirX, dirY);
+      if (!(segLen > 1)) return null;
+      if (Number(effWindMs) < 0) {
+        dirX *= -1;
+        dirY *= -1;
+      }
+      segLen = Math.hypot(dirX, dirY);
+      const ux = dirX / segLen;
+      const uy = dirY / segLen;
+      const nx = -uy;
+      const ny = ux;
+
+      const strength = Math.max(0, Math.min(1, (absEff - 3.2) / 4.8));
+      const zoomScale = _routeWindRibbonZoomScale();
+      const fullBaseWidthPx = (8 + 4 * strength) * zoomScale;
+      const lengthRatio = 2 + 2 * strength;
+      const lengthPx = fullBaseWidthPx * lengthRatio;
+      const baseHalfWidth = fullBaseWidthPx * 0.5;
+      const neckHalfWidth = Math.max(1.8, baseHalfWidth * 0.42);
+      const sideOffset = _routeNormalOffsetPx(centerKm, 12 * zoomScale, true);
+      const anchor = {
+        x: Number(centerPointRaw.x) + Number(sideOffset && sideOffset.dx || 0),
+        y: Number(centerPointRaw.y) + Number(sideOffset && sideOffset.dy || 0),
+      };
+      const tailCenter = {
+        x: anchor.x - ux * (lengthPx * 0.42),
+        y: anchor.y - uy * (lengthPx * 0.42),
+      };
+      const tipCenter = {
+        x: anchor.x + ux * (lengthPx * 0.58),
+        y: anchor.y + uy * (lengthPx * 0.58),
+      };
+      const neckCenter = {
+        x: tailCenter.x + (tipCenter.x - tailCenter.x) * 0.68,
+        y: tailCenter.y + (tipCenter.y - tailCenter.y) * 0.68,
+      };
+      const toLatLng = (pt) => map.containerPointToLatLng([pt.x, pt.y]);
+      return [
+        toLatLng({ x: tailCenter.x + nx * baseHalfWidth, y: tailCenter.y + ny * baseHalfWidth }),
+        toLatLng({ x: tailCenter.x - nx * baseHalfWidth, y: tailCenter.y - ny * baseHalfWidth }),
+        toLatLng({ x: neckCenter.x - nx * neckHalfWidth, y: neckCenter.y - ny * neckHalfWidth }),
+        toLatLng({ x: tipCenter.x, y: tipCenter.y }),
+        toLatLng({ x: neckCenter.x + nx * neckHalfWidth, y: neckCenter.y + ny * neckHalfWidth }),
+      ];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _renderRouteWindRibbons(points) {
+    try {
+      const layer = _ensureRouteWindRibbonLayer();
+      if (!layer) return;
+      layer.clearLayers();
+      if (!_tourIsActive()) return;
+      const total = Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length
+        ? Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0)
+        : 0;
+      if (!(total > 0) || !Array.isArray(points) || !points.length) return;
+      const samplePoints = points
+        .filter(p => Number.isFinite(Number(p && p.dist)))
+        .slice()
+        .sort((a, b) => Number(a.dist) - Number(b.dist));
+      if (!samplePoints.length) return;
+
+      const spacingKm = total < 60 ? 16 : 25;
+      const firstCenter = total <= spacingKm ? total * 0.5 : spacingKm * 0.5;
+      let lastCenterPoint = null;
+      const minEffWindMs = 3.2;
+      for (let centerKm = firstCenter; centerKm < total; centerKm += spacingKm) {
+        const sample = _routeWindSampleAtDist(samplePoints, centerKm);
+        if (!sample) continue;
+        const effWindMs = _tourEffectiveWind(sample, centerKm);
+        if (!Number.isFinite(effWindMs) || Math.abs(effWindMs) < minEffWindMs) continue;
+        const centerLatLng = routeLatLngAtDistanceKm(centerKm);
+        if (!centerLatLng) continue;
+        const centerPoint = map.latLngToContainerPoint(centerLatLng);
+        if (lastCenterPoint && Math.hypot(centerPoint.x - lastCenterPoint.x, centerPoint.y - lastCenterPoint.y) < 78) continue;
+        const polygon = _routeWindRibbonPolygon(centerKm, effWindMs);
+        if (!polygon || polygon.length < 4) continue;
+        const colors = _routeWindRibbonPalette(effWindMs);
+        L.polygon(polygon, {
+          pane: 'wmRouteWindRibbonPane',
+          interactive: false,
+          smoothFactor: 1,
+          weight: 1,
+          color: colors.stroke,
+          fillColor: colors.fill,
+          fillOpacity: 1,
+          bubblingMouseEvents: false,
+        }).addTo(layer);
+        lastCenterPoint = centerPoint;
+      }
+    } catch (_) {}
+  }
+
+  function _scheduleRouteWindRibbonRedraw() {
+    if (ROUTE_WIND_RIBBON_REDRAW_QUEUED) return;
+    ROUTE_WIND_RIBBON_REDRAW_QUEUED = true;
+    requestAnimationFrame(() => {
+      ROUTE_WIND_RIBBON_REDRAW_QUEUED = false;
+      _renderRouteWindRibbons(ROUTE_WIND_RIBBON_POINTS);
+    });
+  }
+
+  function _setRouteWindRibbonsData(points) {
+    ROUTE_WIND_RIBBON_POINTS = Array.isArray(points) ? points.slice() : null;
+    if (!ROUTE_WIND_RIBBON_POINTS || !ROUTE_WIND_RIBBON_POINTS.length) {
+      _clearRouteWindRibbons();
+      return;
+    }
+    _scheduleRouteWindRibbonRedraw();
+  }
+
   function _ensureTourRouteDayCardTooltipStyles() {
     try {
       if (typeof document === 'undefined') return;
@@ -3567,36 +4035,52 @@
   }
 
   function _tourRouteDayCardHtml(data) {
+  function _resetTourRouteDisplay(message) {
+    try {
+      if (routeLayer && map) map.removeLayer(routeLayer);
+    } catch (_) {}
+    routeLayer = null;
+    try {
+      if (flagsLayer && map) map.removeLayer(flagsLayer);
+    } catch (_) {}
+    flagsLayer = null;
+    try {
+      if (glyphLayer && map) map.removeLayer(glyphLayer);
+    } catch (_) {}
+    glyphLayer = null;
+    try {
+      if (glyphLayerNew && map) map.removeLayer(glyphLayerNew);
+    } catch (_) {}
+    glyphLayerNew = null;
+    try { _clearTourRouteDayCards(); } catch (_) {}
+    try { _clearRouteWindRibbons(); } catch (_) {}
+    ROUTE_COORDS = null;
+    ROUTE_CUM_DISTS = null;
+    PROFILE_XS = [];
+    PROFILE_ROUTE_INDEXES = [];
+    OVERLAY_POINTS = [];
+    TOUR_DAYS_AGGR = {};
+    LAST_PROFILE = null;
+    LAST_TOUR_SUMMARY = null;
+    LAST_TOUR_DAY_SUMMARIES = null;
+    LAST_TOUR_PROVENANCE = null;
+    TOUR_HOVER_POINTS_DIRTY = true;
+    try { _setTourBandsData(null, []); } catch (_) {}
+    try { _renderTourEmptyState(message || 'Loading route + profile…'); } catch (_) {}
+    try { _drawProfilePlaceholder(message || 'Loading route + profile…'); } catch (_) {}
+  }
     const info = (data && typeof data === 'object') ? data : {};
-    const lucky = (typeof info.lucky === 'boolean') ? info.lucky : null;
-    const tempLabel = Number.isFinite(Number(info.tempC)) ? `${Math.round(Number(info.tempC))}°` : '';
-    const rainLabel = Number.isFinite(Number(info.rainMm)) ? `${fmt(Number(info.rainMm), 0)} mm` : '';
-    const dateLabel = String(info.dateLabel || '');
-    const iconClass = String(info.iconClass || 'cloudy');
-    const iconSrc = `/assets/glyphs/weather/weather_${encodeURIComponent(iconClass)}.png`;
-    return (
-      `<div data-wm-route-card="1" style="width:40px;height:52px;display:flex;align-items:center;justify-content:center;overflow:visible;">`
-        + `<div style="position:relative;width:48px;height:62px;transform:scale(0.8);transform-origin:center center;border-radius:11px;background:rgba(255,255,255,0.52);border:1px solid rgba(148,163,184,0.22);box-shadow:0 4px 10px rgba(15,23,42,0.06);backdrop-filter:blur(1.5px);">`
-          + (typeof lucky === 'boolean'
-            ? `<span style="position:absolute;left:50%;top:6px;width:8px;height:8px;border-radius:999px;transform:translateX(-50%);background:${lucky ? '#47d764' : '#b3b3b3'};border:1.2px solid ${lucky ? 'rgba(20,126,56,0.95)' : 'rgba(120,132,145,0.72)'};"></span>`
-            : '')
-          + (tempLabel
-            ? `<div style="position:absolute;left:0;right:0;top:14px;text-align:center;font:600 12px/1 system-ui,-apple-system,sans-serif;color:#0f172a;">${tempLabel}</div>`
-            : '')
-          + `<img src="${iconSrc}" alt="" width="20" height="20" style="position:absolute;left:50%;top:24px;width:20px;height:20px;transform:translateX(-50%);object-fit:contain;display:block;" />`
-          + (rainLabel
-            ? `<div style="position:absolute;left:0;right:0;top:45px;text-align:center;font:500 9px/1 system-ui,-apple-system,sans-serif;color:#64748b;">${rainLabel}</div>`
-            : '')
-          + (dateLabel
-            ? `<div style="position:absolute;left:0;right:0;top:54px;text-align:center;font:500 10px/1 system-ui,-apple-system,sans-serif;color:#64748b;">${dateLabel}</div>`
-            : '')
-        + `</div>`
-      + `</div>`
-    );
+    return _routeWeatherCardHtml({
+      tempLabel: Number.isFinite(Number(info.tempC)) ? `${Math.round(Number(info.tempC))}°` : '',
+      rainLabel: Number.isFinite(Number(info.rainMm)) ? `${fmt(Number(info.rainMm), 0)} mm` : '',
+      dateLabel: String(info.dateLabel || ''),
+      iconClass: String(info.iconClass || 'cloudy'),
+      lucky: (typeof info.lucky === 'boolean') ? info.lucky : null,
+    });
   }
 
   function _createTourRouteDayCardIcon(data) {
-    return L.divIcon({ html: _tourRouteDayCardHtml(data), className: 'glyph-map', iconSize: [40, 52], iconAnchor: [20, 26] });
+    return L.divIcon({ html: _tourRouteDayCardHtml(data), className: 'glyph-map', iconSize: [47, 61], iconAnchor: [24, 31] });
   }
 
   function _tourRouteDayCardDateLabel(dayIdx) {
@@ -3650,8 +4134,12 @@
             return Number.isFinite(dkm) && dkm >= startDist && dkm < endDist;
           });
         }
+        const backendDaySummary = _tourBackendDaySummary(dayIdx);
         const daySummary = _tourSummarizeDayPoints(dayPoints);
         const sample = _tourSampleAtDist(midDist);
+        const backendTemp = _tourDaySummaryNumber(backendDaySummary, 'temp_median', 'tempMedian');
+        const backendRain = _tourDaySummaryNumber(backendDaySummary, 'precip_sum', 'precipSum', 'precip_mean', 'precipMean');
+        const backendLucky = backendDaySummary && backendDaySummary.lucky === true;
         const sampleTemp = Number.isFinite(Number(sample && sample.temp_day_median))
           ? Number(sample.temp_day_median)
           : Number.isFinite(Number(sample && sample.temperature))
@@ -3666,17 +4154,23 @@
           dayIdx,
           distKm: midDist,
           dateLabel: _tourRouteDayCardDateLabel(dayIdx),
-          tempC: Number.isFinite(Number(daySummary && daySummary.tempMedian))
+          tempC: Number.isFinite(Number(backendTemp))
+            ? Number(backendTemp)
+            : Number.isFinite(Number(daySummary && daySummary.tempMedian))
             ? Number(daySummary.tempMedian)
             : sampleTemp,
-          rainMm: Number.isFinite(Number(daySummary && daySummary.precipSum))
+          rainMm: Number.isFinite(Number(backendRain))
+            ? Number(backendRain)
+            : Number.isFinite(Number(daySummary && daySummary.precipSum))
             ? Number(daySummary.precipSum)
             : Number.isFinite(Number(sample && sample.rainTypical))
               ? Number(sample.rainTypical)
               : null,
           rainProb,
           iconClass: mapWeatherByProb(rainProb),
-          lucky: (daySummary && typeof daySummary.lucky === 'boolean') ? daySummary.lucky : null,
+          lucky: backendDaySummary && typeof backendDaySummary.lucky === 'boolean'
+            ? backendLucky
+            : (daySummary && typeof daySummary.lucky === 'boolean') ? daySummary.lucky : null,
         });
       }
       return out;
@@ -3694,9 +4188,9 @@
       if (!entries.length) return;
       _ensureRouteMarkerPane('wmRouteLabelPane', 650, 'auto');
       routeDayCardLayer = L.layerGroup().addTo(map);
-      // Card visible size after scale(0.8): inner 48×62 → ~38×50px; half-diagonal ≈ 32px.
-      // Route line is ~4px half-width. Use 42px perpendicular offset for comfortable clearance.
-      const OFFSET_PX = 42;
+      // Card visible size after scale(1.02): inner 44x57 -> ~45x58px; half-diagonal ~= 37px.
+      // Route line is ~4px half-width. Use 50px perpendicular offset for comfortable clearance.
+      const OFFSET_PX = 50;
       let mapBounds = null;
       try { mapBounds = map.getBounds(); } catch (_) {}
       for (const entry of entries) {
@@ -3902,7 +4396,7 @@
       startDate: todayIso,
       tourDays: 7,
       reverse: false,
-      weatherQuality: 'best',
+      weatherQuality: 'standard',
 
       stepKm: 60,
       histLastYear: defaultLastYear,
@@ -3972,12 +4466,16 @@
       const loadedStrategicYear = Number(j.strategicYear) || defaults.strategicYear;
       const strategicYears = _sanitizeYears(j.strategicYears, loadedStrategicYear);
       const primaryStrategicYear = Math.round(Number(strategicYears[0] || loadedStrategicYear || defaults.strategicYear));
+      const weatherQualityRaw = (typeof j.weatherQuality === 'string') ? String(j.weatherQuality) : String(defaults.weatherQuality || 'standard');
+      const weatherQuality = (weatherQualityRaw === 'premium')
+        ? 'premium'
+        : 'standard';
       return {
         ...defaults,
         startDate: (typeof j.startDate === 'string' && j.startDate) ? j.startDate : defaults.startDate,
         tourDays: Number.isFinite(Number(j.tourDays)) ? Number(j.tourDays) : defaults.tourDays,
         reverse: (typeof j.reverse === 'boolean') ? j.reverse : defaults.reverse,
-        weatherQuality: (typeof j.weatherQuality === 'string') ? j.weatherQuality : defaults.weatherQuality,
+        weatherQuality,
 
         stepKm: Number(j.stepKm) || defaults.stepKm,
         histLastYear: Math.round(Number(lastY) || defaults.histLastYear),
@@ -4846,16 +5344,18 @@
         }
       } catch (_) {}
       try {
-        if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+        if (!_hasActiveGpxSelection()) _drawProfilePlaceholder('No GPX route loaded. Click or drop a .gpx file to begin.');
+        else if (LAST_PROFILE) drawProfile(LAST_PROFILE);
         else _drawProfilePlaceholder('Loading route profile...');
       } catch (_) {}
       try {
-        if (LAST_TOUR_SUMMARY) renderTourSummary(LAST_TOUR_SUMMARY);
+        if (!_hasActiveGpxSelection()) _renderTourEmptyState('No GPX route loaded. Click or drop a .gpx file to begin.');
+        else if (LAST_TOUR_SUMMARY) renderTourSummary(LAST_TOUR_SUMMARY);
         else _renderTourEmptyState('Loading route weather...');
       } catch (_) {}
       try { _tourSyncTimelineFromInputs(); } catch (_) {}
       try {
-        if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
+        if (sseStatus) sseStatus.textContent = _hasActiveGpxSelection() ? 'Loading route + profile…' : 'No GPX route loaded';
       } catch (_) {}
       if (modeChanged) {
         if (MODE_SWITCH_RELOAD_TIMER) {
@@ -6367,12 +6867,11 @@
     }
   }
 
-  function _tourEffectiveWind(sample, dkm) {
+  function _tourEffectiveWindAlignment(sample, dkm) {
     try {
       if (!sample) return null;
-      const wspd = Number(sample.windSpeed);
       const wdir = Number(sample.windDir);
-      if (!Number.isFinite(wspd) || !Number.isFinite(wdir)) return null;
+      if (!Number.isFinite(wdir)) return null;
       const sd = Array.isArray(LAST_PROFILE && LAST_PROFILE.sampled_dist_km) ? LAST_PROFILE.sampled_dist_km : [];
       const sh = Array.isArray(LAST_PROFILE && LAST_PROFILE.sampled_heading_deg) ? LAST_PROFILE.sampled_heading_deg : [];
       if (!sd.length || sh.length !== sd.length) return null;
@@ -6401,7 +6900,21 @@
       // Convert wind "from" to "to" direction (+180°) before projection.
       const wdirTo = ((wdir + 180.0) % 360.0);
       const ang = (wdirTo - routeDir) * Math.PI / 180.0;
-      const comp = wspd * Math.cos(ang);
+      const comp = Math.cos(ang);
+      return Number.isFinite(comp) ? comp : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function _tourEffectiveWind(sample, dkm) {
+    try {
+      if (!sample) return null;
+      const wspd = Number(sample.windSpeed);
+      if (!Number.isFinite(wspd)) return null;
+      const alignment = _tourEffectiveWindAlignment(sample, dkm);
+      if (!Number.isFinite(alignment)) return null;
+      const comp = wspd * alignment;
       return Number.isFinite(comp) ? comp : null;
     } catch (_) {
       return null;
@@ -6833,7 +7346,7 @@
           } catch (_) {}
         };
 
-        const _showOffRouteTooltip = (cp, latlng, dbg, dbgEl, dbgText, dRoutePx, thrPx) => {
+        const _showOffRouteTooltip = (cp, latlng, bestRoute, dbg, dbgEl, dbgText, dRoutePx, thrPx) => {
           try {
             if (!cp || !latlng) {
               try { if (this._tipEl) this._tipEl.style.display = 'none'; } catch (_) {}
@@ -6848,12 +7361,37 @@
               ? STRATEGIC_LOCATION_LABEL_CACHE.get(hoverLocationKey)
               : ((Number.isFinite(hoverLat) && Number.isFinite(hoverLon)) ? _strategicLocationFallbackLabel(hoverLat, hoverLon) : '—');
             const coordText = `${_fmtNum(hoverLat, 4)}, ${_fmtNum(hoverLon, 4)}`;
-            const renderLocationTooltipHtml = (locationLabel) => (
-              `<div style="display:flex;flex-direction:column;gap:3px;white-space:nowrap;">`
-                + `<div style="font-size:13px;font-weight:700;color:#0f172a;">${_htmlEsc(locationLabel || cachedLocationLabel || '—')}</div>`
-                + `<div style="font-size:11px;color:#475569;">${_htmlEsc(coordText)}</div>`
-              + `</div>`
-            );
+            const onRoute = !!(bestRoute && Number.isFinite(Number(bestRoute.dist)) && Number.isFinite(dRoutePx) && dRoutePx <= thrPx);
+            const renderLocationTooltipHtml = (locationLabel) => {
+              if (!onRoute) {
+                return (
+                  `<div style="display:flex;flex-direction:column;gap:3px;white-space:nowrap;">`
+                    + `<div style="font-size:13px;font-weight:700;color:#0f172a;">${_htmlEsc(locationLabel || cachedLocationLabel || '—')}</div>`
+                    + `<div style="font-size:11px;color:#475569;">${_htmlEsc(coordText)}</div>`
+                  + `</div>`
+                );
+              }
+              const distKm = Number(bestRoute.dist);
+              const sample = _tourSampleAtDist(distKm);
+              const effWindMs = _tourEffectiveWind(sample, distKm);
+              const windColors = Number.isFinite(effWindMs)
+                ? _routeWindRibbonPalette(effWindMs)
+                : null;
+              const effLabel = !Number.isFinite(effWindMs)
+                ? '—'
+                : `${effWindMs >= 0 ? 'TW' : 'HW'} ${fmt(Math.abs(effWindMs), 1)} m/s`;
+              const effValueHtml = !Number.isFinite(effWindMs)
+                ? '—'
+                : `<span style="color:${_htmlEsc(windColors && windColors.stroke || '#0f172a')};font-weight:800;">${_htmlEsc(effLabel)}</span>`;
+              return _buildMetricTooltipCardHtml({
+                location: locationLabel || cachedLocationLabel || '—',
+                period: `${fmt(distKm, 1)} km along route`,
+                rows: [
+                  { label: 'Coords', value: coordText },
+                  { label: 'Head/Tailwind', valueHtml: effValueHtml, valueStyle: 'font-size:12px;text-align:right;white-space:nowrap;' },
+                ],
+              });
+            };
             const htmlKey = `off|${hoverLocationKey}|${coordText}`;
             const tipEl = _ensureTipEl();
             const html = renderLocationTooltipHtml(cachedLocationLabel);
@@ -6979,7 +7517,7 @@
             const dRoutePx = bestRoute ? Math.sqrt(Number(bestRoute.d2) || 0) : null;
 
             try { m.getContainer().style.cursor = (bestRoute && Number.isFinite(dRoutePx) && dRoutePx <= selectThrPx) ? 'pointer' : ''; } catch (_) {}
-            _showOffRouteTooltip(cp, latlng, dbg, dbgEl, dbgText, dRoutePx, thrPx);
+            _showOffRouteTooltip(cp, latlng, bestRoute, dbg, dbgEl, dbgText, dRoutePx, thrPx);
             return;
           } catch (err) {
             if (dbg) {
@@ -8553,7 +9091,14 @@
       `<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">${iconMarkup}<div data-role="location" style="font-size:13px;font-weight:700;color:#0f172a;">${_htmlEsc(p.location || '—')}</div></div>`,
       `<div style="font-size:11px;color:#475569;margin-bottom:8px;">${_htmlEsc(p.period || '')}</div>`,
       '<div style="display:grid;grid-template-columns:auto auto;column-gap:14px;row-gap:5px;align-items:start;">',
-      rows.map((row) => `<div style="font-size:11px;font-weight:700;color:#334155;">${_htmlEsc(row && row.label)}</div><div style="font-size:11px;color:#0f172a;text-align:right;white-space:nowrap;">${_htmlEsc(row && row.value)}</div>`).join(''),
+      rows.map((row) => {
+        const labelStyle = row && row.labelStyle ? String(row.labelStyle) : 'font-size:11px;font-weight:700;color:#334155;';
+        const valueStyle = row && row.valueStyle ? String(row.valueStyle) : 'font-size:11px;color:#0f172a;text-align:right;white-space:nowrap;';
+        const valueHtml = row && row.valueHtml !== undefined && row.valueHtml !== null
+          ? String(row.valueHtml)
+          : _htmlEsc(row && row.value);
+        return `<div style="${labelStyle}">${_htmlEsc(row && row.label)}</div><div style="${valueStyle}">${valueHtml}</div>`;
+      }).join(''),
       '</div>',
     ].join('');
   }
@@ -12442,7 +12987,7 @@
     const base = prev ? { ...prev } : {};
     base.startDate = (startDateInput && startDateInput.value) ? String(startDateInput.value) : (new Date()).toISOString().slice(0, 10);
     base.tourDays = Number(tourDaysInput && tourDaysInput.value) || 7;
-    base.weatherQuality = (weatherQualitySelect && weatherQualitySelect.value) ? String(weatherQualitySelect.value) : 'best';
+    base.weatherQuality = (weatherQualitySelect && weatherQualitySelect.value) ? String(weatherQualitySelect.value) : 'standard';
     try {
       const rc = document.getElementById('reverse');
       base.reverse = Boolean(rc && rc.checked);
@@ -14478,8 +15023,10 @@
   }
 
   async function loadMap(opts) {
+    try { _bindGpxUiHandlers(); } catch (_) {}
     // In Climatic Map mode, *never* fetch route/weather along GPX.
     if (!_tourIsActive()) {
+      try { _clearSseRetryTimer(); } catch (_) {}
       try { if (evtSource) evtSource.close(); } catch (_) {}
       try { if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close(); } catch (_) {}
       try { if (evtSourceProfile) evtSourceProfile.close(); } catch (_) {}
@@ -14492,7 +15039,31 @@
       return;
     }
 
-    const loadOpts = (opts && typeof opts === 'object') ? opts : {};
+    if (!_hasActiveGpxSelection()) {
+      try { _clearSseRetryTimer(); } catch (_) {}
+      try { if (evtSource) evtSource.close(); } catch (_) {}
+      try { if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close(); } catch (_) {}
+      try { if (evtSourceProfile) evtSourceProfile.close(); } catch (_) {}
+      try { _applyTourNoGpxIdleState(); } catch (_) {}
+      return;
+    }
+
+    const requestedLoadOpts = (opts && typeof opts === 'object') ? opts : {};
+    const routeMode = getWeatherQualityMode();
+    const loadOpts = {
+      ...requestedLoadOpts,
+      offlineOnly: (typeof requestedLoadOpts.offlineOnly === 'boolean')
+        ? requestedLoadOpts.offlineOnly
+        : (routeMode !== 'premium'),
+      forceOnline: (typeof requestedLoadOpts.forceOnline === 'boolean')
+        ? requestedLoadOpts.forceOnline
+        : (routeMode === 'premium'),
+      reusePerDay: (typeof requestedLoadOpts.reusePerDay === 'boolean')
+        ? requestedLoadOpts.reusePerDay
+        : (routeMode === 'premium'),
+    };
+    const loadSerial = ++ACTIVE_LOAD_SERIAL;
+    const isActiveLoad = () => loadSerial === ACTIVE_LOAD_SERIAL;
     LAST_LOAD_OPTS = loadOpts;
     const forceRestart = !!loadOpts.forceRestart;
     const weatherOnly = !!loadOpts.weatherOnly;
@@ -14504,6 +15075,7 @@
 
     if (forceRestart) {
       // GPX reload (and similar actions) must interrupt any ongoing stream.
+      try { _clearSseRetryTimer(); } catch (_) {}
       try { evtSource && evtSource.close(); } catch (_) {}
       try {
         if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close();
@@ -14551,6 +15123,7 @@
 
       const offlineOnlyParam = loadOpts.offlineOnly ? '&offline_only=1' : '';
       const forceOnlineParam = loadOpts.forceOnline ? '&force_online=1' : '';
+      const reusePerDayParam = loadOpts.reusePerDay ? '&reuse_per_day=1' : '';
       const z = map.getZoom();
       const profileStep = (function(zoom){
         // Use a denser elevation profile than weather glyph sampling so local relief stays visible.
@@ -14566,12 +15139,14 @@
 
     const wantMultiYear = histN >= 2;
     let sawSingleYearSpan = false;
+    const yearsKey = _strategicYearsKey(_strategicGetSelectedYears());
+    const yearsParam = yearsKey ? `&years=${encodeURIComponent(String(yearsKey))}` : '';
 
     if (weatherOnly) {
       beginWeatherProgress();
-      if (sseStatus) sseStatus.textContent = (loadOpts.forceOnline && wantMultiYear)
-        ? 'Fetching multi-year weather…'
-        : 'Loading weather…';
+      if (sseStatus) sseStatus.textContent = loadOpts.offlineOnly
+        ? 'Loading offline tile weather…'
+        : 'Loading premium route weather…';
     } else {
       startGpxRouteProgress();
     }
@@ -14590,7 +15165,7 @@
       if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
       OVERLAY_POINTS = [];
       TOUR_HOVER_POINTS_DIRTY = true;
-      const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${gpxParam}${revParam}`;
+      const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}`;
       let evtSourcePrime = new EventSource(urlPrime);
       window.__WM_PRIME_EVT_SOURCE__ = evtSourcePrime;
       PRIME_IN_PROGRESS = true;
@@ -14659,9 +15234,25 @@
       }
 
       const qsComfort = `&temp_cold=${encodeURIComponent(SETTINGS.tempCold)}&temp_hot=${encodeURIComponent(SETTINGS.tempHot)}&rain_high=${encodeURIComponent(SETTINGS.rainHigh)}&wind_head_comfort=${encodeURIComponent(SETTINGS.windHeadComfort)}&wind_tail_comfort=${encodeURIComponent(SETTINGS.windTailComfort)}`;
-      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${offlineOnlyParam}${forceOnlineParam}${gpxParam}${revParam}${qsComfort}`);
+      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${qsComfort}`);
+    let streamHadFatalError = false;
     let stationCount = 0;
     let stationTotal = 0;
+    const setStationProgress = (completed, total) => {
+      const nextCompleted = Number(completed);
+      const nextTotal = Number(total);
+      if (Number.isFinite(nextCompleted) && nextCompleted >= 0) stationCount = nextCompleted;
+      if (!Number.isFinite(nextTotal) || nextTotal < 0) return;
+      stationTotal = Math.max(Number(stationTotal) || 0, nextTotal, Number(stationCount) || 0);
+    };
+    const routeStatusSourceText = (backendText) => {
+      const raw = String(backendText || '').trim();
+      if (!raw) return null;
+      if (!loadOpts.offlineOnly) return raw;
+      if (/cached Open-Meteo station stats/i.test(raw)) return raw.replace(/cached Open-Meteo station stats/i, 'cached offline tile stats');
+      if (/historical Open-Meteo weather data/i.test(raw)) return raw.replace(/historical Open-Meteo weather data/i, 'offline tile weather');
+      return raw;
+    };
     // Dim existing glyphs and prepare new layer
     if (glyphLayer) {
       try { glyphLayer.eachLayer(l => { if (l.setOpacity) l.setOpacity(0.3); }); } catch (_) {}
@@ -14671,7 +15262,10 @@
     OVERLAY_POINTS = [];
     TOUR_DAYS_AGGR = {};
     LAST_TOUR_SUMMARY = null;
+    LAST_TOUR_DAY_SUMMARIES = null;
+    LAST_TOUR_PROVENANCE = null;
     TOUR_HOVER_POINTS_DIRTY = true;
+    try { _clearRouteWindRibbons(); } catch (_) {}
     glyphLayerNew = L.layerGroup().addTo(map);
     try { _setTourBandsEnabled(_tourWantBands()); } catch (_) {}
     if (!weatherOnly) LAST_PROFILE = null;
@@ -14679,95 +15273,27 @@
 
     // Subscribe to streaming map data
     evtSource.addEventListener('route', (ev) => {
-        try {
-          const payload = JSON.parse(ev.data);
-          syncActiveGpxFromStreamPayload(payload);
-          // In weather-only upgrade mode, keep the existing route/profile stable.
-          if (weatherOnly) {
-            const total = Number(payload.total || 0);
-            stationTotal = total;
-            return;
-          }
-
-          // GPX route geometry ready -> switch to elevation/profile phase
-          if (PROGRESS_PHASE !== 'weather') startGpxProfileProgress();
-          const route = payload.route;
-          const routeSegments = payload.route_segments;
-          const startMarker = payload.start_marker;
-          const endMarker = payload.end_marker;
-          const total = Number(payload.total || 0);
-          stationTotal = total;
-          if (routeLayer) { map.removeLayer(routeLayer); }
-          if (flagsLayer) { map.removeLayer(flagsLayer); flagsLayer = null; }
-          const ROUTE_COLOR = '#2F4858';
-          const CASE_COLOR = '#FFFFFF';
-          const CASE_OPACITY = 0.82;
-          const CASE_WEIGHT = 5;
-          const LINE_WEIGHT = 2.5;
-          if (routeSegments && routeSegments.features && routeSegments.features.length) {
-            routeLayer = L.layerGroup().addTo(map);
-            routeSegments.features.forEach(feat => {
-              L.geoJSON(feat, { style: { color: CASE_COLOR, weight: CASE_WEIGHT, opacity: CASE_OPACITY } }).addTo(routeLayer);
-              L.geoJSON(feat, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
-            });
-          } else {
-            routeLayer = L.layerGroup().addTo(map);
-            L.geoJSON(route, { style: { color: CASE_COLOR, weight: CASE_WEIGHT, opacity: CASE_OPACITY } }).addTo(routeLayer);
-            L.geoJSON(route, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
-          }
-          try { _applyTourRouteLayerVisibility(); } catch (_) {}
-          flagsLayer = L.layerGroup().addTo(map);
-          const coords = route.geometry.coordinates;
-          if (startMarker && startMarker.geometry && Array.isArray(coords) && coords.length >= 2) {
-            const [slon, slat] = startMarker.geometry.coordinates;
-            const m = _createRouteEndpointMarker(slat, slon, 'start', (startMarker.properties||{}).date);
-            if (m) flagsLayer.addLayer(m);
-          }
-          if (endMarker && endMarker.geometry && Array.isArray(coords) && coords.length >= 2) {
-            const [elon, elat] = endMarker.geometry.coordinates;
-            const m = _createRouteEndpointMarker(elat, elon, 'finish', (endMarker.properties||{}).date);
-            if (m) flagsLayer.addLayer(m);
-          }
-          const b = boundsFromLineString(route.geometry.coordinates);
-          map.fitBounds(b, { padding: [20, 20] });
-          if (progressBar) progressBar.style.width = total > 0 ? '0%' : '0%';
-          OVERLAY_POINTS = [];
-          TOUR_HOVER_POINTS_DIRTY = true;
-          LAST_PROFILE = null;
-          try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
-          const ysRaw = (payload.years_start !== undefined) ? payload.years_start : payload.yearsStart;
-          const yeRaw = (payload.years_end !== undefined) ? payload.years_end : payload.yearsEnd;
-          const toNum = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : NaN; };
-          let ysNum = toNum(ysRaw);
-          let yeNum = toNum(yeRaw);
-          const validYear = (y) => Number.isFinite(y) && y >= 1900 && y <= 2100;
-          let usePayload = validYear(ysNum) && validYear(yeNum) && yeNum >= ysNum;
-          if (!usePayload) {
-            let endY = Number(SETTINGS.histLastYear);
-            let n = Number(SETTINGS.histYears);
-            if (!Number.isFinite(endY) || endY < 1900) endY = (new Date()).getFullYear() - 1;
-            if (!Number.isFinite(n) || n <= 0) n = 10;
-            yeNum = Math.round(endY);
-            ysNum = Math.round(endY - n + 1);
-            usePayload = true;
-          }
-          YEARS_SPAN_TEXT = usePayload ? `${ysNum}..${yeNum}` : null;
-          const spanTxt = YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data';
-          if (sseStatus) sseStatus.textContent = `Loading station 0/${stationTotal} from ${spanTxt}`;
-        } catch (e) { console.error('route event error', e); }
       try {
+        if (!isActiveLoad()) return;
         const payload = JSON.parse(ev.data);
         syncActiveGpxFromStreamPayload(payload);
-        if (weatherOnly) return;
+        const total = Number(payload.total || 0);
+        setStationProgress(stationCount, total);
         const route = payload.route;
+        ROUTE_COORDS = route && route.geometry && route.geometry.coordinates || null;
+        computeRouteCumulativeDistances();
+        if (weatherOnly) {
+          if (LAST_TOUR_SUMMARY) {
+            try { renderTourSummary(LAST_TOUR_SUMMARY); } catch (_) {}
+          }
+          return;
+        }
+        if (PROGRESS_PHASE !== 'weather') startGpxProfileProgress();
         const routeSegments = payload.route_segments;
         const startMarker = payload.start_marker;
         const endMarker = payload.end_marker;
-        const total = Number(payload.total || 0);
-        stationTotal = total;
         if (routeLayer) { map.removeLayer(routeLayer); }
         if (flagsLayer) { map.removeLayer(flagsLayer); flagsLayer = null; }
-        ROUTE_COORDS = route.geometry && route.geometry.coordinates || null;
         const ROUTE_COLOR = '#2F4858';
         const CASE_COLOR = '#FFFFFF';
         const CASE_OPACITY = 0.82;
@@ -14785,13 +15311,9 @@
           L.geoJSON(route, { style: { color: ROUTE_COLOR, weight: LINE_WEIGHT, opacity: 0.98 } }).addTo(routeLayer);
         }
         try { _applyTourRouteLayerVisibility(); } catch (_) {}
-        // Update route coords and recompute cumulative distances & profile mapping
-        ROUTE_COORDS = route.geometry && route.geometry.coordinates || null;
         computeRouteCumulativeDistances();
         if (LAST_PROFILE) computeProfileRouteIndexes(LAST_PROFILE);
-        // Render wind-blown banner flags using SVG with mast + curved cloth
         flagsLayer = L.layerGroup().addTo(map);
-        // Determine reference segment for perpendicular offset
         const coords = route.geometry.coordinates;
         if (startMarker && startMarker.geometry && Array.isArray(coords) && coords.length >= 2) {
           const [slon, slat] = startMarker.geometry.coordinates;
@@ -14805,10 +15327,12 @@
         }
         const b = boundsFromLineString(route.geometry.coordinates);
         map.fitBounds(b, { padding: [20, 20] });
+        if (progressBar) progressBar.style.width = '0%';
         OVERLAY_POINTS = [];
         TOUR_HOVER_POINTS_DIRTY = true;
+        LAST_PROFILE = null;
+        try { _clearRouteWindRibbons(); } catch (_) {}
         try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
-        // Robust years span: parse, validate, and fallback to SETTINGS if invalid
         const ysRaw = (payload.years_start !== undefined) ? payload.years_start : payload.yearsStart;
         const yeRaw = (payload.years_end !== undefined) ? payload.years_end : payload.yearsEnd;
         const toNum = (v) => {
@@ -14820,7 +15344,6 @@
         const validYear = (y) => Number.isFinite(y) && y >= 1900 && y <= 2100;
         let usePayload = validYear(ysNum) && validYear(yeNum) && yeNum >= ysNum;
         if (!usePayload) {
-          // Fallback to current settings; ensure sane defaults
           let endY = Number(SETTINGS.histLastYear);
           let n = Number(SETTINGS.histYears);
           if (!Number.isFinite(endY) || endY < 1900) endY = (new Date()).getFullYear() - 1;
@@ -14831,17 +15354,18 @@
         }
         YEARS_SPAN_TEXT = usePayload ? `${ysNum}..${yeNum}` : null;
         const spanTxt = YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data';
-        // Do not clobber the GPX/profile phase status text here; station updates will set status once weather starts.
         if (sseStatus && PROGRESS_PHASE === 'weather') sseStatus.textContent = `Loading station 0/${stationTotal} from ${spanTxt}`;
       } catch (e) { console.error('route event error', e); }
     });
     // Profile data stream
     evtSource.addEventListener('profile', (ev) => {
       try {
+        if (!isActiveLoad()) return;
         if (weatherOnly) return;
         const payload = JSON.parse(ev.data);
         if (payload && payload.profile) {
           drawProfile(payload.profile);
+          try { _scheduleRouteWindRibbonRedraw(); } catch (_) {}
           // Precompute nearest route indexes for profile points for cursor sync
           computeProfileRouteIndexes(payload.profile);
           // GPX+profile complete
@@ -14852,9 +15376,31 @@
     // Tour Summary stream: render compact badges panel
     evtSource.addEventListener('tour_summary', (ev) => {
       try {
+        if (!isActiveLoad()) return;
         const s = JSON.parse(ev.data);
+        LAST_TOUR_DAY_SUMMARIES = Array.isArray(s && s.day_summaries) ? s.day_summaries.slice() : null;
         renderTourSummary(s);
       } catch (e) { console.warn('tour_summary parse error', e); }
+    });
+    evtSource.addEventListener('stream_error', (ev) => {
+      try {
+        if (!isActiveLoad()) return;
+        streamHadFatalError = true;
+        try { _clearSseRetryTimer(); } catch (_) {}
+        try { evtSource && evtSource.close(); } catch (_) {}
+        MAIN_IN_PROGRESS = false;
+        PRIME_IN_PROGRESS = false;
+        let payload = null;
+        try { payload = ev && ev.data ? JSON.parse(ev.data) : null; } catch (_) {}
+        const message = String((payload && payload.message) || 'Route setup failed').trim();
+        try { _resetTourRouteDisplay(message); } catch (_) {}
+        try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
+        try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
+        try { if (sseStatus) sseStatus.textContent = `Stream: ${message}`; } catch (_) {}
+        try { if (progressEl) progressEl.classList.remove('loading'); } catch (_) {}
+      } catch (e) {
+        console.error('stream_error event error', e);
+      }
     });
     // Mouse cursor interactions
     try { _bindProfilePointerHandlers(); } catch (_) {}
@@ -14875,75 +15421,22 @@
         _applyReverseTourState(!!reverseCheck.checked, { refresh: false });
       });
     }
-    // Bind GPX UI handlers ONCE (otherwise click can open multiple dialogs)
-    if (!GPX_UI_BOUND) {
-      GPX_UI_BOUND = true;
-      // Drag & Drop GPX upload
-      if (dropZone) {
-        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.background = 'rgba(0,255,128,0.12)'; });
-        dropZone.addEventListener('dragleave', () => { dropZone.style.background = 'rgba(0,255,128,0.06)'; });
-        dropZone.addEventListener('drop', async (e) => {
-          e.preventDefault();
-          dropZone.style.background = 'rgba(0,255,128,0.06)';
-          const f = e.dataTransfer.files && e.dataTransfer.files[0];
-          if (!f) return;
-          if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please drop a .gpx file'); return; }
-          try {
-            const j = await uploadGpxFileWithProgress(f);
-            LAST_GPX_PATH = j.path;
-            LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
-            _persistLastGpxSelection();
-            updateDropZoneLabel();
-            try { applyPrefsFromFormAndPersist(); } catch (_) {}
-            try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
-            loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
-          } catch (err) {
-            console.error('Upload error', err);
-            alert('Upload error: ' + err);
-            setProgressIndeterminate(false);
-          }
-        });
-      }
-
-      // Click to open file dialog
-      const gpxInput = document.getElementById('gpxFileInput');
-      if (dropZone && gpxInput) {
-        dropZone.addEventListener('click', (e) => {
-          try {
-            e.preventDefault();
-            e.stopPropagation();
-          } catch (_) {}
-          if (GPX_UPLOAD_IN_PROGRESS) return;
-          gpxInput.click();
-        });
-        gpxInput.addEventListener('change', async () => {
-          const f = gpxInput.files && gpxInput.files[0];
-          if (!f) return;
-          if (!f.name.toLowerCase().endsWith('.gpx')) { alert('Please choose a .gpx file'); return; }
-          try {
-            const j = await uploadGpxFileWithProgress(f);
-            LAST_GPX_PATH = j.path;
-            LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
-            _persistLastGpxSelection();
-            updateDropZoneLabel();
-            try { applyPrefsFromFormAndPersist(); } catch (_) {}
-            try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
-            loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
-          } catch (err) {
-            console.error('Upload error', err);
-            alert('Upload error: ' + err);
-            setProgressIndeterminate(false);
-          } finally {
-            // Allow selecting the same file again to retrigger change
-            try { gpxInput.value = ''; } catch (_) {}
-          }
-        });
-      }
-    }
-
     evtSource.addEventListener('station', (ev) => {
       try {
+        if (!isActiveLoad()) return;
         const payload = JSON.parse(ev.data);
+        const completed = Number(payload.completed || 0);
+        const total = Number(payload.total || 0);
+        const pct = total > 0 ? Math.min(100, Math.round(100 * completed / total)) : 0;
+        if (!payload || !payload.feature) {
+          setProgressPercent(pct);
+          setStationProgress(completed, total);
+          if (payload && payload.skipped && sseStatus) {
+            const reason = payload.reason ? String(payload.reason) : 'No weather data for this route point';
+            sseStatus.textContent = `Skipping route point ${completed}/${total}: ${reason}`;
+          }
+          return;
+        }
         const f = payload.feature;
         const [lon, lat] = f.geometry.coordinates;
         const props = f.properties || {};
@@ -15026,18 +15519,7 @@
             ...tipPayload,
             location: locationLabel || tipPayload.location,
           });
-          try {
-            const effWindMs = _tourEffectiveWind({
-              windSpeed: props.wind_speed_ms,
-              windDir: props.wind_dir_deg,
-            }, Number(props.distance_from_start_km || 0));
-            if (_routeEffectiveChevronCount(effWindMs) > 0) {
-              const windIcon = _createRouteWindIcon(props);
-              const windMarker = L.marker(windLatLng, { icon: windIcon, pane: 'wmRouteWindPane', interactive: false, keyboard: false, zIndexOffset: 160 });
-              try { windMarker._wmRouteWindProps = { ...props }; } catch (_) {}
-              glyphLayerNew.addLayer(windMarker);
-            }
-          } catch (_) {}
+          // Route wind is rendered by sparse ribbons now; keep point glyphs focused on weather only.
         }
         // Aggregate per-tour-day stats for console diagnostics
         try {
@@ -15121,17 +15603,14 @@
           sourceMode: (props._source_mode !== undefined) ? String(props._source_mode) : null,
           tileId: (props._tile_id !== undefined) ? String(props._tile_id) : null
         });
+        try { _setRouteWindRibbonsData(OVERLAY_POINTS); } catch (_) {}
         // Redraw full profile (clears canvas) as stations stream in
         if (LAST_PROFILE) drawProfile(LAST_PROFILE);
         // Progressive tactical rendering: enable + redraw bands as points arrive.
         try { if (wantBands) _setTourBandsEnabled(true); } catch (_) {}
         try { _setTourBandsData(LAST_PROFILE, OVERLAY_POINTS); } catch (_) {}
-        const completed = Number(payload.completed || 0);
-        const total = Number(payload.total || 0);
-        const pct = total > 0 ? Math.min(100, Math.round(100 * completed / total)) : 0;
         setProgressPercent(pct);
-        stationCount = completed;
-        stationTotal = total;
+        setStationProgress(completed, total);
         const spanTxt = YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data';
         if (sseStatus) sseStatus.textContent = `Loading station ${stationCount}/${stationTotal} (${weatherProvenanceText()}) from ${spanTxt}`;
       } catch (e) { console.error('station event error', e); }
@@ -15139,6 +15618,8 @@
 
 
     evtSource.addEventListener('done', (e) => {
+      if (!isActiveLoad()) return;
+      try { _clearSseRetryTimer(); } catch (_) {}
       try { evtSource && evtSource.close(); } catch (_) {}
       MAIN_IN_PROGRESS = false;
       let donePayload = null;
@@ -15184,11 +15665,12 @@
           try { _refreshTourRouteMarkerIcons(glyphLayer); } catch (_) {}
         });
       } catch (_) {}
-      setTimeout(() => { if (progressBar) progressBar.style.width = '0%'; }, 600);
+      setProgressPercent(100);
+      try { if (progressPercentEl) progressPercentEl.textContent = '100%'; } catch (_) {}
       if (sseStatus) {
         let backendTxt = null;
         try {
-          backendTxt = donePayload && donePayload.station_source_text ? String(donePayload.station_source_text) : null;
+          backendTxt = routeStatusSourceText(donePayload && donePayload.station_source_text ? String(donePayload.station_source_text) : null);
         } catch (_) {
           backendTxt = null;
         }
@@ -15196,17 +15678,25 @@
         const suffix = backendTxt ? ` ${backendTxt}` : spanTxt;
         const prov = weatherProvenanceText();
         const provTxt = prov ? ` (${prov})` : '';
-        sseStatus.textContent = `Stream: done, stations ${stationCount}/${stationTotal}${provTxt}${suffix}`;
+        sseStatus.textContent = `Stream: done, stations ${stationCount}/${Math.max(stationCount, stationTotal)}${provTxt}${suffix}`;
       }
       try {
         if (_tourIsActive()) {
           const summaryFromDone = donePayload && donePayload.tour_summary ? donePayload.tour_summary : null;
+          const daySummariesFromDone = Array.isArray(donePayload && donePayload.tour_day_summaries)
+            ? donePayload.tour_day_summaries
+            : Array.isArray(summaryFromDone && summaryFromDone.day_summaries)
+              ? summaryFromDone.day_summaries
+              : null;
+          LAST_TOUR_PROVENANCE = donePayload && donePayload.provenance ? donePayload.provenance : LAST_TOUR_PROVENANCE;
+          LAST_TOUR_DAY_SUMMARIES = Array.isArray(daySummariesFromDone) ? daySummariesFromDone.slice() : LAST_TOUR_DAY_SUMMARIES;
           renderTourSummary(summaryFromDone || LAST_TOUR_SUMMARY || null);
+          try { _renderTourRouteDayCards(LAST_PROFILE); } catch (_) {}
         }
       } catch (_) {}
       try { _persistTourSnapshot(); } catch (_) {}
 
-      // Best (multi-year) mode: if preview showed only single-year stats, immediately upgrade.
+      // Legacy upgrade path: keep available for explicit force-online passes.
       if (autoUpgradeIfSingleYear && !upgradePass && wantMultiYear && sawSingleYearSpan) {
         try {
           if (sseStatus) sseStatus.textContent = 'Upgrading to multi-year weather…';
@@ -15237,13 +15727,17 @@
     // Auto-reconnect with simple backoff
     let retryMs = 1000;
     evtSource.onerror = (e) => {
+      if (!isActiveLoad()) return;
+      if (streamHadFatalError) return;
       try { evtSource && evtSource.close(); } catch (_) {}
       // Allow retry to actually start a new stream
       MAIN_IN_PROGRESS = false;
       if (progressBar) progressBar.style.width = '0%';
       if (sseStatus) sseStatus.textContent = `Stream: error, reconnecting in ${Math.round(retryMs/1000)}s…`;
       console.error('SSE error', e);
-      setTimeout(() => {
+      try { _clearSseRetryTimer(); } catch (_) {}
+      SSE_RETRY_TIMER = setTimeout(() => {
+        SSE_RETRY_TIMER = 0;
         retryMs = Math.min(retryMs * 2, 10000);
         loadMap(LAST_LOAD_OPTS || undefined);
       }, retryMs);
@@ -15286,7 +15780,9 @@
         const histEnd = (Number.isFinite(histLast) && histLast >= 1970) ? Math.round(histLast) : ((new Date()).getFullYear() - 1);
         const histStart = histEnd - histN + 1;
 
-        const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=1&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${gpxParam}${revParam}`;
+        const yearsKey = _strategicYearsKey(_strategicGetSelectedYears());
+        const yearsParam = yearsKey ? `&years=${encodeURIComponent(String(yearsKey))}` : '';
+        const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=1&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${gpxParam}${revParam}`;
         evtSourceProfile = new EventSource(url);
         evtSourceProfile.addEventListener('profile', (ev) => {
           try {
@@ -15312,10 +15808,10 @@
     OFFLINE_FALLBACK_ACTIVE = false;
     try { applyPrefsFromFormAndPersist(); } catch (_) {}
     const mode = getWeatherQualityMode();
-    if (mode === 'best') {
-      loadMap({ ...(LAST_LOAD_OPTS || {}), offlineOnly: true, autoUpgradeIfSingleYear: true });
+    if (mode === 'premium') {
+      loadMap({ ...(LAST_LOAD_OPTS || {}), offlineOnly: false, forceOnline: true, reusePerDay: true, autoUpgradeIfSingleYear: false });
     } else {
-      loadMap({ ...(LAST_LOAD_OPTS || {}) });
+      loadMap({ ...(LAST_LOAD_OPTS || {}), offlineOnly: true, forceOnline: false, reusePerDay: false, autoUpgradeIfSingleYear: false });
     }
   });
   
@@ -15323,6 +15819,7 @@
     const wasInProgress = PRIME_IN_PROGRESS || MAIN_IN_PROGRESS;
     const wasFallback = OFFLINE_FALLBACK_ACTIVE;
     // Abort current download
+    try { _clearSseRetryTimer(); } catch (_) {}
     try { 
       if (evtSource) evtSource.close();
       if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close();
@@ -15353,6 +15850,7 @@
   function markDataStale() {
     if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) {
       // Abort if currently downloading
+      try { _clearSseRetryTimer(); } catch (_) {}
       try { 
         if (evtSource) evtSource.close();
         if (window.__WM_PRIME_EVT_SOURCE__) window.__WM_PRIME_EVT_SOURCE__.close();
@@ -15364,7 +15862,12 @@
     updateFetchWeatherLabel();
     fetchWeatherBtn.disabled = false;
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
-    if (sseStatus) sseStatus.textContent = 'Parameters changed - click "Update" (or "Get Weather Data")';
+    if (sseStatus) {
+      const actionLabel = (fetchWeatherBtn && fetchWeatherBtn.textContent)
+        ? String(fetchWeatherBtn.textContent).trim()
+        : 'Get Route Weather';
+      sseStatus.textContent = `Parameters changed - click "${actionLabel}"`;
+    }
   }
   
   startDateInput.addEventListener('change', markDataStale);
@@ -15384,6 +15887,9 @@
   // Tour Summary: badges panel rendering
   function renderTourSummary(summary) {
     try {
+      LAST_TOUR_DAY_SUMMARIES = Array.isArray(summary && summary.day_summaries)
+        ? summary.day_summaries.slice()
+        : LAST_TOUR_DAY_SUMMARIES;
       const resolvedSummary = _normalizeTourSummary(summary);
       LAST_TOUR_SUMMARY = resolvedSummary || null;
       _setBottomPanelUiMode('tour');
@@ -15398,16 +15904,46 @@
       } catch (_) {}
       const badgesWrap = document.getElementById('tourSummaryBadgesItems') || badgesRow;
       const routeLabels = _tourRouteDisplayLabels();
-      const years = _tourSelectedYearsSpan();
       const rangeInfo = _tourDateRangeInfo();
       const distanceKm = _tourRouteDistanceKm();
       const gpxName = _tourDisplayGpxName();
+      const coverageText = (() => {
+        try {
+          const prov = (LAST_TOUR_PROVENANCE && typeof LAST_TOUR_PROVENANCE === 'object') ? LAST_TOUR_PROVENANCE : null;
+          const fmtYears = (values) => Array.isArray(values)
+            ? values
+                .map((value) => Number(value))
+                .filter((value) => Number.isFinite(value))
+                .map((value) => String(Math.trunc(value)))
+                .join(', ')
+            : '';
+          if (prov) {
+            const usedSelected = fmtYears(prov.used_years);
+            const missingSelected = fmtYears(prov.missing_requested_years);
+            const skippedPoints = Number(prov.skipped_points || 0);
+            const parts = [];
+            if (usedSelected) parts.push(`Contributing selected years: ${usedSelected}`);
+            if (missingSelected) parts.push(`Missing selected: ${missingSelected}`);
+            if (Number.isFinite(skippedPoints) && skippedPoints > 0) parts.push(`Skipped points: ${skippedPoints}`);
+            if (parts.length) return parts.join(' ; ');
+          }
+          const text = prov && typeof prov.summary_text === 'string' ? String(prov.summary_text || '').trim() : '';
+          if (!text) return '';
+          return text
+            .replace(/^requested years\s+[^;•]+[;•]\s*/i, '')
+            .replace(/^requested years\s+[^;•]+$/i, '')
+            .trim();
+        } catch (_) {
+          return '';
+        }
+      })();
       const routeHtml = `
         <div class="wm-tour-band-card wm-tour-summary-route">
           <div class="wm-tour-route-kicker">GPX Route Info</div>
           <div class="wm-tour-route-title"><span data-role="start">${_htmlEsc(routeLabels.fromLabel)}</span> → <span data-role="end">${_htmlEsc(routeLabels.toLabel)}</span></div>
-          <div class="wm-tour-route-file">${_htmlEsc(gpxName)}${Number.isFinite(distanceKm) ? ` • ${fmt(distanceKm, 0)} km` : ''}</div>
-          <div class="wm-tour-route-meta">${_fmtIsoDayMonthCompact(rangeInfo.startIso)}–${_fmtIsoDayMonthCompact(rangeInfo.endIso)} • ${Math.max(1, rangeInfo.totalDays)}d • ${years.discontiguous ? years.exactLabel : years.spanLabel}</div>
+          <div class="wm-tour-route-file">${_htmlEsc(gpxName)}</div>
+          <div class="wm-tour-route-meta">${_fmtIsoDayMonthCompact(rangeInfo.startIso)}–${_fmtIsoDayMonthCompact(rangeInfo.endIso)} • ${Math.max(1, rangeInfo.totalDays)}d${Number.isFinite(distanceKm) ? ` • ${fmt(distanceKm, 0)} km` : ''}</div>
+          ${coverageText ? `<div class="wm-tour-route-meta">${_htmlEsc(coverageText)}</div>` : ''}
           <div class="wm-tour-route-actions">
             <button id="tourSummaryReverseToggle" class="wm-tour-inline-toggle" type="button" aria-pressed="${REVERSED ? 'true' : 'false'}">${REVERSED ? 'Reverse Tour On' : 'Reverse Tour'}</button>
           </div>
@@ -15662,6 +16198,7 @@
   })();
   // Restore session on page load
   (async function initFromSession(){
+    let sessionRestoreOk = true;
     try {
       try {
         const savedSettings = loadSavedSettings();
@@ -15675,8 +16212,8 @@
       const st = await res.json();
       if (st && typeof st === 'object') {
         // Populate UI fields and internal state
-        if (st.start_date) startDateInput.value = st.start_date;
-        if (typeof st.tour_days === 'number') tourDaysInput.value = st.tour_days;
+        if (st.start_date && startDateInput) startDateInput.value = st.start_date;
+        if (typeof st.tour_days === 'number' && tourDaysInput) tourDaysInput.value = st.tour_days;
         if (typeof st.glyph_spacing_km === 'number') {
           SETTINGS.stepKm = Number(st.glyph_spacing_km);
           STEP_KM = SETTINGS.stepKm;
@@ -15688,9 +16225,9 @@
           SETTINGS.histLastYear = Math.round(fy + (Number.isFinite(ny) ? ny : 10) - 1);
         }
         // Sync settings modal inputs silently
-        setStepKm.value = SETTINGS.stepKm;
+        if (setStepKm) setStepKm.value = SETTINGS.stepKm;
         if (setHistLast) setHistLast.value = SETTINGS.histLastYear;
-        setHistYears.value = SETTINGS.histYears;
+        if (setHistYears) setHistYears.value = SETTINGS.histYears;
         try { _refreshPreferencesUi(); } catch (_) {}
         // GPX path and reverse flag
         if (st.last_gpx_path) LAST_GPX_PATH = st.last_gpx_path;
@@ -15717,14 +16254,17 @@
         }
       }
     } catch (e) {
+      sessionRestoreOk = false;
       console.warn('Session restore failed; using defaults', e);
       _restoreLastGpxSelectionFromStorage();
     }
     updateDropZoneLabel();
     try {
-      ACTIVE_TOUR_SNAPSHOT_KEY = _currentTourSnapshotKey();
-      if (_restoreTourSnapshotIfCurrent() && sseStatus) {
-        sseStatus.textContent = 'Restored cached tour weather cards';
+      if (sessionRestoreOk) {
+        ACTIVE_TOUR_SNAPSHOT_KEY = _currentTourSnapshotKey();
+        if (_restoreTourSnapshotIfCurrent() && sseStatus) {
+          sseStatus.textContent = 'Restored cached tour weather cards';
+        }
       }
     } catch (_) {}
     loadMap();

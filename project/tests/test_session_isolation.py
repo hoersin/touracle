@@ -1,6 +1,5 @@
 import io
 import json
-import os
 import re
 import sys
 import threading
@@ -16,6 +15,10 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import app as backend_app  # type: ignore
+
+
+def _make_clients(count: int):
+    return [backend_app.app.test_client() for _ in range(int(count))]
 
 
 @pytest.fixture
@@ -288,3 +291,112 @@ def test_non_dry_run_streams_do_not_cancel_across_sessions(isolated_session_back
     assert _route_event_payload(body_b)['gpx_path'] == upload_b['path']
     assert isinstance(_done_event_payload(body_a).get('stations_count'), int)
     assert isinstance(_done_event_payload(body_b).get('stations_count'), int)
+
+
+def test_parallel_uploads_keep_many_sessions_isolated(isolated_session_backend):
+    _, _, session_file = isolated_session_backend
+    clients = _make_clients(6)
+    session_ids = []
+    for client in clients:
+        session_ids.append(client.get('/api/session').get_json()['session_id'])
+
+    assert len(set(session_ids)) == len(session_ids)
+
+    barrier = threading.Barrier(len(clients))
+    results = [None] * len(clients)
+
+    def worker(index: int, client):
+        barrier.wait(timeout=3.0)
+        upload_resp = client.post(
+            '/api/upload_gpx',
+            data={'file': (io.BytesIO(f'<gpx><trk><name>{index}</name></trk></gpx>'.encode('utf-8')), f'route_{index}.gpx')},
+            content_type='multipart/form-data',
+        )
+        session_resp = client.get('/api/session')
+        results[index] = (upload_resp, session_resp)
+
+    threads = [threading.Thread(target=worker, args=(idx, client), name=f'upload-worker-{idx}') for idx, client in enumerate(clients)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+        assert not thread.is_alive(), f'{thread.name} did not finish'
+
+    upload_paths = []
+    for idx, pair in enumerate(results):
+        assert pair is not None
+        upload_resp, session_resp = pair
+        assert upload_resp.status_code == 200
+        assert session_resp.status_code == 200
+        upload_payload = upload_resp.get_json()
+        session_payload = session_resp.get_json()
+        upload_paths.append(upload_payload['path'])
+        assert session_payload['session_id'] == session_ids[idx]
+        assert session_payload['last_gpx_name'] == f'route_{idx}.gpx'
+        assert session_payload['last_gpx_path'] == upload_payload['path']
+        assert session_ids[idx] in upload_payload['path']
+        assert Path(upload_payload['path']).exists()
+
+    assert len(set(upload_paths)) == len(upload_paths)
+
+    persisted = json.loads(session_file.read_text(encoding='utf-8'))
+    sessions = persisted.get('sessions') or {}
+    for idx, session_id in enumerate(session_ids):
+        assert session_id in sessions
+        assert sessions[session_id]['last_gpx_name'] == f'route_{idx}.gpx'
+        assert sessions[session_id]['last_gpx_path'] in upload_paths
+
+
+def test_many_non_dry_run_streams_do_not_interfere_across_sessions(isolated_session_backend, monkeypatch):
+    clients = _make_clients(4)
+    session_ids = [client.get('/api/session').get_json()['session_id'] for client in clients]
+    uploads = []
+    for idx, client in enumerate(clients):
+        payload = client.post(
+            '/api/upload_gpx',
+            data={'file': (io.BytesIO(f'<gpx><trk><name>{idx}</name></trk></gpx>'.encode('utf-8')), f'route_{idx}.gpx')},
+            content_type='multipart/form-data',
+        ).get_json()
+        uploads.append(payload)
+
+    barrier = threading.Barrier(len(clients))
+    original_generate = backend_app.generate_glyph_v2
+    first_call_seen = set()
+    first_call_lock = threading.Lock()
+
+    def synchronized_generate(stats, debug=False):
+        thread_name = threading.current_thread().name
+        wait_here = False
+        with first_call_lock:
+            if thread_name not in first_call_seen:
+                first_call_seen.add(thread_name)
+                wait_here = True
+        if wait_here:
+            barrier.wait(timeout=5.0)
+        return original_generate(stats, debug=debug)
+
+    monkeypatch.setattr(backend_app, 'generate_glyph_v2', synchronized_generate)
+
+    results = [None] * len(clients)
+
+    def run_stream(index: int, client):
+        response = client.get(
+            f'/api/map_stream?date=02-24&tour_planning=0&mode=single_day&gpx_path={uploads[index]["path"]}'
+        )
+        results[index] = response.data.decode('utf-8')
+
+    threads = [threading.Thread(target=run_stream, args=(idx, client), name=f'stream-worker-{idx}') for idx, client in enumerate(clients)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=8.0)
+        assert not thread.is_alive(), f'{thread.name} did not finish'
+
+    for idx, body in enumerate(results):
+        assert body is not None
+        route_payload = _route_event_payload(body)
+        done_payload = _done_event_payload(body)
+        assert 'stream cancelled' not in body.lower()
+        assert route_payload['gpx_path'] == uploads[idx]['path']
+        assert session_ids[idx] in route_payload['gpx_path']
+        assert isinstance(done_payload.get('stations_count'), int)

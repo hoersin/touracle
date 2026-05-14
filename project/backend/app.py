@@ -5,6 +5,8 @@ import os
 import time
 import threading
 import uuid
+import json
+import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as _dt
 import math
@@ -43,7 +45,7 @@ def _json_default(obj: Any):
 
 # Import sibling modules when running as a script
 import logging
-from route_sampling import sample_route, haversine_km
+from route_sampling import sample_route, haversine_km, load_gpx
 try:
     from stations import StationIndex
 except Exception:  # pragma: no cover
@@ -361,11 +363,25 @@ def _resolve_default_gpx(preferred: str | Path | None = None) -> Path:
         return latest
     return GPX_FILE
 
+
+def _gpx_path_is_usable(path_value: str | Path | None) -> bool:
+    try:
+        if not path_value:
+            return False
+        path = Path(path_value)
+        if not path.exists() or path.suffix.lower() != '.gpx':
+            return False
+        ET.parse(path)
+        return True
+    except Exception:
+        return False
+
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger('pipeline')
 
 _OFFLINE_STORE: Optional[Any] = None
 _OFFLINE_STORE_TRIED = False
+_OFFLINE_STORE_LOCK = threading.Lock()
 _OFFLINE_STORES_BY_YEAR: Dict[int, Any] = {}
 _OFFLINE_STORES_BY_YEAR_LOCK = threading.Lock()
 _OFFLINE_STORES_BY_PATH: Dict[str, Any] = {}
@@ -388,27 +404,33 @@ def _get_offline_store() -> Optional[Any]:
     global _OFFLINE_STORE, _OFFLINE_STORE_TRIED
     if _OFFLINE_STORE_TRIED:
         return _OFFLINE_STORE
-    _OFFLINE_STORE_TRIED = True
+    with _OFFLINE_STORE_LOCK:
+        if _OFFLINE_STORE_TRIED:
+            return _OFFLINE_STORE
 
-    if OfflineWeatherStore is None:
-        _OFFLINE_STORE = None
-        return None
+        if OfflineWeatherStore is None:
+            _OFFLINE_STORE = None
+            _OFFLINE_STORE_TRIED = True
+            return None
 
-    try:
-        _OFFLINE_STORE = OfflineWeatherStore.default_from_env()
-    except Exception:
-        _OFFLINE_STORE = None
-
-    if _OFFLINE_STORE is not None:
         try:
-            log.info('[OFFLINE] enabled db=%s tile_km=%.1f', _OFFLINE_STORE.cfg.db_path, float(_OFFLINE_STORE.cfg.tile_km))
+            store = OfflineWeatherStore.default_from_env()
         except Exception:
-            log.info('[OFFLINE] enabled')
-    else:
-        # Only warn if user explicitly asked for offline.
-        if os.environ.get('OFFLINE_WEATHER_DB') or _offline_strict_enabled():
-            log.warning('[OFFLINE] requested but unavailable (db missing/invalid)')
-    return _OFFLINE_STORE
+            store = None
+
+        _OFFLINE_STORE = store
+        _OFFLINE_STORE_TRIED = True
+
+        if _OFFLINE_STORE is not None:
+            try:
+                log.info('[OFFLINE] enabled db=%s tile_km=%.1f', _OFFLINE_STORE.cfg.db_path, float(_OFFLINE_STORE.cfg.tile_km))
+            except Exception:
+                log.info('[OFFLINE] enabled')
+        else:
+            # Only warn if user explicitly asked for offline.
+            if os.environ.get('OFFLINE_WEATHER_DB') or _offline_strict_enabled():
+                log.warning('[OFFLINE] requested but unavailable (db missing/invalid)')
+        return _OFFLINE_STORE
 
 
 def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
@@ -703,6 +725,39 @@ def _parse_years_csv(raw: str | None) -> list[int]:
         seen.add(y)
         uniq.append(y)
     return uniq
+
+
+def _normalize_requested_years(
+    *,
+    years_selected: list[int] | None = None,
+    start_year: int | None = None,
+    end_year: int | None = None,
+) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+
+    for value in years_selected or []:
+        try:
+            year = int(value)
+        except Exception:
+            continue
+        if year in seen:
+            continue
+        seen.add(year)
+        out.append(year)
+
+    if out:
+        return out
+
+    try:
+        if start_year is not None and end_year is not None:
+            ys = int(min(start_year, end_year))
+            ye = int(max(start_year, end_year))
+            for year in range(ys, ye + 1):
+                out.append(int(year))
+    except Exception:
+        return []
+    return out
 
 
 def _normalize_climate_mode(raw: str | None) -> str:
@@ -1750,25 +1805,312 @@ def api_strategy_map():
     return api_strategic_grid()
 
 
-def _get_offline_stats(lat: float, lon: float, month: int, day: int) -> Optional[Dict[str, Any]]:
-    store = _get_offline_store()
-    if store is None:
-        return None
-    try:
-        st = store.get_stats(float(lat), float(lon), int(month), int(day))
-        if st is None:
+def _get_offline_stats(
+    lat: float,
+    lon: float,
+    month: int,
+    day: int,
+    *,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    years_selected: list[int] | None = None,
+    allow_span_mismatch: bool = False,
+) -> Optional[Dict[str, Any]]:
+    requested_years = _normalize_requested_years(
+        years_selected=years_selected,
+        start_year=start_year,
+        end_year=end_year,
+    )
+
+    def _annotate_years(stats: Dict[str, Any], years: list[int]) -> Dict[str, Any]:
+        used_years = []
+        seen_years: set[int] = set()
+        for year in years:
+            try:
+                y = int(year)
+            except Exception:
+                continue
+            if y in seen_years:
+                continue
+            seen_years.add(y)
+            used_years.append(y)
+        out = dict(stats)
+        if used_years:
+            out['_years_start'] = int(min(used_years))
+            out['_years_end'] = int(max(used_years))
+            out['_years_used'] = [int(year) for year in used_years]
+        return out
+
+    def _weighted_mean(values: list[tuple[float, float]]) -> float | None:
+        total_weight = 0.0
+        total_value = 0.0
+        for value, weight in values:
+            if not math.isfinite(value):
+                continue
+            w = float(weight)
+            if not math.isfinite(w) or w <= 0:
+                continue
+            total_weight += w
+            total_value += value * w
+        if total_weight <= 0:
             return None
+        return float(total_value / total_weight)
+
+    def _aggregate_partial_year_stats(stats_by_year: list[tuple[int, Dict[str, Any]]]) -> Dict[str, Any] | None:
+        if not stats_by_year:
+            return None
+        if len(stats_by_year) == 1:
+            year, stats = stats_by_year[0]
+            return _annotate_years(stats, [year])
+
+        years = [int(year) for year, _stats in stats_by_year]
+        first = dict(stats_by_year[0][1])
+
+        temp_vals: list[float] = []
+        temp_p25_vals: list[float] = []
+        temp_p75_vals: list[float] = []
+        temp_std_vals: list[float] = []
+        precip_vals: list[float] = []
+        rain_prob_vals: list[tuple[float, float]] = []
+        rain_typical_vals: list[float] = []
+        rain_p25_vals: list[float] = []
+        rain_p75_vals: list[float] = []
+        rain_p90_vals: list[float] = []
+        wind_speed_vals: list[float] = []
+        wind_dir_vals: list[float] = []
+        wind_var_vals: list[float] = []
+        temp_hist_p25_vals: list[float] = []
+        temp_hist_p75_vals: list[float] = []
+        temp_day_vals: list[float] = []
+        temp_day_p25_vals: list[float] = []
+        temp_day_p75_vals: list[float] = []
+        match_days_total = 0
+        samples_daily_total = 0
+        samples_day_means_total = 0
+        samples_day_hours_total = 0
+        samples_rain_total = 0
+        samples_wind_total = 0
+
+        for _year, stats in stats_by_year:
+            temp = _finite_float(stats.get('temperature_c'))
+            if temp is not None:
+                temp_vals.append(temp)
+            temp_p25 = _finite_float(stats.get('temp_p25'))
+            if temp_p25 is not None:
+                temp_p25_vals.append(temp_p25)
+            temp_p75 = _finite_float(stats.get('temp_p75'))
+            if temp_p75 is not None:
+                temp_p75_vals.append(temp_p75)
+            temp_std = _finite_float(stats.get('temp_std'))
+            if temp_std is not None:
+                temp_std_vals.append(temp_std)
+
+            precip = _finite_float(stats.get('precipitation_mm'))
+            if precip is not None:
+                precip_vals.append(max(0.0, precip))
+            rain_prob = _finite_float(stats.get('rain_probability'))
+            if rain_prob is not None:
+                rain_weight = _finite_float(stats.get('_samples_rain'))
+                if rain_weight is None:
+                    rain_weight = _finite_float(stats.get('_match_days'))
+                rain_prob_vals.append((max(0.0, min(1.0, rain_prob)), rain_weight if rain_weight is not None else 1.0))
+            rain_typical = _finite_float(stats.get('rain_typical_mm'))
+            if rain_typical is not None:
+                rain_typical_vals.append(max(0.0, rain_typical))
+            rain_p25 = _finite_float(stats.get('rain_hist_p25_mm'))
+            if rain_p25 is not None:
+                rain_p25_vals.append(max(0.0, rain_p25))
+            rain_p75 = _finite_float(stats.get('rain_hist_p75_mm'))
+            if rain_p75 is not None:
+                rain_p75_vals.append(max(0.0, rain_p75))
+            rain_p90 = _finite_float(stats.get('rain_hist_p90_mm'))
+            if rain_p90 is not None:
+                rain_p90_vals.append(max(0.0, rain_p90))
+
+            wind_speed = _finite_float(stats.get('wind_speed_ms'))
+            if wind_speed is not None:
+                wind_speed_vals.append(max(0.0, wind_speed))
+            wind_dir = _finite_float(stats.get('wind_dir_deg'))
+            if wind_dir is not None:
+                wind_dir_vals.append(wind_dir)
+            wind_var = _finite_float(stats.get('wind_var_deg'))
+            if wind_var is not None:
+                wind_var_vals.append(max(0.0, wind_var))
+
+            temp_hist_p25 = _finite_float(stats.get('temp_hist_p25'))
+            if temp_hist_p25 is not None:
+                temp_hist_p25_vals.append(temp_hist_p25)
+            temp_hist_p75 = _finite_float(stats.get('temp_hist_p75'))
+            if temp_hist_p75 is not None:
+                temp_hist_p75_vals.append(temp_hist_p75)
+            temp_day = _finite_float(stats.get('temp_day_median'))
+            if temp_day is not None:
+                temp_day_vals.append(temp_day)
+            temp_day_p25 = _finite_float(stats.get('temp_day_p25'))
+            if temp_day_p25 is not None:
+                temp_day_p25_vals.append(temp_day_p25)
+            temp_day_p75 = _finite_float(stats.get('temp_day_p75'))
+            if temp_day_p75 is not None:
+                temp_day_p75_vals.append(temp_day_p75)
+
+            match_days_total += int(_finite_float(stats.get('_match_days')) or 0)
+            samples_daily_total += int(_finite_float(stats.get('_samples_daily')) or 0)
+            samples_day_means_total += int(_finite_float(stats.get('_samples_day_means')) or 0)
+            samples_day_hours_total += int(_finite_float(stats.get('_samples_day_hours')) or 0)
+            samples_rain_total += int(_finite_float(stats.get('_samples_rain')) or 0)
+            samples_wind_total += int(_finite_float(stats.get('_samples_wind')) or 0)
+
+        aggregated: Dict[str, Any] = {
+            '_offline': True,
+            '_provider': first.get('_provider', 'open-meteo'),
+            '_temp_source': first.get('_temp_source', 'offline_tile'),
+            '_tile_id': first.get('_tile_id'),
+            'temperature_c': _median_value(temp_vals),
+            'temp_p25': (_percentile(temp_vals, 25.0) if len(temp_vals) >= 2 else _mean_value(temp_p25_vals)),
+            'temp_p75': (_percentile(temp_vals, 75.0) if len(temp_vals) >= 2 else _mean_value(temp_p75_vals)),
+            'temp_std': _mean_value(temp_std_vals),
+            'precipitation_mm': _mean_value(precip_vals),
+            'rain_probability': _weighted_mean(rain_prob_vals),
+            'rain_typical_mm': _mean_value(rain_typical_vals),
+            'rain_hist_p25_mm': _mean_value(rain_p25_vals),
+            'rain_hist_p75_mm': _mean_value(rain_p75_vals),
+            'rain_hist_p90_mm': _mean_value(rain_p90_vals),
+            'wind_speed_ms': _mean_value(wind_speed_vals),
+            'wind_dir_deg': _circular_mean_deg(wind_dir_vals),
+            'wind_var_deg': _mean_value(wind_var_vals),
+            'temp_hist_p25': _mean_value(temp_hist_p25_vals),
+            'temp_hist_p75': _mean_value(temp_hist_p75_vals),
+            'temp_day_median': _median_value(temp_day_vals),
+            'temp_day_p25': (_percentile(temp_day_vals, 25.0) if len(temp_day_vals) >= 2 else _mean_value(temp_day_p25_vals)),
+            'temp_day_p75': (_percentile(temp_day_vals, 75.0) if len(temp_day_vals) >= 2 else _mean_value(temp_day_p75_vals)),
+            '_match_days': int(match_days_total),
+            '_samples_daily': int(samples_daily_total),
+            '_samples_day_means': int(samples_day_means_total),
+            '_samples_day_hours': int(samples_day_hours_total),
+            '_samples_rain': int(samples_rain_total),
+            '_samples_wind': int(samples_wind_total),
+        }
+        return _annotate_years(aggregated, years)
+
+    candidate_stores: list[Any] = []
+    seen: set[int] = set()
+
+    def _add_candidate(store: Any) -> None:
+        if store is None:
+            return
         try:
-            if getattr(store, 'cfg', None) is not None and getattr(store.cfg, 'years', None):
-                ys, ye = store.cfg.years  # type: ignore[misc]
-                st = dict(st)
-                st['_years_start'] = int(ys)
-                st['_years_end'] = int(ye)
+            key = id(store)
+        except Exception:
+            key = 0
+        if key in seen:
+            return
+        if not _store_covers_point(store, float(lat), float(lon)):
+            return
+        seen.add(key)
+        candidate_stores.append(store)
+
+    if requested_years:
+        probe_years: list[int] = [requested_years[0], requested_years[-1], *reversed(requested_years)]
+        for probe_year in probe_years:
+            store = _resolve_offline_store_for_year(int(probe_year), point=(float(lat), float(lon)))
+            if store is None:
+                continue
+            if all(_store_supports_year(store, int(year)) for year in requested_years):
+                _add_candidate(store)
+        fallback_store = _get_offline_store()
+        if fallback_store is not None and all(_store_supports_year(fallback_store, int(year)) for year in requested_years):
+            _add_candidate(fallback_store)
+
+    for store in candidate_stores:
+        try:
+            st = store.get_stats(float(lat), float(lon), int(month), int(day))
+            if st is None:
+                continue
+            try:
+                if getattr(store, 'cfg', None) is not None and getattr(store.cfg, 'years', None):
+                    ys, ye = store.cfg.years  # type: ignore[misc]
+                    st = _annotate_years(dict(st), [int(ys), int(ye)])
+            except Exception:
+                pass
+            return st
+        except Exception:
+            continue
+
+    if allow_span_mismatch and requested_years:
+        partial_stats_by_year: list[tuple[int, Dict[str, Any]]] = []
+        for probe_year in requested_years:
+            try:
+                year_int = int(probe_year)
+            except Exception:
+                continue
+            try:
+                store = _resolve_offline_store_for_year(year_int, point=(float(lat), float(lon)))
+            except Exception:
+                store = None
+            if store is None or not _store_supports_year(store, year_int) or not _store_covers_point(store, float(lat), float(lon)):
+                continue
+            try:
+                st = store.get_stats(float(lat), float(lon), int(month), int(day))
+            except Exception:
+                st = None
+            if st is None:
+                continue
+            partial_stats_by_year.append((year_int, _annotate_years(dict(st), [year_int])))
+
+        if partial_stats_by_year:
+            aggregated = _aggregate_partial_year_stats(partial_stats_by_year)
+            if aggregated is not None:
+                return aggregated
+            return partial_stats_by_year[0][1]
+
+        try:
+            current_default_year = int(_dt.date.today().year) - 1
+        except Exception:
+            current_default_year = 2025
+        search_start = max([current_default_year, *[int(year) for year in requested_years]])
+        search_floor = 2000
+        try:
+            fallback_cfg = getattr(_get_offline_store(), 'cfg', None)
+            fallback_years = getattr(fallback_cfg, 'years', None) if fallback_cfg is not None else None
+            if fallback_years:
+                search_start = max(search_start, int(fallback_years[1]))
+                search_floor = min(search_floor, int(fallback_years[0]))
         except Exception:
             pass
-        return st
-    except Exception:
-        return None
+
+        requested_set = {int(year) for year in requested_years}
+        for probe_year in range(int(search_start), int(search_floor) - 1, -1):
+            if probe_year in requested_set:
+                continue
+            try:
+                store = _resolve_offline_store_for_year(probe_year, point=(float(lat), float(lon)))
+            except Exception:
+                store = None
+            if store is None or not _store_supports_year(store, probe_year) or not _store_covers_point(store, float(lat), float(lon)):
+                continue
+            try:
+                st = store.get_stats(float(lat), float(lon), int(month), int(day))
+            except Exception:
+                st = None
+            if st is None:
+                continue
+            return _annotate_years(dict(st), [probe_year])
+
+    fallback_store = _get_offline_store()
+    if fallback_store is not None and _store_covers_point(fallback_store, float(lat), float(lon)):
+        try:
+            st = fallback_store.get_stats(float(lat), float(lon), int(month), int(day))
+            if st is not None:
+                try:
+                    if getattr(fallback_store, 'cfg', None) is not None and getattr(fallback_store.cfg, 'years', None):
+                        ys, ye = fallback_store.cfg.years  # type: ignore[misc]
+                        st = _annotate_years(dict(st), [int(ys), int(ye)])
+                except Exception:
+                    pass
+                return st
+        except Exception:
+            pass
+    return None
 
 # In-memory progress tracking for SSE
 PROGRESS: Dict[str, Dict[str, Any]] = {}
@@ -1836,6 +2178,39 @@ def _get_progress(job_id: str, session_id: Optional[str] = None) -> Dict[str, An
 
 
 # -------------------- Session persistence --------------------
+def _read_gpx_track_name(path_like: Any) -> str:
+    try:
+        path = Path(str(path_like or ''))
+        if not path.exists() or not path.is_file():
+            return ''
+        root = ET.parse(str(path)).getroot()
+        for xpath in ('.//{*}trk/{*}name', './/{*}rte/{*}name', './/{*}name'):
+            node = root.find(xpath)
+            text = str(getattr(node, 'text', '') or '').strip()
+            if text:
+                return text.replace('/', ' - ').replace('\\', ' - ').strip()
+    except Exception:
+        return ''
+    return ''
+
+
+def _display_gpx_name_for_path(path_like: Any, preferred_name: Any = None) -> str:
+    try:
+        path = Path(str(path_like or ''))
+        preferred = str(preferred_name or '').strip()
+        if preferred:
+            return preferred
+        if path.name.startswith('uploaded_'):
+            track_name = _read_gpx_track_name(path)
+            if track_name:
+                return f'{track_name}.gpx'
+        if path.name:
+            return path.name
+    except Exception:
+        pass
+    return str(preferred_name or '').strip() or 'Loaded route.gpx'
+
+
 def load_session_state(session_id: Optional[str] = None) -> Dict[str, Any]:
     if session_id is None:
         session_id = _resolve_request_session_id(create=True)
@@ -2015,7 +2390,10 @@ def upload_gpx():
         log.info('[UPLOAD] Saved %s', out_path)
         # Persist session update
         try:
-            save_session_state({"last_gpx_path": str(out_path), "last_gpx_name": str(original_name)}, session_id=str(session_id))
+            save_session_state({
+                "last_gpx_path": str(out_path),
+                "last_gpx_name": _display_gpx_name_for_path(out_path, original_name),
+            }, session_id=str(session_id))
         except Exception:
             pass
         return jsonify({"path": str(out_path), "name": safe_name, "original_name": str(original_name)})
@@ -2381,7 +2759,18 @@ def api_session():
         session_id = _resolve_request_session_id(create=True)
         st = load_session_state(session_id=str(session_id) if session_id else None)
         p = st.get('last_gpx_path')
-        exists = bool(p) and Path(p).exists()
+        exists = _gpx_path_is_usable(p)
+        if exists:
+            current_name = str(st.get('last_gpx_name') or '').strip()
+            repaired_name = _display_gpx_name_for_path(p, current_name)
+            if repaired_name and not current_name:
+                save_session_state({'last_gpx_name': repaired_name}, session_id=str(session_id) if session_id else None)
+                st['last_gpx_name'] = repaired_name
+        elif p:
+            log.warning('[SESSION] Clearing unusable GPX from session: %s', p)
+            save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
+            st['last_gpx_path'] = ''
+            st['last_gpx_name'] = ''
         st_out = {**st, 'gpx_exists': exists, 'session_id': session_id}
         return Response(json.dumps(st_out), mimetype='application/json')
     except Exception as e:
@@ -2404,6 +2793,7 @@ def api_map_stream():
     tour_days_param = request.args.get('total_days')
     hist_years_param = request.args.get('hist_years')
     hist_start_param = request.args.get('hist_start')
+    years_selected_req = _parse_years_csv(request.args.get('years'))
     reverse_param = request.args.get('reverse')
     dry_run_param = request.args.get('dry_run')
     reset_api_param = request.args.get('reset_api')
@@ -2445,6 +2835,7 @@ def api_map_stream():
         # Prevent parallel heavy streams: assign token; dry-run streams do not cancel main
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
         offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
+        force_online = str(force_online_param).lower() in ('1', 'true', 'yes', 'on')
         local_token = _issue_stream_token(str(session_id) if session_id else None, is_dry_run)
         try:
             gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
@@ -2465,11 +2856,7 @@ def api_map_stream():
                         td = int(session_state.get('tour_days', 7))
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
-                        "last_gpx_name": (
-                            (session_state.get('last_gpx_name') or '')
-                            if gpx_is_uploaded
-                            else Path(gpx_path_str).name
-                        ),
+                        "last_gpx_name": _display_gpx_name_for_path(gpx_path_str, session_state.get('last_gpx_name')),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
                         "start_date": (start_date_param or session_state.get('start_date') or ''),
@@ -2491,21 +2878,41 @@ def api_map_stream():
                     set_force_online(False)
             except Exception:
                 pass
-            step_km = float(step_km_param) if step_km_param else 25.0
-            sampled_points, route_feature = sample_route(str(gpx_path), step_km=step_km)
-            # Denser sampling for elevation profile (no weather fetching)
-            # Keep relief detail about 3x finer than the weather glyph spacing.
             try:
-                if profile_step_km_param:
-                    profile_step_km = float(profile_step_km_param)
-                else:
+                step_km = float(step_km_param) if step_km_param else 25.0
+                sampled_points, route_feature = sample_route(str(gpx_path), step_km=step_km)
+                # Denser sampling for elevation profile (no weather fetching)
+                # Keep relief detail about 3x finer than the weather glyph spacing.
+                try:
+                    if profile_step_km_param:
+                        profile_step_km = float(profile_step_km_param)
+                    else:
+                        profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
+                except Exception:
                     profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
-            except Exception:
-                profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
-            try:
-                profile_points, _ = sample_route(str(gpx_path), step_km=profile_step_km)
-            except Exception:
-                profile_points = sampled_points
+                try:
+                    profile_points, _ = sample_route(str(gpx_path), step_km=profile_step_km)
+                except Exception:
+                    profile_points = sampled_points
+            except Exception as exc:
+                log.warning('[SSE] route setup failed for %s: %s', gpx_path_str, exc, exc_info=True)
+                if not is_dry_run:
+                    try:
+                        active_gpx = str(session_state.get('last_gpx_path') or '')
+                        if active_gpx == gpx_path_str:
+                            save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
+                            session_state['last_gpx_path'] = ''
+                            session_state['last_gpx_name'] = ''
+                    except Exception:
+                        pass
+                err_payload = json.dumps({
+                    'code': 'route_setup_failed',
+                    'message': str(exc),
+                    'fatal': True,
+                    'gpx_path': gpx_path_str,
+                })
+                yield f"event: stream_error\ndata: {err_payload}\n\n"
+                return
             # Persist session change (gpx, spacing, reverse flag are known here)
             if not is_dry_run:
                 try:
@@ -2526,11 +2933,7 @@ def api_map_stream():
                             first_year = session_state.get('first_year', 2016)
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
-                        "last_gpx_name": (
-                            (session_state.get('last_gpx_name') or '')
-                            if gpx_is_uploaded
-                            else Path(gpx_path_str).name
-                        ),
+                        "last_gpx_name": _display_gpx_name_for_path(gpx_path_str, session_state.get('last_gpx_name')),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
                         "start_date": (start_date_param or session_state.get('start_date') or ''),
@@ -2672,7 +3075,6 @@ def api_map_stream():
 
         # Emit route first
         try:
-            import json
             # Build day-segmented route if tour params available
             route_segments = None
             start_marker = None
@@ -2799,15 +3201,7 @@ def api_map_stream():
                 # Echo the GPX actually used so the frontend can keep the
                 # "Loaded GPX" label consistent even when an override is missing.
                 "gpx_path": str(gpx_path),
-                "gpx_name": (
-                    (session_state.get('last_gpx_name') or '')
-                    if (
-                        (str(session_state.get('last_gpx_path') or '') == str(gpx_path))
-                        and (Path(str(gpx_path)).name.startswith('uploaded_'))
-                        and (session_state.get('last_gpx_name') or '')
-                    )
-                    else Path(str(gpx_path)).name
-                ),
+                "gpx_name": _display_gpx_name_for_path(gpx_path, session_state.get('last_gpx_name')),
                 "years_start": years_start,
                 "years_end": years_end,
                 "total": total
@@ -3078,7 +3472,21 @@ def api_map_stream():
             years_start_req = None
             years_end_req = None
 
+        if years_selected_req:
+            try:
+                years_start_req = int(min(years_selected_req))
+                years_end_req = int(max(years_selected_req))
+            except Exception:
+                pass
+        requested_years_list = _normalize_requested_years(
+            years_selected=years_selected_req,
+            start_year=years_start_req,
+            end_year=years_end_req,
+        )
+
         def _span_tag() -> str:
+            if years_selected_req:
+                return f"ysel{'-'.join(str(int(year)) for year in years_selected_req)}"
             if years_start_req is None or years_end_req is None:
                 return f"yspan{int(years_window)}"
             return f"y{int(years_start_req)}-{int(years_end_req)}"
@@ -3126,13 +3534,33 @@ def api_map_stream():
             'offline_tile': 0,
             'api': 0,
             'dummy': 0,
+            'skipped': 0,
         }
         provenance_providers: set[str] = set()
         years_used_min: int | None = None
         years_used_max: int | None = None
+        years_used_set: set[int] = set()
 
-        def _record_years(ys: Any, ye: Any) -> None:
-            nonlocal years_used_min, years_used_max
+        def _record_years(ys: Any = None, ye: Any = None, years_used: Any = None) -> None:
+            nonlocal years_used_min, years_used_max, years_used_set
+            if isinstance(years_used, (list, tuple, set)):
+                normalized_years: list[int] = []
+                for year in years_used:
+                    try:
+                        normalized_years.append(int(year))
+                    except Exception:
+                        continue
+                if not normalized_years:
+                    return
+                for year in normalized_years:
+                    years_used_set.add(int(year))
+                ys_i = min(normalized_years)
+                ye_i = max(normalized_years)
+                if years_used_min is None or ys_i < years_used_min:
+                    years_used_min = ys_i
+                if years_used_max is None or ye_i > years_used_max:
+                    years_used_max = ye_i
+                return
             try:
                 ys_i = int(ys)
                 ye_i = int(ye)
@@ -3142,6 +3570,25 @@ def api_map_stream():
                 years_used_min = ys_i
             if years_used_max is None or ye_i > years_used_max:
                 years_used_max = ye_i
+            if ye_i < ys_i:
+                return
+            for year in range(ys_i, ye_i + 1):
+                years_used_set.add(int(year))
+
+        def _record_stats_years(stats: Any) -> None:
+            try:
+                if not isinstance(stats, dict):
+                    return
+                years_used = stats.get('_years_used')
+                if isinstance(years_used, (list, tuple, set)) and years_used:
+                    _record_years(years_used=years_used)
+                    return
+                ys = stats.get('_years_start')
+                ye = stats.get('_years_end')
+                if ys is not None and ye is not None:
+                    _record_years(ys, ye)
+            except Exception:
+                return
 
         def _record_provider(p: Any) -> None:
             try:
@@ -3237,15 +3684,82 @@ def api_map_stream():
                     parts.append('historical data')
                 if provenance_counts.get('dummy', 0) > 0:
                     parts.append('dummy fallback')
+                if provenance_counts.get('skipped', 0) > 0:
+                    parts.append('skipped points')
                 base = 'mixed sources' + (f" ({' / '.join(parts)})" if parts else '')
 
             if years_txt and 'dummy' not in used:
                 base = f"{base} {years_txt}"
             return f"from {base}"
 
-        reuse_per_day = str(reuse_per_day_param).lower() in ('1', 'true', 'yes', 'on')
+        def _year_coverage_provenance() -> Dict[str, Any]:
+            requested = [int(year) for year in requested_years_list]
+            used_set = {int(year) for year in years_used_set}
+            requested_set = {int(year) for year in requested}
+            used = [int(year) for year in requested if int(year) in used_set]
+            missing_requested = [int(year) for year in requested if int(year) not in years_used_set]
+            used_unrequested = sorted((int(year) for year in used_set if int(year) not in requested_set), reverse=True)
+            skipped_points = int(provenance_counts.get('skipped', 0) or 0)
+            fallback_active = bool(missing_requested or used_unrequested or int(provenance_counts.get('dummy', 0) or 0) > 0 or skipped_points > 0)
 
-        if tour_planning and sampled_points and reuse_per_day:
+            def _fmt_years(values: list[int]) -> str:
+                return ', '.join(str(int(value)) for value in values)
+
+            summary_parts: list[str] = []
+            if used:
+                summary_parts.append(f"Contributing selected years: {_fmt_years(used)}")
+            if missing_requested:
+                summary_parts.append(f"Missing selected: {_fmt_years(missing_requested)}")
+            if used_unrequested:
+                summary_parts.append(f"Fallback outside selection: {_fmt_years(used_unrequested)}")
+            if int(provenance_counts.get('dummy', 0) or 0) > 0:
+                summary_parts.append('Dummy fallback used')
+            if skipped_points > 0:
+                summary_parts.append(f"Skipped points: {skipped_points}")
+
+            return {
+                'requested_years': requested,
+                'used_years': used,
+                'missing_requested_years': missing_requested,
+                'used_unrequested_years': used_unrequested,
+                'skipped_points': skipped_points,
+                'fallback_active': bool(fallback_active),
+                'summary_text': ' ; '.join(summary_parts) if summary_parts else None,
+            }
+
+        def _emit_skipped_route_point(index: int, lat: float, lon: float, reason: str, assigned_date: Any = None, day_idx: Any = None) -> str:
+            nonlocal completed
+            try:
+                provenance_counts['skipped'] += 1
+            except Exception:
+                pass
+            completed += 1
+            payload: Dict[str, Any] = {
+                'skipped': True,
+                'reason': str(reason or 'No valid weather data for this route point'),
+                'point_index': int(index),
+                'lat': float(lat),
+                'lon': float(lon),
+                'distance_from_start_km': _glyph_dist_km(index),
+                'completed': int(completed),
+                'total': int(total),
+            }
+            try:
+                if assigned_date is not None:
+                    payload['date'] = assigned_date.isoformat()
+            except Exception:
+                pass
+            try:
+                if day_idx is not None:
+                    payload['tour_day_index'] = int(day_idx)
+            except Exception:
+                pass
+            return json.dumps(payload)
+
+        reuse_per_day = str(reuse_per_day_param).lower() in ('1', 'true', 'yes', 'on')
+        require_point_level_offline_stats = bool(reuse_per_day and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
+
+        if tour_planning and sampled_points and reuse_per_day and (not require_point_level_offline_stats):
             # Tour Planning (optional): reuse stats PER DAY (not for the whole tour).
             # Default behavior is per-point stats (day + coordinate) so long routes
             # do not show repeated glyphs within a day segment.
@@ -3337,8 +3851,17 @@ def api_map_stream():
                 # Always probe offline availability (cheap) to support fallback when API is unavailable.
                 # Only accept offline/cached data that matches the requested year span unless the
                 # request explicitly disallows online (offline-only/strict).
-                must_accept_offline_anyway = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
-                offline_stats_raw = _get_offline_stats(rep_lat, rep_lon, mm, dd)
+                must_accept_offline_anyway = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
+                offline_stats_raw = None if force_online else _get_offline_stats(
+                    rep_lat,
+                    rep_lon,
+                    mm,
+                    dd,
+                    start_year=years_start_req,
+                    end_year=years_end_req,
+                    years_selected=years_selected_req,
+                    allow_span_mismatch=must_accept_offline_anyway,
+                )
                 offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                 offline_span = _years_span_from_stats(offline_stats) if offline_stats is not None else 0
 
@@ -3383,10 +3906,10 @@ def api_map_stream():
 
                 # If cache does not satisfy the requested multi-year window, try online (warm cache).
                 # If offline strict is enabled, we can only use offline/cached data.
-                must_skip_online = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
+                must_skip_online = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
 
                 if ((not rep_cache_hit) or (need_multi and (not has_multi_cached))) and (stats is None) and (not must_skip_online):
-                    if _offline_strict_enabled() and _get_offline_store() is not None:
+                    if (not force_online) and _offline_strict_enabled() and _get_offline_store() is not None:
                         yield "event: error\ndata: {\"error\": \"Offline strict mode: no offline data for representative point/day.\"}\n\n"
                         return
                     if fetch_mode == 'single_day':
@@ -3429,8 +3952,8 @@ def api_map_stream():
                         matches = 0
                 elif rep_cache_hit and isinstance(stats, dict) and (has_multi_cached or (not need_multi)):
                     pass
-                elif stats is not None and isinstance(stats, dict) and (offline_stats is not None) and (not need_multi):
-                    # already handled above
+                elif stats is not None and isinstance(stats, dict) and (offline_stats is not None):
+                    # already handled above, including aggregated partial multi-year offline coverage
                     pass
                 else:
                     stats, matches = compute_weather_statistics(df, mm, dd)
@@ -3484,15 +4007,13 @@ def api_map_stream():
                 # Track per-day provenance so per-glyph counts are accurate.
                 try:
                     src = 'dummy' if str(stats.get('_temp_source', '')).startswith('dummy') else ('offline_tile' if bool(stats.get('_offline')) else ('disk_cache' if rep_cache_hit else 'api'))
-                    ys = stats.get('_years_start')
-                    ye = stats.get('_years_end')
-                    if ys is not None and ye is not None:
-                        _record_years(ys, ye)
+                    _record_stats_years(stats)
                     _record_provider(stats.get('_provider'))
                     source_by_day[int(d_idx)] = {
                         'source': src,
-                        'years_start': ys,
-                        'years_end': ye,
+                        'years_start': stats.get('_years_start'),
+                        'years_end': stats.get('_years_end'),
+                        'years_used': list(stats.get('_years_used') or []),
                         'provider': stats.get('_provider'),
                     }
                 except Exception:
@@ -3551,10 +4072,7 @@ def api_map_stream():
                         src = str(sm.get('source', '') or '')
                         if src in provenance_counts:
                             provenance_counts[src] += 1
-                        ys = sm.get('years_start')
-                        ye = sm.get('years_end')
-                        if ys is not None and ye is not None:
-                            _record_years(ys, ye)
+                        _record_years(sm.get('years_start'), sm.get('years_end'), sm.get('years_used'))
                         _record_provider(sm.get('provider'))
                     except Exception:
                         pass
@@ -3612,6 +4130,7 @@ def api_map_stream():
                 W_TAIL = float(wind_tail_comfort_param) if wind_tail_comfort_param is not None else 10.0
                 rain_days = 0; headwind_days = 0; tailwind_days = 0; comfort_days = 0; extreme_hot = 0; extreme_cold = 0
                 temps = []; winds = []; precs = []
+                day_summaries = []
                 for d_idx in range(total_days_val):
                     st, _mch = stats_by_day.get(int(d_idx), next(iter(stats_by_day.values())))
                     # Prefer daytime/ride-hours median temperature when available.
@@ -3633,19 +4152,32 @@ def api_map_stream():
                     elif eff < -0.33: headwind_days += 1
                     # comfort criteria
                     # Comfort: temp within [T_COLD..T_HOT], rain below R_MAX, wind threshold varies by effective wind direction
+                    is_lucky_day = False
                     if (T_COLD <= t <= T_HOT) and (pmm < R_MAX):
                         # eff < -0.33 → headwind, eff > 0.33 → tailwind, else crosswind → treat like headwind
                         if eff < -0.33:
                             if w < W_HEAD:
                                 comfort_days += 1
+                                is_lucky_day = True
                         elif eff > 0.33:
                             if w < W_TAIL:
                                 comfort_days += 1
+                                is_lucky_day = True
                         else:
                             if w < W_HEAD:
                                 comfort_days += 1
+                                is_lucky_day = True
                     if t >= 30.0: extreme_hot += 1
                     if t <= 5.0: extreme_cold += 1
+                    day_summaries.append({
+                        "day_index": int(d_idx),
+                        "temp_median": float(t),
+                        "wind_mean": float(w),
+                        "precip_sum": float(pmm),
+                        "precip_mean": float(pmm),
+                        "eff_mean": float(eff),
+                        "lucky": bool(is_lucky_day),
+                    })
                 med_t = float(_np.nanmedian(temps)) if temps else None
                 max_t = float(_np.nanmax(temps)) if temps else None
                 min_t = float(_np.nanmin(temps)) if temps else None
@@ -3664,10 +4196,11 @@ def api_map_stream():
                     "max_temperature": max_t,
                     "min_temperature": min_t,
                     "total_precipitation": total_prec,
-                    "mean_wind_speed": mean_wind
+                    "mean_wind_speed": mean_wind,
+                    "day_summaries": day_summaries,
                 }
                 try:
-                    save_session_state({"tour_summary": tour_summary}, session_id=str(session_id) if session_id else None)
+                    save_session_state({"tour_summary": tour_summary, "tour_day_summaries": day_summaries}, session_id=str(session_id) if session_id else None)
                     session_state = load_session_state(session_id=str(session_id) if session_id else None)
                 except Exception:
                     pass
@@ -3770,10 +4303,7 @@ def api_map_stream():
                             stats = _ensure_temperature_summary_fields(stats)
                             try:
                                 provenance_counts['disk_cache'] += 1
-                                ys = stats.get('_years_start')
-                                ye = stats.get('_years_end')
-                                if ys is not None and ye is not None:
-                                    _record_years(ys, ye)
+                                _record_stats_years(stats)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
@@ -3791,7 +4321,7 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "disk_cache",
+                                    "_source_mode": "tour_planning_offline",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
@@ -3811,8 +4341,17 @@ def api_map_stream():
                             pass
 
                     # Offline-first per point/day: if tile stats exist, skip any network requests.
-                    must_accept_offline_anyway = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
-                    offline_stats_raw = _get_offline_stats(lat, lon, mm, dd)
+                    must_accept_offline_anyway = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
+                    offline_stats_raw = None if force_online else _get_offline_stats(
+                        lat,
+                        lon,
+                        mm,
+                        dd,
+                        start_year=years_start_req,
+                        end_year=years_end_req,
+                        years_selected=years_selected_req,
+                        allow_span_mismatch=must_accept_offline_anyway,
+                    )
                     offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                     offline_fallback_stats = None
                     try:
@@ -3828,10 +4367,7 @@ def api_map_stream():
                         if (not want_multi_year) or offline_span >= 2:
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                ys = stats.get('_years_start')
-                                ye = stats.get('_years_end')
-                                if ys is not None and ye is not None:
-                                    _record_years(ys, ye)
+                                _record_stats_years(stats)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
@@ -3856,7 +4392,7 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "offline_tile",
+                                    "_source_mode": "tour_planning_offline",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
@@ -3875,17 +4411,14 @@ def api_map_stream():
                         # Multi-year requested but offline is single-year: keep offline as fallback and continue to online/cached fetch.
                         offline_fallback_stats = stats
 
-                    if _offline_strict_enabled() and _get_offline_store() is not None:
+                    if (not force_online) and _offline_strict_enabled() and _get_offline_store() is not None:
                         # Strict mode: do not use online fallback or dummy glyphs.
                         if offline_fallback_stats is not None:
                             stats = dict(offline_fallback_stats)
                             matching = int(stats.get('_match_days', 0) or 0)
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                ys = stats.get('_years_start')
-                                ye = stats.get('_years_end')
-                                if ys is not None and ye is not None:
-                                    _record_years(ys, ye)
+                                _record_stats_years(stats)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
@@ -3903,7 +4436,7 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "offline_tile",
+                                    "_source_mode": "tour_planning_offline",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
@@ -3928,22 +4461,15 @@ def api_map_stream():
                             matching = int(stats.get('_match_days', 0) or 0)
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                ys = stats.get('_years_start')
-                                ye = stats.get('_years_end')
-                                if ys is not None and ye is not None:
-                                    _record_years(ys, ye)
+                                _record_stats_years(stats)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
-                            src_mode = 'offline_tile'
+                            src_mode = 'tour_planning_offline'
                         else:
-                            stats = _dummy_stats(mm, dd)
-                            matching = 0
-                            try:
-                                provenance_counts['dummy'] += 1
-                            except Exception:
-                                pass
-                            src_mode = 'dummy'
+                            msg = _emit_skipped_route_point(i, lat, lon, 'No offline weather data available for this route point across the selected or fallback years', assigned_date, day_idx)
+                            yield f"event: station\ndata: {msg}\n\n"
+                            continue
                         svg = generate_glyph_v2(stats, debug=False)
                         feature = {
                             "type": "Feature",
@@ -4029,10 +4555,7 @@ def api_map_stream():
                             matching = int(stats.get('_match_days', 0) or 0)
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                ys = stats.get('_years_start')
-                                ye = stats.get('_years_end')
-                                if ys is not None and ye is not None:
-                                    _record_years(ys, ye)
+                                _record_stats_years(stats)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
@@ -4057,7 +4580,7 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "offline_tile",
+                                    "_source_mode": "tour_planning_offline",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
@@ -4073,51 +4596,8 @@ def api_map_stream():
                             if completed % 5 == 0 or completed == total:
                                 log.info('[SSE] station emitted %d/%d (offline fallback)', completed, total)
                             continue
-                        # Emit a dummy glyph for this point
-                        try:
-                            provenance_counts['dummy'] += 1
-                        except Exception:
-                            pass
-                        base_t = 15.0 if mm in (4,5,6,9,10) else (25.0 if mm in (7,8) else (5.0 if mm in (1,2,12) else 12.0))
-                        stats = {
-                            'temperature_c': base_t,
-                            'temp_p25': base_t - 2.0,
-                            'temp_p75': base_t + 2.0,
-                            'precipitation_mm': 0.0,
-                            'wind_dir_deg': 180.0,
-                            'wind_var_deg': 20.0,
-                            'wind_speed_ms': 4.0,
-                            '_temp_source': 'dummy_offline',
-                        }
-                        svg = generate_glyph_v2(stats, debug=False)
-                        feature = {
-                            "type": "Feature",
-                            "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                            "properties": {
-                                **stats,
-                                "svg": svg,
-                                "station_id": f"point_{i}",
-                                "station_name": f"Route Point {i}",
-                                "station_lat": lat,
-                                "station_lon": lon,
-                                "min_distance_to_route_km": 0.0,
-                                "usage_count": 1,
-                                "_match_days": [],
-                                "_source_mode": f"per_point_{fetch_mode}_window_dummy" if use_tour_window else f"per_point_{fetch_mode}_dummy",
-                                "_grid_deg": grid_deg,
-                                "distance_from_start_km": _glyph_dist_km(i)
-                            }
-                        }
-                        if segment_length and start_date is not None and assigned_date is not None:
-                            feature['properties']['tour_day_index'] = day_idx
-                            feature['properties']['tour_total_days'] = tour_days
-                            feature['properties']['date'] = assigned_date.isoformat()
-                        _append_day_aggr(stats, day_idx, assigned_date)
-                        completed += 1
-                        msg = json.dumps({"feature": feature, "completed": completed, "total": total})
+                        msg = _emit_skipped_route_point(i, lat, lon, 'No valid weather data available for this route point', assigned_date, day_idx)
                         yield f"event: station\ndata: {msg}\n\n"
-                        if completed % 5 == 0 or completed == total:
-                            log.info('[SSE] station emitted %d/%d (dummy)', completed, total)
                         continue
                     # Compute stats for this mm/dd
                     stats, matching = compute_weather_statistics(df, mm, dd)
@@ -4224,10 +4704,12 @@ def api_map_stream():
                 day_meds = []
                 winds_means = []
                 prec_sums = []
+                day_summaries = []
                 for dkey, ag in sorted(day_aggr.items()):
                     t_med = float(_np.nanmedian(ag["temps"])) if ag["temps"] else float('nan')
                     w_mean = float(_np.nanmean(ag["winds"])) if ag["winds"] else float('nan')
                     p_sum = float(_np.nansum(ag["precs"])) if ag["precs"] else 0.0
+                    p_mean = float(_np.nanmean(ag["precs"])) if ag["precs"] else float('nan')
                     e_mean = float(_np.nanmean(ag["effs"])) if ag["effs"] else float('nan')
                     day_meds.append(t_med)
                     winds_means.append(w_mean)
@@ -4237,23 +4719,37 @@ def api_map_stream():
                         if e_mean > 0.33: tailwind_days += 1
                         elif e_mean < -0.33: headwind_days += 1
                     # Comfort: temp within [T_COLD..T_HOT], rain below R_MAX, wind varies by effective wind
+                    is_lucky_day = False
                     if (_np.isfinite(t_med) and T_COLD <= t_med <= T_HOT) and (p_sum < R_MAX):
                         # eff < -0.33 → headwind, eff > 0.33 → tailwind, else crosswind → treat as headwind
                         if _np.isfinite(e_mean):
                             if e_mean < -0.33:
                                 if _np.isfinite(w_mean) and w_mean < W_HEAD:
                                     comfort_days += 1
+                                    is_lucky_day = True
                             elif e_mean > 0.33:
                                 if _np.isfinite(w_mean) and w_mean < W_TAIL:
                                     comfort_days += 1
+                                    is_lucky_day = True
                             else:
                                 if _np.isfinite(w_mean) and w_mean < W_HEAD:
                                     comfort_days += 1
+                                    is_lucky_day = True
                         else:
                             if _np.isfinite(w_mean) and w_mean < W_HEAD:
                                 comfort_days += 1
+                                is_lucky_day = True
                     if _np.isfinite(t_med) and t_med >= 30.0: extreme_hot += 1
                     if _np.isfinite(t_med) and t_med <= 5.0: extreme_cold += 1
+                    day_summaries.append({
+                        "day_index": int(dkey),
+                        "temp_median": (float(t_med) if _np.isfinite(t_med) else None),
+                        "wind_mean": (float(w_mean) if _np.isfinite(w_mean) else None),
+                        "precip_sum": float(p_sum),
+                        "precip_mean": (float(p_mean) if _np.isfinite(p_mean) else None),
+                        "eff_mean": (float(e_mean) if _np.isfinite(e_mean) else None),
+                        "lucky": bool(is_lucky_day),
+                    })
                 med_t = float(_np.nanmedian(day_meds)) if day_meds else None
                 max_t = float(_np.nanmax(day_meds)) if day_meds else None
                 min_t = float(_np.nanmin(day_meds)) if day_meds else None
@@ -4272,10 +4768,11 @@ def api_map_stream():
                     "max_temperature": max_t,
                     "min_temperature": min_t,
                     "total_precipitation": total_prec,
-                    "mean_wind_speed": mean_wind
+                    "mean_wind_speed": mean_wind,
+                    "day_summaries": day_summaries,
                 }
                 try:
-                    save_session_state({"tour_summary": tour_summary}, session_id=str(session_id) if session_id else None)
+                    save_session_state({"tour_summary": tour_summary, "tour_day_summaries": day_summaries}, session_id=str(session_id) if session_id else None)
                     session_state = load_session_state(session_id=str(session_id) if session_id else None)
                 except Exception:
                     pass
@@ -4288,14 +4785,23 @@ def api_map_stream():
             done_payload = {"stations_count": completed}
             try:
                 done_payload["tour_summary"] = session_state.get('tour_summary')
+                done_payload["tour_day_summaries"] = session_state.get('tour_day_summaries')
             except Exception:
                 pass
             try:
+                coverage = _year_coverage_provenance()
                 done_payload['provenance'] = {
                     'counts': dict(provenance_counts),
                     'providers': sorted(list(provenance_providers)),
                     'years_used_start': years_used_min,
                     'years_used_end': years_used_max,
+                    'requested_years': coverage.get('requested_years'),
+                    'used_years': coverage.get('used_years'),
+                    'missing_requested_years': coverage.get('missing_requested_years'),
+                    'used_unrequested_years': coverage.get('used_unrequested_years'),
+                    'skipped_points': coverage.get('skipped_points'),
+                    'fallback_active': coverage.get('fallback_active'),
+                    'summary_text': coverage.get('summary_text'),
                 }
                 done_payload['station_source_text'] = _station_source_text()
             except Exception:

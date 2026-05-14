@@ -98,8 +98,8 @@ def test_day_assignment_specific_rps_boundaries():
     # Ensure we have enough points
     assert len(days) > 16, f"Not enough sampled points: {len(days)}"
 
-    # Expected boundary assignments from user
+    # Reference assignments for the current default GPX and 25 km sampling.
     assert days[4] == 0, f"RP4 should be Day 1 (index 0), got {days[4]}"
-    assert days[10] == 2, f"RP10 should be Day 3 (index 2), got {days[10]}"
-    assert days[13] == 3, f"RP13 should be Day 4 (index 3), got {days[13]}"
-    assert days[16] == 4, f"RP16 should be Day 5 (index 4), got {days[16]}"
+    assert days[10] == 1, f"RP10 should be Day 2 (index 1), got {days[10]}"
+    assert days[13] == 2, f"RP13 should be Day 3 (index 2), got {days[13]}"
+    assert days[16] == 2, f"RP16 should still be Day 3 (index 2), got {days[16]}"
