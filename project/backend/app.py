@@ -52,7 +52,7 @@ except Exception:  # pragma: no cover
     StationIndex = None  # type: ignore
 from weather import compute_weather_statistics
 from glyph_geometry import generate_glyph_v2
-from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_daily_weather_window, fetch_hourly_weather_same_day, reset_api_disable, set_force_online
+from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_daily_weather_window, fetch_forecast_weather_window, fetch_hourly_weather_same_day, fetch_hourly_forecast_weather_window, reset_api_disable, set_force_online
 from weather_service import WeatherService, reset_api_disable as reset_service_api_disable
 from weather import compute_daytime_temperature_statistics
 
@@ -770,6 +770,28 @@ def _normalize_climate_mode(raw: str | None) -> str:
     if mode_raw in ('24h', 'full', 'full-day', 'full_day', 'day'):
         return 'full_day'
     return 'active'
+
+
+def _parse_active_hours(raw: Any) -> tuple[int, int]:
+    txt = str(raw or '').strip()
+    try:
+        if '-' in txt:
+            lhs, rhs = txt.split('-', 1)
+            start_hour = int(lhs.strip())
+            end_hour = int(rhs.strip())
+        else:
+            start_hour = 10
+            end_hour = 18
+    except Exception:
+        start_hour = 10
+        end_hour = 18
+    start_hour = max(0, min(23, int(start_hour)))
+    end_hour = max(0, min(23, int(end_hour)))
+    if end_hour < start_hour:
+        start_hour, end_hour = end_hour, start_hour
+    if end_hour <= start_hour:
+        end_hour = min(23, start_hour + 1)
+    return start_hour, end_hour
 
 
 def _opt_float_arg(name: str) -> float | None:
@@ -2452,6 +2474,8 @@ def api_map():
         max_points_param = request.args.get('max_points')
         grid_deg_param = request.args.get('grid_deg')
         fetch_mode = request.args.get('mode', 'single_day')  # default to 'single_day'
+        active_hours_param = request.args.get('active_hours') or request.args.get('ride_hours')
+        active_hour_start, active_hour_end = _parse_active_hours(active_hours_param)
         try:
             step_km = float(step_km_param) if step_km_param else 25.0
         except Exception:
@@ -2551,7 +2575,13 @@ def api_map():
                 # Compute daytime temperature from hourly data and override temp fields
                 try:
                     dfh = fetch_hourly_weather_same_day(rep_lat, rep_lon, month, day)
-                    dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
+                    dt_stats, dt_points = compute_daytime_temperature_statistics(
+                        dfh,
+                        month,
+                        day,
+                        start_hour=active_hour_start,
+                        end_hour=active_hour_end,
+                    )
                     stats.update(dt_stats)
                     stats['_temp_source'] = 'hourly_daytime'
                 except Exception as e:
@@ -2662,7 +2692,13 @@ def api_map():
                         # Compute daytime temperature from hourly data and override temp (online only).
                         try:
                             dfh = fetch_hourly_weather_same_day(qlat, qlon, month, day)
-                            dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
+                            dt_stats, dt_points = compute_daytime_temperature_statistics(
+                                dfh,
+                                month,
+                                day,
+                                start_hour=active_hour_start,
+                                end_hour=active_hour_end,
+                            )
                             stats.update(dt_stats)
                             stats['_temp_source'] = 'hourly_daytime'
                         except Exception as e:
@@ -2835,6 +2871,8 @@ def api_map_stream():
     wind_head_comfort_param = request.args.get('wind_head_comfort')
     wind_tail_comfort_param = request.args.get('wind_tail_comfort')
     reuse_per_day_param = request.args.get('reuse_per_day')
+    temp_mode_param = request.args.get('temp_mode')
+    active_hours_param = request.args.get('active_hours') or request.args.get('ride_hours')
 
     session_id = _resolve_request_session_id(create=True)
 
@@ -2867,6 +2905,11 @@ def api_map_stream():
         offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
         force_online = str(force_online_param).lower() in ('1', 'true', 'yes', 'on')
         tour_weather_mode = 'forecast' if str(tour_weather_mode_param or session_state.get('tour_weather_mode') or '').strip().lower() == 'forecast' else 'climatology'
+        temp_mode = _normalize_climate_mode(temp_mode_param)
+        active_hour_start, active_hour_end = _parse_active_hours(active_hours_param)
+        if tour_weather_mode == 'forecast':
+            offline_only = False
+            force_online = True
         local_token = _issue_stream_token(str(session_id) if session_id else None, is_dry_run)
         try:
             gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
@@ -4024,7 +4067,13 @@ def api_map_stream():
                             start_year=years_start_req,
                             end_year=years_end_req,
                         )
-                        dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
+                        dt_stats, _dt_points = compute_daytime_temperature_statistics(
+                            dfh,
+                            mm,
+                            dd,
+                            start_hour=active_hour_start,
+                            end_hour=active_hour_end,
+                        )
                         stats.update(dt_stats)
                         stats['_temp_source'] = 'hourly_daytime'
                     except Exception as e:
@@ -4335,9 +4384,12 @@ def api_map_stream():
                         dd = assigned_date.day
 
                     # Disk cache by quantized lat/lon + month/day + fetch_mode
-                    stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}_{_span_tag()}.json"
-                    stats_path = STATS_CACHE_DIR / stats_name
-                    if stats_path.exists():
+                    stats_name = None
+                    stats_path = None
+                    if tour_weather_mode != 'forecast':
+                        stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}_{_span_tag()}.json"
+                        stats_path = STATS_CACHE_DIR / stats_name
+                    if stats_path and stats_path.exists():
                         try:
                             stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
                             matching = int(stats.get('_match_days', 0) or 0)
@@ -4388,19 +4440,22 @@ def api_map_stream():
                             pass
 
                     # Offline-first per point/day: if tile stats exist, skip any network requests.
-                    must_accept_offline_anyway = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
-                    offline_stats_raw = None if force_online else _get_offline_stats(
-                        lat,
-                        lon,
-                        mm,
-                        dd,
-                        start_year=years_start_req,
-                        end_year=years_end_req,
-                        years_selected=years_selected_req,
-                        allow_span_mismatch=must_accept_offline_anyway,
-                    )
-                    offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
+                    must_accept_offline_anyway = False
+                    offline_stats = None
                     offline_fallback_stats = None
+                    if tour_weather_mode != 'forecast':
+                        must_accept_offline_anyway = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
+                        offline_stats_raw = None if force_online else _get_offline_stats(
+                            lat,
+                            lon,
+                            mm,
+                            dd,
+                            start_year=years_start_req,
+                            end_year=years_end_req,
+                            years_selected=years_selected_req,
+                            allow_span_mismatch=must_accept_offline_anyway,
+                        )
+                        offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                     try:
                         want_multi_year = (years_start_req is not None and years_end_req is not None and int(years_end_req) - int(years_start_req) + 1 >= 2)
                     except Exception:
@@ -4419,6 +4474,8 @@ def api_map_stream():
                             except Exception:
                                 pass
                             try:
+                                if not stats_path:
+                                    raise RuntimeError('skip cache write')
                                 s = {**stats, '_match_days': matching}
                                 import json as _json
                                 _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
@@ -4555,18 +4612,26 @@ def api_map_stream():
                         if window_key in df_cache:
                             df = df_cache[window_key]
                         else:
-                            df = fetch_daily_weather_window(
-                                qlat,
-                                qlon,
-                                start_date.month,
-                                start_date.day,
-                                span_days,
-                                years_window=years_window,
-                                start_year=years_start_req,
-                                end_year=years_end_req,
-                            )
+                            if tour_weather_mode == 'forecast':
+                                df = fetch_forecast_weather_window(
+                                    qlat,
+                                    qlon,
+                                    start_date,
+                                    span_days,
+                                )
+                            else:
+                                df = fetch_daily_weather_window(
+                                    qlat,
+                                    qlon,
+                                    start_date.month,
+                                    start_date.day,
+                                    span_days,
+                                    years_window=years_window,
+                                    start_year=years_start_req,
+                                    end_year=years_end_req,
+                                )
                             df_cache[window_key] = df
-                        min_rows = max(1, int(span_days))
+                        min_rows = 1 if tour_weather_mode == 'forecast' else max(1, int(span_days))
                     else:
                         # Fetch daily data using assigned mm/dd and cache per date
                         key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}:{_span_tag()}"
@@ -4607,6 +4672,8 @@ def api_map_stream():
                             except Exception:
                                 pass
                             try:
+                                if not stats_path:
+                                    raise RuntimeError('skip cache write')
                                 s = {**stats, '_match_days': matching}
                                 import json as _json
                                 _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
@@ -4646,8 +4713,19 @@ def api_map_stream():
                         msg = _emit_skipped_route_point(i, lat, lon, 'No valid weather data available for this route point', assigned_date, day_idx)
                         yield f"event: station\ndata: {msg}\n\n"
                         continue
+                    if tour_weather_mode == 'forecast' and assigned_date is not None:
+                        try:
+                            date_series = pd.to_datetime(df['date']).dt.date
+                            df = df.loc[date_series == assigned_date]
+                        except Exception:
+                            df = pd.DataFrame([])
+                        if df is None or len(df) < 1:
+                            msg = _emit_skipped_route_point(i, lat, lon, 'No forecast data available for this route point within the 14-day horizon', assigned_date, day_idx)
+                            yield f"event: station\ndata: {msg}\n\n"
+                            continue
                     # Compute stats for this mm/dd
                     stats, matching = compute_weather_statistics(df, mm, dd)
+                    stats = _ensure_temperature_summary_fields(stats)
                     # Attach provenance and count usage.
                     try:
                         provenance_counts['api'] += 1
@@ -4662,46 +4740,89 @@ def api_map_stream():
                             _record_provider(prov)
                     except Exception:
                         pass
-                    # Daytime variability (hourly across years) — cache by quantized lat/lon and date
-                    try:
-                        dt_key = f"{qlat:.4f},{qlon:.4f}:{mm:02d}-{dd:02d}:hourly:{_span_tag()}"
-                        dfh = df_cache.get(dt_key)
-                        if dfh is None:
-                            dfh = fetch_hourly_weather_same_day(
-                                qlat,
-                                qlon,
-                                mm,
-                                dd,
-                                years_window=years_window,
-                                start_year=years_start_req,
-                                end_year=years_end_req,
-                            )
-                            df_cache[dt_key] = dfh
-                        if dfh is not None and len(dfh) >= 4:
-                            dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
-                            # Add explicit historical/daytime tooltip fields plus legacy profile fields.
-                            for k in (
-                                'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
-                                'temp_day_typical_min', 'temp_day_typical_max',
-                                'temp_day_p25', 'temp_day_p75', 'temp_day_median'
-                            ):
-                                if k in dt_stats:
-                                    stats[k] = dt_stats[k]
-                            if 'temp_hist_p25' in dt_stats and 'temp_hist_p75' in dt_stats:
-                                # Ensure historical keys are present for clarity (duplicate of temp_p25/temp_p75)
-                                stats['temp_hist_p25'] = dt_stats['temp_hist_p25']
-                                stats['temp_hist_p75'] = dt_stats['temp_hist_p75']
-                            stats['_temp_source'] = 'daily+hourly'
-                    except Exception as e:
-                        log.warning('[SSE] Daytime temp unavailable (per-point %s,%s m%d d%d): %s', qlat, qlon, mm, dd, e)
+                    # Daytime variability (hourly across years / forecast window) — cache by quantized lat/lon and date
+                    if tour_weather_mode == 'forecast':
+                        stats['_temp_source'] = 'daily_forecast'
+                        if temp_mode == 'active' and assigned_date is not None and use_tour_window:
+                            try:
+                                hourly_window_key = f"{qlat:.4f},{qlon:.4f}:forecast:hourly_window:{start_date.isoformat()}:{span_days}:{active_hour_start}-{active_hour_end}"
+                                dfh = df_cache.get(hourly_window_key)
+                                if dfh is None:
+                                    dfh = fetch_hourly_forecast_weather_window(
+                                        qlat,
+                                        qlon,
+                                        start_date,
+                                        span_days,
+                                    )
+                                    df_cache[hourly_window_key] = dfh
+                                if dfh is not None and len(dfh) >= 2:
+                                    date_series_h = pd.to_datetime(dfh['time']).dt.date
+                                    dfh = dfh.loc[date_series_h == assigned_date]
+                                if dfh is not None and len(dfh) >= 2:
+                                    dt_stats, _dt_points = compute_daytime_temperature_statistics(
+                                        dfh,
+                                        mm,
+                                        dd,
+                                        start_hour=active_hour_start,
+                                        end_hour=active_hour_end,
+                                    )
+                                    for k in (
+                                        'temperature_c',
+                                        'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
+                                        'temp_hist_p25', 'temp_hist_p75',
+                                        'temp_day_typical_min', 'temp_day_typical_max',
+                                        'temp_day_p25', 'temp_day_p75', 'temp_day_median'
+                                    ):
+                                        if k in dt_stats:
+                                            stats[k] = dt_stats[k]
+                                    stats['_temp_source'] = 'forecast_hourly_active'
+                            except Exception as e:
+                                log.warning('[SSE] Forecast active-hour temp unavailable (per-point %s,%s %s %02d-%02d %02d-%02d): %s', qlat, qlon, assigned_date, mm, dd, active_hour_start, active_hour_end, e)
+                    else:
+                        try:
+                            dt_key = f"{qlat:.4f},{qlon:.4f}:{mm:02d}-{dd:02d}:hourly:{_span_tag()}"
+                            dfh = df_cache.get(dt_key)
+                            if dfh is None:
+                                dfh = fetch_hourly_weather_same_day(
+                                    qlat,
+                                    qlon,
+                                    mm,
+                                    dd,
+                                    years_window=years_window,
+                                    start_year=years_start_req,
+                                    end_year=years_end_req,
+                                )
+                                df_cache[dt_key] = dfh
+                            if dfh is not None and len(dfh) >= 4:
+                                dt_stats, _dt_points = compute_daytime_temperature_statistics(
+                                    dfh,
+                                    mm,
+                                    dd,
+                                    start_hour=active_hour_start,
+                                    end_hour=active_hour_end,
+                                )
+                                for k in (
+                                    'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
+                                    'temp_day_typical_min', 'temp_day_typical_max',
+                                    'temp_day_p25', 'temp_day_p75', 'temp_day_median'
+                                ):
+                                    if k in dt_stats:
+                                        stats[k] = dt_stats[k]
+                                if 'temp_hist_p25' in dt_stats and 'temp_hist_p75' in dt_stats:
+                                    stats['temp_hist_p25'] = dt_stats['temp_hist_p25']
+                                    stats['temp_hist_p75'] = dt_stats['temp_hist_p75']
+                                stats['_temp_source'] = 'daily+hourly'
+                        except Exception as e:
+                            log.warning('[SSE] Daytime temp unavailable (per-point %s,%s m%d d%d): %s', qlat, qlon, mm, dd, e)
                     # Save computed stats to disk cache AFTER daytime adjustments.
-                    try:
-                        s = {**stats, '_match_days': matching}
-                        import json as _json
-                        _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
-                        log.info('[CACHE][SSE] miss -> saved %s', stats_name)
-                    except Exception:
-                        pass
+                    if stats_path and stats_name:
+                        try:
+                            s = {**stats, '_match_days': matching}
+                            import json as _json
+                            _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                            log.info('[CACHE][SSE] miss -> saved %s', stats_name)
+                        except Exception:
+                            pass
                     # Optional: Skip per-point hourly to reduce request load
                     # (Representative hourly is computed in tour_planning mode)
                     svg = generate_glyph_v2(stats, debug=False)
@@ -4790,6 +4911,7 @@ def api_map_stream():
                     if _np.isfinite(t_med) and t_med <= 5.0: extreme_cold += 1
                     day_summaries.append({
                         "day_index": int(dkey),
+                        "date": ((start_date + _dt.timedelta(days=int(dkey))).isoformat() if start_date is not None else None),
                         "temp_median": (float(t_med) if _np.isfinite(t_med) else None),
                         "wind_mean": (float(w_mean) if _np.isfinite(w_mean) else None),
                         "precip_sum": float(p_sum),
@@ -4803,6 +4925,7 @@ def api_map_stream():
                 total_prec = float(_np.nansum(prec_sums)) if prec_sums else 0.0
                 mean_wind = float(_np.nanmean(winds_means)) if winds_means else None
                 tour_summary = {
+                    "weather_mode": tour_weather_mode,
                     "total_days": total_days_val,
                     "rain_days": int(rain_days),
                     "headwind_days": int(headwind_days),

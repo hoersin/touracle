@@ -640,3 +640,169 @@ def fetch_daily_weather_window(
     df['_provider'] = 'openmeteo'
     log.info('[WEATHER] Rows retrieved (window per-year): %d', len(df))
     return df
+
+
+def fetch_forecast_weather_window(
+    lat: float,
+    lon: float,
+    start_date: date,
+    span_days: int,
+) -> Optional[pd.DataFrame]:
+    """Fetch a near-term Open-Meteo daily forecast window."""
+    lat2 = round(lat, 1)
+    lon2 = round(lon, 1)
+    span_days = int(span_days)
+    if span_days < 1:
+        raise ValueError('span_days must be >= 1')
+
+    today = date.today()
+    horizon_end = today + timedelta(days=13)
+    req_start = start_date if isinstance(start_date, date) else date.fromisoformat(str(start_date))
+    req_end = req_start + timedelta(days=span_days - 1)
+    effective_start = max(req_start, today)
+    effective_end = min(req_end, horizon_end)
+    if effective_end < effective_start:
+        log.info('[FORECAST] requested window outside available horizon start=%s span=%d', req_start.isoformat(), span_days)
+        return pd.DataFrame([])
+
+    url = (
+        'https://api.open-meteo.com/v1/forecast'
+        f'?latitude={lat2:.6f}&longitude={lon2:.6f}'
+        f'&start_date={effective_start.isoformat()}&end_date={effective_end.isoformat()}'
+        '&daily=temperature_2m_mean,precipitation_sum,windspeed_10m_mean,winddirection_10m_dominant'
+        '&timezone=UTC'
+    )
+    try:
+        resp = perform_request_dedup(url)
+    except Exception as e:
+        log.warning('[FORECAST] request failed lat=%.1f lon=%.1f start=%s end=%s: %s', lat2, lon2, effective_start, effective_end, e)
+        return pd.DataFrame([])
+    if getattr(resp, 'status_code', None) != 200:
+        log.warning('[FORECAST] unexpected HTTP %s lat=%.1f lon=%.1f start=%s end=%s', getattr(resp, 'status_code', None), lat2, lon2, effective_start, effective_end)
+        return pd.DataFrame([])
+
+    try:
+        payload = resp.json() or {}
+    except Exception as e:
+        log.warning('[FORECAST] invalid JSON lat=%.1f lon=%.1f start=%s end=%s: %s', lat2, lon2, effective_start, effective_end, e)
+        return pd.DataFrame([])
+
+    daily = payload.get('daily', {}) or {}
+    times = daily.get('time', []) or []
+    tavg = daily.get('temperature_2m_mean', []) or []
+    prcp = daily.get('precipitation_sum', []) or []
+    wspd = daily.get('windspeed_10m_mean', []) or []
+    wdir = daily.get('winddirection_10m_dominant', []) or []
+    n = min(len(times), len(tavg), len(prcp), len(wspd), len(wdir))
+    if n <= 0:
+        return pd.DataFrame([])
+
+    rows = []
+    for i in range(n):
+        try:
+            dt = pd.to_datetime(times[i])
+        except Exception:
+            continue
+        rows.append({
+            'date': dt,
+            'tavg': pd.to_numeric(pd.Series([tavg[i]]), errors='coerce')[0],
+            'prcp': pd.to_numeric(pd.Series([prcp[i]]), errors='coerce')[0],
+            'wspd': pd.to_numeric(pd.Series([wspd[i]]), errors='coerce')[0],
+            'wdir': pd.to_numeric(pd.Series([wdir[i]]), errors='coerce')[0],
+        })
+
+    df = pd.DataFrame(rows)
+    if len(df) == 0:
+        return df
+    try:
+        df['date'] = pd.to_datetime(df['date'])
+    except Exception:
+        pass
+    for c in ['tavg', 'prcp', 'wspd', 'wdir']:
+        try:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+        except Exception:
+            pass
+    df['_provider'] = 'openmeteo_forecast'
+    log.info('[FORECAST] Rows retrieved: %d (%s..%s)', len(df), effective_start.isoformat(), effective_end.isoformat())
+    return df
+
+
+def fetch_hourly_forecast_weather_window(
+    lat: float,
+    lon: float,
+    start_date: date,
+    span_days: int,
+) -> Optional[pd.DataFrame]:
+    """Fetch a near-term Open-Meteo hourly forecast window."""
+    lat2 = round(lat, 1)
+    lon2 = round(lon, 1)
+    span_days = int(span_days)
+    if span_days < 1:
+        raise ValueError('span_days must be >= 1')
+
+    today = date.today()
+    horizon_end = today + timedelta(days=13)
+    req_start = start_date if isinstance(start_date, date) else date.fromisoformat(str(start_date))
+    req_end = req_start + timedelta(days=span_days - 1)
+    effective_start = max(req_start, today)
+    effective_end = min(req_end, horizon_end)
+    if effective_end < effective_start:
+        log.info('[FORECAST] hourly requested window outside available horizon start=%s span=%d', req_start.isoformat(), span_days)
+        return pd.DataFrame([])
+
+    url = (
+        'https://api.open-meteo.com/v1/forecast'
+        f'?latitude={lat2:.6f}&longitude={lon2:.6f}'
+        f'&start_date={effective_start.isoformat()}&end_date={effective_end.isoformat()}'
+        '&hourly=temperature_2m'
+        '&timezone=auto'
+    )
+    try:
+        resp = perform_request_dedup(url)
+    except Exception as e:
+        log.warning('[FORECAST] hourly request failed lat=%.1f lon=%.1f start=%s end=%s: %s', lat2, lon2, effective_start, effective_end, e)
+        return pd.DataFrame([])
+    if getattr(resp, 'status_code', None) != 200:
+        log.warning('[FORECAST] hourly unexpected HTTP %s lat=%.1f lon=%.1f start=%s end=%s', getattr(resp, 'status_code', None), lat2, lon2, effective_start, effective_end)
+        return pd.DataFrame([])
+
+    try:
+        payload = resp.json() or {}
+    except Exception as e:
+        log.warning('[FORECAST] hourly invalid JSON lat=%.1f lon=%.1f start=%s end=%s: %s', lat2, lon2, effective_start, effective_end, e)
+        return pd.DataFrame([])
+
+    hourly = payload.get('hourly', {}) or {}
+    times = hourly.get('time', []) or []
+    temps = hourly.get('temperature_2m', []) or []
+    n = min(len(times), len(temps))
+    if n <= 0:
+        return pd.DataFrame([])
+
+    rows = []
+    for i in range(n):
+        try:
+            dt = pd.to_datetime(times[i])
+        except Exception:
+            continue
+        rows.append({
+            'time': dt,
+            'temperature_2m': pd.to_numeric(pd.Series([temps[i]]), errors='coerce')[0],
+            'date': dt.date().isoformat(),
+        })
+
+    df = pd.DataFrame(rows)
+    if len(df) == 0:
+        return pd.DataFrame([])
+    try:
+        df['time'] = pd.to_datetime(df['time'])
+    except Exception:
+        pass
+    try:
+        df['temperature_2m'] = pd.to_numeric(df['temperature_2m'], errors='coerce')
+    except Exception:
+        pass
+    df['_provider'] = 'openmeteo_forecast_hourly'
+    log.info('[FORECAST] Hourly rows retrieved: %d (%s..%s)', len(df), effective_start.isoformat(), effective_end.isoformat())
+    return df

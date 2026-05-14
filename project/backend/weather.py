@@ -148,13 +148,18 @@ def compute_weather_statistics(df: pd.DataFrame, month: int, day: int) -> Tuple[
     return compute_weather_statistics_daily(df, month, day)
 
 
-def compute_daytime_temperature_statistics(df_hourly: pd.DataFrame, month: int, day: int) -> Tuple[Dict[str, Any], int]:
-    """Compute daytime temperature statistics.
-    - Select hours 10, 12, 14, 16 local time from historical hourly data for the target calendar day across years.
-    - For each historical date, compute the mean, min, and max of the selected hours (skip dates with <2 values).
-    - Historical central tendency/range: median/min/max of the per-date means → temp_hist_median, temp_hist_min, temp_hist_max.
-    - Typical daytime variation: median of the per-date mins/maxs → temp_day_typical_min, temp_day_typical_max.
-    - Legacy percentile fields are still returned for existing profile visuals.
+def compute_daytime_temperature_statistics(
+    df_hourly: pd.DataFrame,
+    month: int,
+    day: int,
+    start_hour: int = 10,
+    end_hour: int = 18,
+) -> Tuple[Dict[str, Any], int]:
+    """Compute active-window temperature statistics from hourly data.
+
+    For each date we use all hourly samples inside the inclusive local-time
+    window, compute the per-date mean/min/max, then aggregate those across all
+    matching dates.
     """
     if df_hourly is None or df_hourly.empty:
         raise ValueError('No hourly data available')
@@ -166,14 +171,23 @@ def compute_daytime_temperature_statistics(df_hourly: pd.DataFrame, month: int, 
     hours = ts.dt.hour
     temps = pd.to_numeric(df_hourly['temperature_2m'], errors='coerce')
     dates = ts.dt.date
-    target_hours = {10, 12, 14, 16}
+    try:
+        start_hour = max(0, min(23, int(start_hour)))
+    except Exception:
+        start_hour = 10
+    try:
+        end_hour = max(0, min(23, int(end_hour)))
+    except Exception:
+        end_hour = 18
+    if end_hour < start_hour:
+        start_hour, end_hour = end_hour, start_hour
     means = []
     day_mins = []
     day_maxs = []
     hour_vals = []
     by_date = pd.DataFrame({'date': dates, 'hour': hours, 'temp': temps})
     for d, g in by_date.groupby('date'):
-        sel = g[g['hour'].isin(target_hours)]['temp'].dropna()
+        sel = g[(g['hour'] >= start_hour) & (g['hour'] <= end_hour)]['temp'].dropna()
         if len(sel) >= 2:
             sel_vals = np.array(sel.values, dtype=float)
             m = float(np.nanmean(sel_vals))
