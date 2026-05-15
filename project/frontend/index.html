@@ -940,6 +940,207 @@
       }
     }
 
+    #roadbookPanel {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      bottom: 14px;
+      width: min(400px, 25vw);
+      min-width: 280px;
+      z-index: 980;
+      transition: transform 180ms ease, opacity 180ms ease, width 180ms ease, min-width 180ms ease;
+    }
+    #roadbookPanel.is-hidden {
+      opacity: 0;
+      transform: translateX(18px);
+      pointer-events: none;
+    }
+    #roadbookPanel.is-collapsed {
+      width: 54px;
+      min-width: 54px;
+    }
+    .wm-roadbook-shell {
+      display: flex;
+      flex-direction: column;
+      font-family: system-ui, -apple-system, sans-serif;
+      height: 100%;
+      border-radius: 22px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      background: linear-gradient(180deg, rgba(255,255,255,0.97), rgba(248,250,252,0.95));
+      box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+    }
+    .wm-roadbook-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 14px 8px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+    }
+    .wm-roadbook-kicker {
+      margin: 0 0 3px 0;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #0f766e;
+    }
+    .wm-roadbook-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .wm-roadbook-meta {
+      padding: 0 14px 10px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #475569;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    }
+    .wm-roadbook-collapse {
+      flex: 0 0 auto;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: rgba(255,255,255,0.92);
+      color: #0f172a;
+      font-size: 15px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .wm-roadbook-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 8px 10px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+    .wm-roadbook-empty {
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px dashed rgba(148, 163, 184, 0.36);
+      background: rgba(248,250,252,0.84);
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .wm-roadbook-card {
+      min-height: 120px;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.26);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96));
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+      padding: 10px 12px;
+      display: grid;
+      gap: 4px;
+    }
+    .wm-roadbook-card[data-kind="rest"] {
+      background: linear-gradient(180deg, rgba(240,253,250,0.96), rgba(236,253,245,0.94));
+      border-color: rgba(16, 185, 129, 0.20);
+    }
+    .wm-roadbook-card[data-day-state="past"] {
+      opacity: 0.62;
+    }
+    .wm-roadbook-card[data-day-state="current"] {
+      border-color: rgba(14, 165, 233, 0.34);
+      box-shadow: 0 16px 32px rgba(14, 165, 233, 0.18);
+    }
+    .wm-roadbook-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+    .wm-roadbook-card-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.15;
+    }
+    .wm-roadbook-card-sub {
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.35;
+    }
+    .wm-roadbook-card-row2 {
+      font-size: 12px;
+      font-weight: 600;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+    .wm-roadbook-card-row3 {
+      font-size: 11px;
+      color: #475569;
+      line-height: 1.35;
+    }
+    .wm-roadbook-pill {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 24px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.08);
+      color: #0f172a;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .wm-roadbook-pill[data-weather="forecast"] {
+      background: rgba(14,165,233,0.14);
+      color: #0369a1;
+    }
+    .wm-roadbook-pill[data-weather="missing"] {
+      background: rgba(241,245,249,0.92);
+      color: #64748b;
+    }
+
+    #roadbookPanel.is-collapsed .wm-roadbook-meta,
+    #roadbookPanel.is-collapsed .wm-roadbook-list,
+    #roadbookPanel.is-collapsed .wm-roadbook-title,
+    #roadbookPanel.is-collapsed .wm-roadbook-kicker {
+      display: none;
+    }
+    #roadbookPanel.is-collapsed .wm-roadbook-head {
+      justify-content: center;
+      padding: 10px 8px;
+      border-bottom: none;
+    }
+    @media (max-width: 1120px) {
+      #roadbookPanel {
+        width: min(340px, 34vw);
+        min-width: 250px;
+      }
+    }
+    @media (max-width: 860px) {
+      #roadbookPanel {
+        top: auto;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: auto;
+        min-width: 0;
+        height: min(52vh, 420px);
+      }
+      #roadbookPanel.is-collapsed {
+        width: auto;
+        left: auto;
+        right: 12px;
+        min-width: 54px;
+        height: 54px;
+      }
+    }
+
     .wm-climate-strip {
       display: grid;
       grid-template-columns: minmax(240px, 1.05fr) minmax(420px, 1.7fr) minmax(210px, 0.8fr);
@@ -1537,9 +1738,24 @@
     .wm-pref-years {
       min-width: 0;
     }
+    .wm-visually-hidden {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
     .wm-pref-control.wm-pref-toggle-wrap {
       display: flex;
       justify-content: flex-end;
+    }
+    .wm-pref-control.wm-pref-stack {
+      display: grid;
+      gap: 8px;
     }
     .wm-pref-select,
     .wm-pref-date {
@@ -1836,6 +2052,61 @@
       font-size: 12px;
       color: #64748b;
       line-height: 1.35;
+    }
+    .wm-pref-segmented {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      padding: 4px;
+      border-radius: 16px;
+      background: rgba(226, 232, 240, 0.68);
+      box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+    }
+    .wm-pref-segmented-btn {
+      min-height: 38px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.54);
+      color: #475569;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+    }
+    .wm-pref-segmented-btn:hover {
+      transform: translateY(-1px);
+      color: #0f172a;
+    }
+    .wm-pref-segmented-btn.is-active,
+    .wm-pref-segmented-btn[aria-pressed="true"] {
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 64, 175, 0.90));
+      color: #f8fafc;
+      border-color: rgba(15, 23, 42, 0.20);
+      box-shadow: 0 8px 18px rgba(30, 64, 175, 0.22);
+    }
+    .wm-pref-segmented-btn[data-mode="forecast"].is-active,
+    .wm-pref-segmented-btn[data-mode="forecast"][aria-pressed="true"] {
+      background: linear-gradient(135deg, rgba(15, 118, 110, 0.96), rgba(14, 165, 233, 0.94));
+      box-shadow: 0 8px 18px rgba(14, 165, 233, 0.22);
+    }
+    .wm-pref-segmented-btn:focus-visible {
+      outline: 2px solid rgba(14,165,233,0.30);
+      outline-offset: 2px;
+    }
+    .wm-pref-hint {
+      font-size: 11px;
+      line-height: 1.4;
+      color: #475569;
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.76);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+    }
+    .wm-pref-hint[data-mode="forecast"] {
+      background: linear-gradient(135deg, rgba(240, 253, 250, 0.98), rgba(224, 242, 254, 0.98));
+      border-color: rgba(14, 165, 233, 0.22);
+      color: #0f766e;
     }
 
     /* Toggle switch styling (checkboxes) */
@@ -2152,11 +2423,16 @@
                           <span class="wm-pref-name">Weather source</span>
                           <span class="wm-pref-sub">Climatology uses selected historical years. Forecast will use near-term Open-Meteo forecast data.</span>
                         </label>
-                        <div class="wm-pref-control">
-                          <select id="tourWeatherMode" class="wm-pref-select" aria-label="Tour weather source" title="Choose historical climatology or forecast weather for the tour">
+                        <div class="wm-pref-control wm-pref-stack">
+                          <div class="wm-pref-segmented" role="group" aria-label="Tour weather source">
+                            <button id="tourWeatherModeClimate" class="wm-pref-segmented-btn is-active" type="button" data-mode="climatology" aria-pressed="true">Climate</button>
+                            <button id="tourWeatherModeForecast" class="wm-pref-segmented-btn" type="button" data-mode="forecast" aria-pressed="false">Forecast</button>
+                          </div>
+                          <select id="tourWeatherMode" class="wm-pref-select wm-visually-hidden" aria-label="Tour weather source" title="Choose historical climatology or forecast weather for the tour">
                             <option value="climatology" selected>Climatology: typical weather from selected years</option>
                             <option value="forecast">Forecast: near-term Open-Meteo forecast</option>
                           </select>
+                          <div id="tourWeatherModeHint" class="wm-pref-hint" data-mode="climatology">Climate mode uses the selected historical year blend. Forecast mode switches the route to live Open-Meteo forecast data and only covers the next 14 days.</div>
                         </div>
                       </div>
 
@@ -2556,6 +2832,19 @@
           <option value="comfort_ride">Lucky Days (Active)</option>
         </select>
       </div>
+      <aside id="roadbookPanel" class="is-hidden" aria-label="Roadbook panel">
+        <div class="wm-roadbook-shell">
+          <div class="wm-roadbook-head">
+            <div>
+              <p class="wm-roadbook-kicker">Route Planning</p>
+              <h3 id="roadbookTitle" class="wm-roadbook-title">Roadbook</h3>
+            </div>
+            <button id="roadbookCollapse" class="wm-roadbook-collapse" type="button" aria-label="Collapse roadbook">›</button>
+          </div>
+          <div id="roadbookMeta" class="wm-roadbook-meta"></div>
+          <div id="roadbookList" class="wm-roadbook-list"></div>
+        </div>
+      </aside>
       <div id="profilePanel" style="position:relative; width:100%;">
     <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">

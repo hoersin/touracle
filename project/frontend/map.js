@@ -4658,97 +4658,40 @@
         return;
       }
 
-      const restsByPosition = new Map();
-      for (const stop of _roadbookNormalizeRestStops(rideCount)) {
-        if (!restsByPosition.has(stop.position)) restsByPosition.set(stop.position, []);
-        restsByPosition.get(stop.position).push(stop);
-      }
-      const cardsByKey = new Map(days.map((day) => [String(day.key), day]));
       const html = [];
-      for (let position = 0; position <= rideCount; position++) {
-        html.push(`<div class="wm-roadbook-gap"><div class="wm-roadbook-dropzone" data-position="${position}"></div><button class="wm-roadbook-add-rest" type="button" data-position="${position}">Rest</button></div>`);
-        const gapStops = restsByPosition.get(position) || [];
-        for (const stop of gapStops) {
-          const day = cardsByKey.get(`rest-${stop.id}`);
-          if (!day) continue;
-          const weatherLabel = day.weather && day.weather.hasData ? (weatherMode === 'forecast' ? 'forecast' : 'mapped') : 'missing';
-          const weatherText = day.weather && day.weather.hasData
-            ? `${_roadbookMetricValue(day.weather.tempC, '°C', 0)} segment median • ${_roadbookMetricValue(day.weather.rainMm, ' mm', 1)} rain • ${_roadbookMetricValue(day.weather.windMs, ' m/s', 1)} wind`
-            : 'No weather data available for this day.';
-          html.push(`
-            <article class="wm-roadbook-card" data-kind="rest" data-day-state="${_htmlEsc(day.dayState)}" data-rest-id="${_htmlEsc(day.restId)}" draggable="true">
-              <div class="wm-roadbook-card-head">
-                <div>
-                  <div class="wm-roadbook-card-title">Rest Day ${day.logicalIdx + 1}</div>
-                  <div class="wm-roadbook-card-sub">${_htmlEsc(day.dateLabel)} • ${_htmlEsc(day.location)}</div>
-                </div>
-                <span class="wm-roadbook-pill" data-weather="${_htmlEsc(weatherLabel)}">Rest</span>
-              </div>
-              <div class="wm-roadbook-card-sub">${_htmlEsc(weatherText)}</div>
-              <div class="wm-roadbook-card-actions">
-                <button class="wm-roadbook-card-btn" type="button" data-action="remove-rest" data-rest-id="${_htmlEsc(day.restId)}">Remove</button>
-              </div>
-            </article>`);
-        }
-        if (position >= rideCount) continue;
-        const day = cardsByKey.get(`ride-${position}`);
-        if (!day) continue;
+      for (const day of days) {
         const weatherLabel = day.weather && day.weather.hasData ? (weatherMode === 'forecast' ? 'forecast' : 'mapped') : 'missing';
-        html.push(`
+        if (day.type === 'rest') {
+          html.push(`
+          <article class="wm-roadbook-card" data-kind="rest" data-day-state="${_htmlEsc(day.dayState)}" data-rest-id="${_htmlEsc(day.restId)}">
+            <div class="wm-roadbook-card-head">
+              <div class="wm-roadbook-card-title">Day ${day.logicalIdx + 1}</div>
+              <span class="wm-roadbook-pill" data-weather="${_htmlEsc(weatherLabel)}">Rest</span>
+            </div>
+            <div class="wm-roadbook-card-sub">${_htmlEsc(day.dateLabel)} • ${_htmlEsc(day.location)}</div>
+          </article>`);
+        } else {
+          const distKm = _roadbookMetricValue(day.distanceKm, ' km', 0);
+          const elevM = _roadbookMetricValue(day.elevationGainM, ' hm', 0);
+          const tempStr = day.weather && day.weather.hasData && Number.isFinite(Number(day.weather.tempC))
+            ? `${Math.round(Number(day.weather.tempC))}°C` : '—';
+          const row2 = `${distKm} • ${elevM} • ${tempStr}`;
+          const row3 = day.weather && day.weather.hasData
+            ? `🌧️ ${_roadbookMetricValue(day.weather.rainMm, ' mm', 1)}  💨 ${_roadbookMetricValue(day.weather.windMs, ' m/s', 1)}`
+            : '';
+          const luckyLabel = day.weather && day.weather.hasData ? (day.weather.lucky ? 'Lucky' : 'Ride') : 'No data';
+          html.push(`
           <article class="wm-roadbook-card" data-kind="ride" data-day-state="${_htmlEsc(day.dayState)}">
             <div class="wm-roadbook-card-head">
-              <div>
-                <div class="wm-roadbook-card-title">Ride Day ${day.logicalIdx + 1}</div>
-                <div class="wm-roadbook-card-sub">${_htmlEsc(day.dateLabel)} • ${_htmlEsc(day.location)}</div>
-              </div>
-              <span class="wm-roadbook-pill" data-weather="${_htmlEsc(weatherLabel)}">${day.weather && day.weather.hasData ? (day.weather.lucky ? 'Lucky' : 'Ride') : 'No data'}</span>
+              <div class="wm-roadbook-card-title">Day ${day.logicalIdx + 1}</div>
+              <span class="wm-roadbook-pill" data-weather="${_htmlEsc(weatherLabel)}">${_htmlEsc(luckyLabel)}</span>
             </div>
-            <div class="wm-roadbook-metrics">
-              <div class="wm-roadbook-metric"><span class="wm-roadbook-metric-label">Route</span><span class="wm-roadbook-metric-value">${_htmlEsc(_roadbookMetricValue(day.distanceKm, ' km', 0))}</span></div>
-              <div class="wm-roadbook-metric"><span class="wm-roadbook-metric-label">Climb</span><span class="wm-roadbook-metric-value">${_htmlEsc(_roadbookMetricValue(day.elevationGainM, ' m', 0))}</span></div>
-              <div class="wm-roadbook-metric"><span class="wm-roadbook-metric-label">Route Temp</span><span class="wm-roadbook-metric-value">${_htmlEsc(day.weather && day.weather.hasData ? _roadbookMetricValue(day.weather.tempC, '°C', 0) : '—')}</span></div>
-            </div>
-            <div class="wm-roadbook-card-sub">${_htmlEsc(day.weather && day.weather.hasData ? `${_roadbookMetricValue(day.weather.rainMm, ' mm', 1)} rain • ${_roadbookMetricValue(day.weather.windMs, ' m/s', 1)} wind • temperature is the median across that day’s route section` : 'No weather data available for this day.')}</div>
-            <div class="wm-roadbook-card-actions">
-              <button class="wm-roadbook-card-btn" type="button" data-action="add-rest" data-position="${position + 1}">Add Rest After</button>
-            </div>
+            <div class="wm-roadbook-card-row2">${_htmlEsc(row2)}</div>${row3 ? `\n            <div class="wm-roadbook-card-row3">${_htmlEsc(row3)}</div>` : ''}
+            <div class="wm-roadbook-card-sub">${_htmlEsc(day.dateLabel)} • ${_htmlEsc(day.location)}</div>
           </article>`);
+        }
       }
       roadbookList.innerHTML = html.join('');
-      for (const btn of Array.from(roadbookList.querySelectorAll('[data-action="add-rest"]'))) {
-        btn.addEventListener('click', () => {
-          _roadbookAddRestStop(Number(btn.dataset.position));
-        });
-      }
-      for (const btn of Array.from(roadbookList.querySelectorAll('[data-action="remove-rest"]'))) {
-        btn.addEventListener('click', () => {
-          _roadbookRemoveRestStop(String(btn.dataset.restId || ''));
-        });
-      }
-      for (const zone of Array.from(roadbookList.querySelectorAll('.wm-roadbook-dropzone'))) {
-        zone.addEventListener('dragover', (ev) => {
-          ev.preventDefault();
-          zone.classList.add('is-active');
-        });
-        zone.addEventListener('dragleave', () => {
-          zone.classList.remove('is-active');
-        });
-        zone.addEventListener('drop', (ev) => {
-          ev.preventDefault();
-          zone.classList.remove('is-active');
-          const restId = ev.dataTransfer ? String(ev.dataTransfer.getData('text/plain') || '') : '';
-          if (!restId) return;
-          _roadbookMoveRestStop(restId, Number(zone.dataset.position));
-        });
-      }
-      for (const card of Array.from(roadbookList.querySelectorAll('.wm-roadbook-card[data-kind="rest"]'))) {
-        card.addEventListener('dragstart', (ev) => {
-          const restId = String(card.getAttribute('data-rest-id') || '');
-          if (!ev.dataTransfer || !restId) return;
-          ev.dataTransfer.effectAllowed = 'move';
-          ev.dataTransfer.setData('text/plain', restId);
-        });
-      }
     } catch (_) {}
   }
 
@@ -13866,6 +13809,14 @@
       profileCtx.textAlign = 'center';
       profileCtx.textBaseline = 'middle';
 
+      const rbModel = _roadbookBuild(profile);
+      const rideToLogical = new Map();
+      if (rbModel && Array.isArray(rbModel.days)) {
+        for (const day of rbModel.days) {
+          if (day.type === 'ride') rideToLogical.set(day.rideIdx, day.logicalIdx);
+        }
+      }
+
       for (let dayIdx = 0; dayIdx < totalDays; dayIdx++) {
         try {
           const fallbackStartDist = (axisLen * dayIdx) / totalDays;
@@ -13908,7 +13859,9 @@
             : Number(sample && sample.rainProb);
           const iconClass = mapWeatherByProb(rainProb);
           const lucky = (daySummary && typeof daySummary.lucky === 'boolean') ? daySummary.lucky : null;
-          const dateLabel = _tourRouteDayCardDateLabel(dayIdx) || '—';
+          const logIdx = rideToLogical.has(dayIdx) ? rideToLogical.get(dayIdx) : dayIdx;
+          const logDateIso = _roadbookLogicalDateIso(logIdx);
+          const dateLabel = (logDateIso ? _fmtIsoDayMonthCompact(logDateIso) : _tourRouteDayCardDateLabel(dayIdx)) || '—';
           const rainLabel = Number.isFinite(rainMm) ? `${fmt(rainMm, 0)} mm` : '';
 
           drawLabelBox(x, stackTop);
