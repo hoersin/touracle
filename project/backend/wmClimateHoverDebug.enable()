@@ -1,0 +1,2 @@
+wmClimateHoverDebug.enable()
+wmClimateHoverDebug.dump()

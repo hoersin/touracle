@@ -3744,12 +3744,15 @@ def api_map_stream():
             if not used:
                 return None
 
+            forecast_mode_active = (tour_weather_mode == 'forecast')
             years_txt = _format_years_span(years_used_min, years_used_max)
             providers = sorted(list(provenance_providers))
             provider_txt = None
             if len(providers) == 1:
                 p = providers[0].lower()
                 if p in ('openmeteo', 'open-meteo', 'open_meteo'):
+                    provider_txt = 'Open-Meteo'
+                elif p in ('openmeteo_forecast', 'openmeteo_forecast_hourly'):
                     provider_txt = 'Open-Meteo'
                 elif p == 'meteostat':
                     provider_txt = 'Meteostat'
@@ -3759,9 +3762,15 @@ def api_map_stream():
             if used == ['offline_tile']:
                 base = 'offline Open-Meteo tile DB'
             elif used == ['disk_cache']:
-                base = f"cached {provider_txt} station stats" if provider_txt else 'cached station stats'
+                if forecast_mode_active:
+                    base = f"cached {provider_txt} forecast stats" if provider_txt else 'cached forecast stats'
+                else:
+                    base = f"cached {provider_txt} station stats" if provider_txt else 'cached station stats'
             elif used == ['api']:
-                base = f"historical {provider_txt} weather data" if provider_txt else 'historical weather data'
+                if forecast_mode_active:
+                    base = f"live {provider_txt} forecast" if provider_txt else 'live forecast data'
+                else:
+                    base = f"historical {provider_txt} weather data" if provider_txt else 'historical weather data'
             elif used == ['dummy']:
                 base = 'fallback dummy data'
             else:
@@ -3769,16 +3778,16 @@ def api_map_stream():
                 if provenance_counts.get('offline_tile', 0) > 0:
                     parts.append('offline tiles')
                 if provenance_counts.get('disk_cache', 0) > 0:
-                    parts.append('cached stats')
+                    parts.append('cached forecast stats' if forecast_mode_active else 'cached stats')
                 if provenance_counts.get('api', 0) > 0:
-                    parts.append('historical data')
+                    parts.append('forecast data' if forecast_mode_active else 'historical data')
                 if provenance_counts.get('dummy', 0) > 0:
                     parts.append('dummy fallback')
                 if provenance_counts.get('skipped', 0) > 0:
                     parts.append('skipped points')
                 base = 'mixed sources' + (f" ({' / '.join(parts)})" if parts else '')
 
-            if years_txt and 'dummy' not in used:
+            if years_txt and (not forecast_mode_active) and 'dummy' not in used:
                 base = f"{base} {years_txt}"
             return f"from {base}"
 
@@ -3849,7 +3858,7 @@ def api_map_stream():
         reuse_per_day = str(reuse_per_day_param).lower() in ('1', 'true', 'yes', 'on')
         require_point_level_offline_stats = bool(reuse_per_day and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
 
-        if tour_planning and sampled_points and reuse_per_day and (not require_point_level_offline_stats):
+        if tour_planning and sampled_points and reuse_per_day and tour_weather_mode != 'forecast' and (not require_point_level_offline_stats):
             # Tour Planning (optional): reuse stats PER DAY (not for the whole tour).
             # Default behavior is per-point stats (day + coordinate) so long routes
             # do not show repeated glyphs within a day segment.

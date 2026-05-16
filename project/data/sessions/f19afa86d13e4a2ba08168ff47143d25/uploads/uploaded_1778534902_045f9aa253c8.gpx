@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Copilot Simulation" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk><name>sim_route_2_420km</name><trkseg>
+    <trkpt lat="43.100000" lon="3.200000"></trkpt>
+    <trkpt lat="43.091017" lon="3.482967"></trkpt>
+    <trkpt lat="43.117966" lon="3.704386"></trkpt>
+    <trkpt lat="43.135932" lon="4.012049"></trkpt>
+    <trkpt lat="43.135932" lon="4.258252"></trkpt>
+    <trkpt lat="43.117966" lon="4.590625"></trkpt>
+    <trkpt lat="43.091017" lon="4.861368"></trkpt>
+    <trkpt lat="43.100000" lon="5.218100"></trkpt>
+    <trkpt lat="43.108983" lon="5.513369"></trkpt>
+    <trkpt lat="43.082034" lon="5.747159"></trkpt>
+    <trkpt lat="43.064068" lon="6.066940"></trkpt>
+    <trkpt lat="43.064068" lon="6.325150"></trkpt>
+    <trkpt lat="43.082034" lon="6.669429"></trkpt>
+    <trkpt lat="43.108983" lon="6.952312"></trkpt>
+    <trkpt lat="43.100000" lon="7.173797"></trkpt>
+    <trkpt lat="43.091017" lon="7.481370"></trkpt>
+    <trkpt lat="43.117966" lon="7.727391"></trkpt>
+    <trkpt lat="43.135932" lon="8.059667"></trkpt>
+    <trkpt lat="43.135932" lon="8.330490"></trkpt>
+    <trkpt lat="43.117966" lon="8.687483"></trkpt>
+  </trkseg></trk>
+</gpx>

@@ -15,8 +15,12 @@
       --wm-sidebar-w-max: 760px;
       --wm-sidebar-w-collapsed: calc(52px * 0.7);
       --wm-sidebar-w-active: var(--wm-sidebar-w);
+      --wm-roadbook-panel-w: min(360px, 20vw);
+      --wm-roadbook-gap: 14px;
+      --wm-roadbook-panel-w-active: 0px;
     }
     body.wm-sidebar-collapsed { --wm-sidebar-w-active: var(--wm-sidebar-w-collapsed); }
+    body.wm-roadbook-visible { --wm-roadbook-panel-w-active: calc(var(--wm-roadbook-panel-w) + var(--wm-roadbook-gap) + 8px); }
     #appShell { height: 100vh; width: 100vw; }
     #wmSidebar {
       position: fixed;
@@ -214,7 +218,9 @@
       position: relative;
       height: 100vh;
       margin-left: var(--wm-sidebar-w-active);
-      transition: margin-left 220ms ease;
+      padding-right: var(--wm-roadbook-panel-w-active);
+      box-sizing: border-box;
+      transition: margin-left 220ms ease, padding-right 220ms ease;
     }
     /* Top navigation (segmented control) */
     #topNav { position: fixed; z-index: 2100; left: 50%; top: 10px; transform: translateX(-50%); }
@@ -940,12 +946,40 @@
       }
     }
 
-    #roadbookPanel {
-      position: absolute;
+    #roadbookToggle {
+      position: fixed;
       top: 14px;
       right: 14px;
-      bottom: 14px;
-      width: min(400px, 25vw);
+      z-index: 981;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      border: 1px solid rgba(0,0,0,0.14);
+      background: rgba(255,255,255,0.95);
+      color: #0f172a;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 16px rgba(15, 23, 42, 0.10);
+      transition: right 220ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+    #roadbookToggle svg { width: 18px; height: 18px; }
+    #roadbookToggle.is-active {
+      background: rgba(240,253,250,0.96);
+      border-color: rgba(15, 118, 110, 0.28);
+      box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+    }
+    body.wm-roadbook-visible #roadbookToggle {
+      right: calc(var(--wm-roadbook-panel-w) + 22px);
+    }
+    #roadbookToggle[hidden] { display: none; }
+    #roadbookPanel {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      bottom: calc(14px + var(--wm-strategic-timeline-h, 0px));
+      width: var(--wm-roadbook-panel-w);
       min-width: 280px;
       z-index: 980;
       transition: transform 180ms ease, opacity 180ms ease, width 180ms ease, min-width 180ms ease;
@@ -954,10 +988,6 @@
       opacity: 0;
       transform: translateX(18px);
       pointer-events: none;
-    }
-    #roadbookPanel.is-collapsed {
-      width: 54px;
-      min-width: 54px;
     }
     .wm-roadbook-shell {
       display: flex;
@@ -974,7 +1004,7 @@
     .wm-roadbook-head {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;
       gap: 10px;
       padding: 14px 14px 8px;
       border-bottom: 1px solid rgba(148, 163, 184, 0.18);
@@ -1000,18 +1030,6 @@
       color: #475569;
       border-bottom: 1px solid rgba(148, 163, 184, 0.14);
     }
-    .wm-roadbook-collapse {
-      flex: 0 0 auto;
-      width: 30px;
-      height: 30px;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.28);
-      background: rgba(255,255,255,0.92);
-      color: #0f172a;
-      font-size: 15px;
-      font-weight: 800;
-      cursor: pointer;
-    }
     .wm-roadbook-list {
       flex: 1 1 auto;
       min-height: 0;
@@ -1032,6 +1050,7 @@
     }
 
     .wm-roadbook-card {
+      position: relative;
       min-height: 120px;
       border-radius: 18px;
       border: 1px solid rgba(148, 163, 184, 0.26);
@@ -1040,6 +1059,9 @@
       padding: 10px 12px;
       display: grid;
       gap: 4px;
+      cursor: pointer;
+      transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease, opacity 140ms ease;
+      overflow: hidden;
     }
     .wm-roadbook-card[data-kind="rest"] {
       background: linear-gradient(180deg, rgba(240,253,250,0.96), rgba(236,253,245,0.94));
@@ -1049,8 +1071,19 @@
       opacity: 0.62;
     }
     .wm-roadbook-card[data-day-state="current"] {
-      border-color: rgba(14, 165, 233, 0.34);
-      box-shadow: 0 16px 32px rgba(14, 165, 233, 0.18);
+      border-color: rgba(15, 118, 110, 0.34);
+      background: linear-gradient(180deg, rgba(248,255,252,0.99), rgba(239,250,247,0.97));
+      box-shadow: 0 16px 32px rgba(15, 118, 110, 0.12);
+    }
+    .wm-roadbook-card[data-day-state="current"]::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 12px;
+      bottom: 12px;
+      width: 4px;
+      border-radius: 999px;
+      background: #0f766e;
     }
     .wm-roadbook-card-head {
       display: flex;
@@ -1064,6 +1097,26 @@
       font-weight: 800;
       color: #0f172a;
       line-height: 1.15;
+    }
+    .wm-roadbook-card-body {
+      display: grid;
+      grid-template-columns: 47px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .wm-roadbook-weather {
+      width: 47px;
+      min-width: 47px;
+    }
+    .wm-roadbook-weather [data-wm-route-card="1"] {
+      width: 47px;
+      height: 61px;
+    }
+    .wm-roadbook-card-copy {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
     }
     .wm-roadbook-card-sub {
       font-size: 11px;
@@ -1080,6 +1133,17 @@
       font-size: 11px;
       color: #475569;
       line-height: 1.35;
+    }
+    .wm-roadbook-card:hover,
+    .wm-roadbook-card:focus-visible,
+    .wm-roadbook-card.is-active {
+      transform: translateY(-1px);
+      border-color: rgba(15, 118, 110, 0.42);
+      box-shadow: 0 16px 30px rgba(15, 118, 110, 0.14);
+    }
+    .wm-roadbook-card.is-selected {
+      background: linear-gradient(180deg, rgba(240,253,250,0.98), rgba(232,250,243,0.96));
+      border-color: rgba(15, 118, 110, 0.52);
     }
     .wm-roadbook-pill {
       flex: 0 0 auto;
@@ -1104,25 +1168,34 @@
       background: rgba(241,245,249,0.92);
       color: #64748b;
     }
+    .wm-roadbook-pill[data-status="lucky"] {
+      background: rgba(71, 215, 100, 0.16);
+      color: rgba(20, 126, 56, 0.96);
+      border: 1px solid rgba(20, 126, 56, 0.20);
+    }
+    .wm-roadbook-pill[data-status="ride"] {
+      background: rgba(179, 179, 179, 0.16);
+      color: rgba(80, 80, 80, 0.92);
+      border: 1px solid rgba(120, 132, 145, 0.22);
+    }
+    .wm-roadbook-pill[data-status="rest"] {
+      background: rgba(15, 118, 110, 0.10);
+      color: #0f766e;
+      border: 1px solid rgba(15, 118, 110, 0.18);
+    }
 
-    #roadbookPanel.is-collapsed .wm-roadbook-meta,
-    #roadbookPanel.is-collapsed .wm-roadbook-list,
-    #roadbookPanel.is-collapsed .wm-roadbook-title,
-    #roadbookPanel.is-collapsed .wm-roadbook-kicker {
-      display: none;
-    }
-    #roadbookPanel.is-collapsed .wm-roadbook-head {
-      justify-content: center;
-      padding: 10px 8px;
-      border-bottom: none;
-    }
     @media (max-width: 1120px) {
+      body { --wm-roadbook-panel-w: min(320px, 28vw); }
       #roadbookPanel {
-        width: min(340px, 34vw);
         min-width: 250px;
       }
     }
     @media (max-width: 860px) {
+      body.wm-roadbook-visible { --wm-roadbook-panel-w-active: 0px; }
+      body.wm-roadbook-visible #roadbookToggle,
+      #roadbookToggle {
+        right: 12px;
+      }
       #roadbookPanel {
         top: auto;
         left: 12px;
@@ -1131,13 +1204,6 @@
         width: auto;
         min-width: 0;
         height: min(52vh, 420px);
-      }
-      #roadbookPanel.is-collapsed {
-        width: auto;
-        left: auto;
-        right: 12px;
-        min-width: 54px;
-        height: 54px;
       }
     }
 
@@ -2832,6 +2898,13 @@
           <option value="comfort_ride">Lucky Days (Active)</option>
         </select>
       </div>
+      <button id="roadbookToggle" type="button" aria-label="Show roadbook" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <path d="M4 7h16" />
+          <path d="M4 12h16" />
+          <path d="M4 17h16" />
+        </svg>
+      </button>
       <aside id="roadbookPanel" class="is-hidden" aria-label="Roadbook panel">
         <div class="wm-roadbook-shell">
           <div class="wm-roadbook-head">
@@ -2839,7 +2912,6 @@
               <p class="wm-roadbook-kicker">Route Planning</p>
               <h3 id="roadbookTitle" class="wm-roadbook-title">Roadbook</h3>
             </div>
-            <button id="roadbookCollapse" class="wm-roadbook-collapse" type="button" aria-label="Collapse roadbook">›</button>
           </div>
           <div id="roadbookMeta" class="wm-roadbook-meta"></div>
           <div id="roadbookList" class="wm-roadbook-list"></div>
@@ -3254,7 +3326,7 @@
       }
 
       async function bootMap(){
-          const mapSrc = '/map.js?v=152';
+          const mapSrc = '/map.js?v=161';
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();

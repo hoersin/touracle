@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="WeatherMap" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Iceland South Coast</name>
+    <trkseg>
+      <trkpt lat="63.9998" lon="-22.6236"><ele>52</ele></trkpt>
+      <trkpt lat="64.1466" lon="-21.9426"><ele>18</ele></trkpt>
+      <trkpt lat="63.9330" lon="-20.9971"><ele>12</ele></trkpt>
+      <trkpt lat="63.8354" lon="-20.3999"><ele>21</ele></trkpt>
+      <trkpt lat="63.5319" lon="-19.5114"><ele>43</ele></trkpt>
+      <trkpt lat="63.4194" lon="-19.0060"><ele>35</ele></trkpt>
+      <trkpt lat="63.7832" lon="-18.0603"><ele>56</ele></trkpt>
+      <trkpt lat="63.9920" lon="-16.9756"><ele>90</ele></trkpt>
+      <trkpt lat="64.2539" lon="-15.2082"><ele>9</ele></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

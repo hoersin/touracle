@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="Copilot Simulation" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk><name>sim_route_3_980km</name><trkseg>
+    <trkpt lat="44.400000" lon="4.100000"></trkpt>
+    <trkpt lat="44.426949" lon="4.464619"></trkpt>
+    <trkpt lat="44.417966" lon="4.766512"></trkpt>
+    <trkpt lat="44.408983" lon="5.005473"></trkpt>
+    <trkpt lat="44.435932" lon="5.332423"></trkpt>
+    <trkpt lat="44.453899" lon="5.596620"></trkpt>
+    <trkpt lat="44.453899" lon="5.948990"></trkpt>
+    <trkpt lat="44.435932" lon="6.238438"></trkpt>
+    <trkpt lat="44.408983" lon="6.464892"></trkpt>
+    <trkpt lat="44.417966" lon="6.779267"></trkpt>
+    <trkpt lat="44.426949" lon="7.030805"></trkpt>
+    <trkpt lat="44.400000" lon="7.370435"></trkpt>
+    <trkpt lat="44.382034" lon="7.647042"></trkpt>
+    <trkpt lat="44.382034" lon="8.011549"></trkpt>
+    <trkpt lat="44.400000" lon="8.313210"></trkpt>
+    <trkpt lat="44.426949" lon="8.552098"></trkpt>
+    <trkpt lat="44.417966" lon="8.879149"></trkpt>
+    <trkpt lat="44.408983" lon="9.143264"></trkpt>
+    <trkpt lat="44.435932" lon="9.495364"></trkpt>
+    <trkpt lat="44.453899" lon="9.784722"></trkpt>
+    <trkpt lat="44.453899" lon="10.011246"></trkpt>
+    <trkpt lat="44.435932" lon="10.325863"></trkpt>
+    <trkpt lat="44.408983" lon="10.577479"></trkpt>
+    <trkpt lat="44.417966" lon="10.917004"></trkpt>
+    <trkpt lat="44.426949" lon="11.193696"></trkpt>
+    <trkpt lat="44.400000" lon="11.558483"></trkpt>
+    <trkpt lat="44.382034" lon="11.860237"></trkpt>
+    <trkpt lat="44.382034" lon="12.099052"></trkpt>
+    <trkpt lat="44.400000" lon="12.425851"></trkpt>
+    <trkpt lat="44.426949" lon="12.689885"></trkpt>
+    <trkpt lat="44.417966" lon="13.042093"></trkpt>
+    <trkpt lat="44.408983" lon="13.331363"></trkpt>
+    <trkpt lat="44.435932" lon="13.557713"></trkpt>
+    <trkpt lat="44.453899" lon="13.872232"></trkpt>
+    <trkpt lat="44.453899" lon="14.123926"></trkpt>
+    <trkpt lat="44.435932" lon="14.463712"></trkpt>
+    <trkpt lat="44.408983" lon="14.740489"></trkpt>
+    <trkpt lat="44.417966" lon="15.105164"></trkpt>
+    <trkpt lat="44.426949" lon="15.407010"></trkpt>
+    <trkpt lat="44.400000" lon="15.646009"></trkpt>
+    <trkpt lat="44.382034" lon="15.972908"></trkpt>
+    <trkpt lat="44.382034" lon="16.236862"></trkpt>
+    <trkpt lat="44.400000" lon="16.588800"></trkpt>
+  </trkseg></trk>
+</gpx>
