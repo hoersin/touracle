@@ -1232,6 +1232,7 @@
       ROADBOOK_CACHE = null;
       try { _renderRoadbookPanel(); } catch (_) {}
       try { _scheduleProfileRedraw(); } catch (_) {}
+      try { _renderActiveTourRouteLayer(); } catch (_) {}
     });
   }
 
