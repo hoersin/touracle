@@ -380,6 +380,8 @@
     temporaryKm: null,
     pointerId: null,
   };
+  let TOUR_PIN_HOVER_ID = null;
+  let TOUR_DRAG_DISPLAY_SEGMENT = null;
   let TOUR_SEGMENTATION_PREVIEW_RAF = 0;
   let LAST_EFFECTIVE_MODE = _getAppMode();
   let MODE_SWITCH_RELOAD_TIMER = null;
@@ -1238,6 +1240,10 @@
       const p = profile || LAST_PROFILE;
       const committed = _tourNormalizedBoundaryKm(p, false);
       TOUR_SEGMENTATION_STATE.boundariesKm = committed.slice();
+      
+      // REQ21-22: Rebuild weather summaries from committed boundaries only
+      // Uses client-side aggregation from OVERLAY_POINTS; no API calls
+      // Affected days: all days get their points re-filtered by new boundaries
       const daySummaries = _tourBuildClientDaySummaries(p);
       LAST_TOUR_DAY_SUMMARIES = daySummaries.slice();
       const baseSummary = (LAST_TOUR_SUMMARY && typeof LAST_TOUR_SUMMARY === 'object') ? { ...LAST_TOUR_SUMMARY } : {};
@@ -2233,6 +2239,14 @@
         if (!Number.isFinite(nextKm)) return;
         TOUR_DRAG_STATE.temporaryKm = nextKm;
         ROADBOOK_STATE.activeDayId = `ride-${Math.max(0, Number(TOUR_DRAG_STATE.boundaryIndex) || 0)}`;
+        
+        // REQ19: Capture drag segment for live map highlighting
+        const dayIdx = Number(TOUR_DRAG_STATE.boundaryIndex) || 0;
+        const bounds = _tourNormalizedBoundaryKm(LAST_PROFILE, false);
+        const dragStartKm = dayIdx > 0 ? Number(bounds[dayIdx - 1]) || 0 : 0;
+        const dragEndKm = nextKm;
+        TOUR_DRAG_DISPLAY_SEGMENT = { startKm: dragStartKm, endKm: dragEndKm };
+        
         _tourQueueSegmentationPreviewRender();
       } catch (_) {}
     };
@@ -2248,6 +2262,8 @@
           temporaryKm: null,
           pointerId: null,
         };
+        TOUR_PIN_HOVER_ID = null;
+        TOUR_DRAG_DISPLAY_SEGMENT = null;
         ROADBOOK_STATE.activeDayId = ROADBOOK_STATE.selectedDayId || null;
         _tourCommitSegmentation(LAST_PROFILE);
       } catch (_) {}
@@ -2256,10 +2272,45 @@
     const handleMove = (e) => {
       try {
         const clientX = Number(e && e.clientX);
+        const clientY = Number(e && e.clientY);
+        
+        // REQ18: Cursor feedback and REQ17: Pin hover detection
+        let overPin = false;
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+          // Mouse out of bounds
+          TOUR_PIN_HOVER_ID = null;
+          if (profileCanvas && !TOUR_DRAG_STATE?.activeBoundaryId) {
+            profileCanvas.style.cursor = 'default';
+          }
+        } else {
+          const hit = _tourBoundaryMarkerHit(LAST_PROFILE, clientX, clientY);
+          if (hit && !TOUR_DRAG_STATE?.activeBoundaryId) {
+            TOUR_PIN_HOVER_ID = hit.id;
+            overPin = true;
+            profileCanvas.style.cursor = 'ew-resize';
+          } else {
+            if (TOUR_PIN_HOVER_ID) {
+              TOUR_PIN_HOVER_ID = null;
+              _scheduleProfileRedraw();
+            }
+            if (!TOUR_DRAG_STATE?.activeBoundaryId) {
+              profileCanvas.style.cursor = 'default';
+            }
+          }
+        }
+        
+        // REQ18: Grabbing cursor during drag
         if (TOUR_DRAG_STATE && TOUR_DRAG_STATE.activeBoundaryId) {
+          profileCanvas.style.cursor = 'grabbing';
           handleDragMove(e);
           return;
         }
+        
+        // Redraw if hover state changed
+        if (overPin && !TOUR_PIN_HOVER_ID) {
+          _scheduleProfileRedraw();
+        }
+        
         if (!Number.isFinite(clientX)) return;
         if (_handleClimateProfilePointerMove(clientX)) return;
         if (!LAST_PROFILE || PROFILE_XS.length === 0) return;
@@ -2313,6 +2364,10 @@
 
     const handleLeave = () => {
       if (TOUR_DRAG_STATE && TOUR_DRAG_STATE.activeBoundaryId) return;
+      TOUR_PIN_HOVER_ID = null;
+      if (profileCanvas) {
+        profileCanvas.style.cursor = 'default';
+      }
       if (_climateProfileIsActive()) {
         CLIMATE_PROFILE_STATE.hoverIndex = null;
         _hideClimateProfileTooltip();
@@ -7795,7 +7850,15 @@
       const ROUTE_COLOR = '#2F4858';
       const CASE_COLOR = '#FFFFFF';
       const ACTIVE_COLOR = '#0f766e';
-      const activeRideDay = _roadbookActiveRideDay();
+      
+      // REQ19: Use drag segment if actively dragging, otherwise use roadbook active day
+      let activeRideDay = null;
+      if (TOUR_DRAG_DISPLAY_SEGMENT) {
+        activeRideDay = TOUR_DRAG_DISPLAY_SEGMENT;
+      } else {
+        activeRideDay = _roadbookActiveRideDay();
+      }
+      
       const hasActiveSegment = !!(activeRideDay && Number.isFinite(Number(activeRideDay.startKm)) && Number.isFinite(Number(activeRideDay.endKm)) && Number(activeRideDay.endKm) > Number(activeRideDay.startKm));
       const activeCoords = hasActiveSegment ? _routeCoordsSliceByDistance(activeRideDay.startKm, activeRideDay.endKm) : [];
 
@@ -14580,6 +14643,30 @@
     } catch (_) {}
   }
 
+  function _drawTourActiveDragSegmentHighlight(profile, xAt, padTop, innerH, axisLen) {
+    if (!TOUR_DRAG_DISPLAY_SEGMENT || !_tourIsActive()) return;
+    try {
+      const { startKm, endKm } = TOUR_DRAG_DISPLAY_SEGMENT;
+      if (!Number.isFinite(startKm) || !Number.isFinite(endKm) || endKm <= startKm) return;
+      
+      const x1 = xAt(Math.max(0, Math.min(axisLen, startKm)));
+      const x2 = xAt(Math.max(0, Math.min(axisLen, endKm)));
+      
+      if (!Number.isFinite(x1) || !Number.isFinite(x2)) return;
+      
+      profileCtx.save();
+      // REQ20: Highlight active segment during drag with subtle overlay
+      profileCtx.fillStyle = 'rgba(15, 118, 110, 0.08)';
+      profileCtx.fillRect(Math.min(x1, x2), padTop, Math.abs(x2 - x1), innerH);
+      
+      // Add subtle border to active segment
+      profileCtx.strokeStyle = 'rgba(15, 118, 110, 0.25)';
+      profileCtx.lineWidth = 1;
+      profileCtx.strokeRect(Math.min(x1, x2), padTop, Math.abs(x2 - x1), innerH);
+      profileCtx.restore();
+    } catch (_) {}
+  }
+
   function _drawTourSegmentationBoundaryPins(profile, xAt, padTop, innerH, axisLen) {
     if (!_tourIsActive()) return;
     try {
@@ -14593,6 +14680,9 @@
       for (const marker of markers) {
         const x = xAt(Math.max(0, Math.min(axisLen, Number(marker.km) || 0)));
         const active = !!marker.active;
+        const isHovered = TOUR_PIN_HOVER_ID === String(marker.id || '');
+        const isDragging = !!TOUR_DRAG_STATE && TOUR_DRAG_STATE.activeBoundaryId === String(marker.id || '');
+        
         profileCtx.globalAlpha = active ? 1 : 0.5;
         profileCtx.strokeStyle = active ? 'rgba(15, 118, 110, 0.95)' : 'rgba(100, 116, 139, 0.62)';
         profileCtx.lineWidth = active ? 2 : 1;
@@ -14600,14 +14690,32 @@
         profileCtx.moveTo(x, knobY + 8);
         profileCtx.lineTo(x, bottomY);
         profileCtx.stroke();
+        
+        // REQ17: Enhanced pin visuals with hover/drag effects
+        const basePinSize = active ? 5.5 : 4.2;
+        const pinSize = isHovered || isDragging ? basePinSize + 1.5 : basePinSize;
+        
         profileCtx.fillStyle = active ? '#0f766e' : 'rgba(255,255,255,0.94)';
         profileCtx.beginPath();
-        profileCtx.arc(x, knobY, active ? 5.5 : 4.2, 0, Math.PI * 2);
+        profileCtx.arc(x, knobY, pinSize, 0, Math.PI * 2);
         profileCtx.fill();
+        
+        // Add subtle glow effect for hover/drag
+        if (isHovered || isDragging) {
+          profileCtx.strokeStyle = active ? 'rgba(15, 118, 110, 0.4)' : 'rgba(100, 116, 139, 0.35)';
+          profileCtx.lineWidth = 2.5;
+          profileCtx.beginPath();
+          profileCtx.arc(x, knobY, pinSize + 2, 0, Math.PI * 2);
+          profileCtx.stroke();
+        }
+        
         profileCtx.strokeStyle = active ? 'rgba(240, 253, 250, 0.96)' : 'rgba(100, 116, 139, 0.72)';
         profileCtx.lineWidth = active ? 1.4 : 1;
+        profileCtx.beginPath();
+        profileCtx.arc(x, knobY, pinSize, 0, Math.PI * 2);
         profileCtx.stroke();
-        if (active) {
+        
+        if (active || isHovered || isDragging) {
           const label = `Day ${marker.prevRideIdx + 1} -> ${fmt(marker.km, 0)} km`;
           profileCtx.font = '600 10px system-ui, -apple-system, sans-serif';
           const textW = Math.ceil(profileCtx.measureText(label).width) + 12;
@@ -15429,6 +15537,9 @@
     });
     profileCtx.setLineDash([]);
 
+    // REQ20: Draw active segment highlight if dragging
+    _drawTourActiveDragSegmentHighlight(profile, xAt, padTop, innerH, axisLen);
+    
     _drawTourProfileDayMarkers(profile, xAt, padTop, innerH, axisLen);
     _drawRoadbookRestDayMarkers(profile, xAt, padTop, innerH, axisLen);
     _drawTourSegmentationBoundaryPins(profile, xAt, padTop, innerH, axisLen);
