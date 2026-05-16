@@ -1183,6 +1183,87 @@
       color: #0f766e;
       border: 1px solid rgba(15, 118, 110, 0.18);
     }
+    /* REQ27: insert zone between roadbook cards */
+    .wm-roadbook-insert-zone {
+      height: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 180ms ease, height 180ms ease;
+      overflow: hidden;
+    }
+    .wm-roadbook-insert-zone:hover {
+      opacity: 1;
+      height: 30px;
+    }
+    .wm-roadbook-insert-btn {
+      background: rgba(15, 118, 110, 0.07);
+      border: 1.5px dashed rgba(15, 118, 110, 0.42);
+      border-radius: 8px;
+      color: #0f766e;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 14px;
+      cursor: pointer;
+      width: 100%;
+      text-align: center;
+      transition: background 100ms ease;
+      white-space: nowrap;
+    }
+    .wm-roadbook-insert-btn:hover {
+      background: rgba(15, 118, 110, 0.15);
+    }
+    /* REQ28/29: rest day card controls */
+    .wm-roadbook-rest-controls {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      flex: 0 0 auto;
+    }
+    .wm-roadbook-move-btn {
+      background: rgba(15, 118, 110, 0.07);
+      border: 1px solid rgba(15, 118, 110, 0.22);
+      border-radius: 5px;
+      color: #0f766e;
+      font-size: 10px;
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      transition: background 100ms ease;
+      line-height: 1;
+    }
+    .wm-roadbook-move-btn:hover:not([disabled]) {
+      background: rgba(15, 118, 110, 0.17);
+    }
+    .wm-roadbook-move-btn[disabled] {
+      opacity: 0.32;
+      cursor: default;
+    }
+    .wm-roadbook-delete-btn {
+      background: rgba(239, 68, 68, 0.07);
+      border: 1px solid rgba(239, 68, 68, 0.24);
+      border-radius: 5px;
+      color: #dc2626;
+      font-size: 14px;
+      font-weight: 700;
+      width: 22px;
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      transition: background 100ms ease;
+      line-height: 1;
+    }
+    .wm-roadbook-delete-btn:hover {
+      background: rgba(239, 68, 68, 0.15);
+    }
 
     @media (max-width: 1120px) {
       body { --wm-roadbook-panel-w: min(320px, 28vw); }
@@ -3326,7 +3407,7 @@
       }
 
       async function bootMap(){
-          const mapSrc = '/map.js?v=163';
+          const mapSrc = '/map.js?v=168';
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();

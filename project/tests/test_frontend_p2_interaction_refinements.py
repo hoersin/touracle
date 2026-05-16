@@ -40,10 +40,10 @@ def test_req19_live_map_highlighting_during_drag():
 
 
 def test_req20_profile_active_segment_highlighting():
-    """REQ20: Profile shows active segment highlight during drag."""
+    """REQ20: Profile shows active/selected segment highlight."""
     source = _source()
     assert 'function _drawTourActiveDragSegmentHighlight(profile, xAt, padTop, innerH, axisLen)' in source
-    assert 'if (!TOUR_DRAG_DISPLAY_SEGMENT || !_tourIsActive()) return;' in source
+    assert 'const segment = TOUR_DRAG_DISPLAY_SEGMENT || _roadbookActiveRideDay();' in source
     assert 'profileCtx.fillStyle = \'rgba(15, 118, 110, 0.08)\';' in source
     assert '_drawTourActiveDragSegmentHighlight(profile, xAt, padTop, innerH, axisLen);' in source
 
@@ -86,3 +86,30 @@ def test_hover_and_drag_cleared_on_drag_end():
     assert 'TOUR_PIN_HOVER_ID = null;' in source
     assert 'TOUR_DRAG_DISPLAY_SEGMENT = null;' in source
     assert 'profileCanvas.style.cursor = \'default\';' in source
+
+
+def test_drag_end_keeps_dragged_segment_selected():
+    """After drag end, dragged segment remains selected/active."""
+    source = _source()
+    assert 'const draggedDayKey = `ride-${Math.max(0, Number(TOUR_DRAG_STATE.boundaryIndex) || 0)}`;' in source
+    assert 'ROADBOOK_STATE.selectedDayId = draggedDayKey;' in source
+    assert 'ROADBOOK_STATE.activeDayId = draggedDayKey;' in source
+
+
+def test_profile_click_selects_segment():
+    """Clicking inside a profile day segment selects the corresponding roadbook day."""
+    source = _source()
+    assert 'function _tourDayKeyAtProfileClientPoint(profile, clientX, clientY, options = {})' in source
+    assert 'const selectedDayKey = _tourDayKeyAtProfileClientPoint(LAST_PROFILE, e && e.clientX, e && e.clientY, { includeDrag: true });' in source
+    assert '_roadbookSelectDay(selectedDayKey);' in source
+
+
+def test_drag_tooltip_shows_day_km_and_hm_on_second_line():
+    """Dragging tooltip should include day distance/elevation on a second line."""
+    source = _source()
+    assert 'if (isDragging) {' in source
+    assert 'const seg = _tourSegmentRange(profile, marker.prevRideIdx, { includeDrag: true });' in source
+    assert 'line2 = `${fmt(dayKm, 0)} km • ${fmt(dayHmSafe, 0)} hm`;' in source
+    assert 'const boxH = line2 ? 30 : 18;' in source
+    assert 'if (line2) {' in source
+    assert 'profileCtx.fillText(line2, boxX + textW / 2, boxY + 21);' in source
