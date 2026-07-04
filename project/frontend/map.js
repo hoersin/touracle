@@ -6264,7 +6264,7 @@
         card.addEventListener('focus', () => { _roadbookSetHoverDay(dayKey); });
         card.addEventListener('blur', () => { _roadbookSetHoverDay(''); });
         card.addEventListener('click', () => { _roadbookSelectDay(dayKey); });
-        card.addEventListener('dblclick', () => { _fitToDay(dayKey, { animate: true }); });
+        card.addEventListener('dblclick', () => { _fitSelectedTourDayOnMap(dayKey, { animate: true }); });
         card.addEventListener('keydown', (ev) => {
           if (ev.key !== 'Enter' && ev.key !== ' ') return;
           ev.preventDefault();
