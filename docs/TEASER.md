@@ -12,13 +12,19 @@ Plan tours with a quick visual weather-comfort check along your GPX route, then 
 
 Freiburg -> Bern
 
+Zoom context: regional detail (approx. z8)
+
 ![Tour Planning - Freiburg to Bern](teaser/10-tour-route-freiburg-bern.png)
 
 Milano -> Rome
 
+Zoom context: corridor overview (approx. z6)
+
 ![Tour Planning - Milano to Rome](teaser/11-tour-route-milano-rome.png)
 
 Vienna -> Berlin
+
+Zoom context: continental overview (approx. z5)
 
 ![Tour Planning - Vienna to Berlin](teaser/12-tour-route-vienna-berlin.png)
 
@@ -26,8 +32,12 @@ Vienna -> Berlin
 
 Monthly temperature layer
 
+Zoom context: Europe scale (approx. z4)
+
 ![Climatic Map - Monthly temperature](teaser/02-climate-monthly-temperature.png)
 
 Weekly wind layer
+
+Zoom context: Alpine/Central Europe detail (approx. z7)
 
 ![Climatic Map - Weekly wind](teaser/03-climate-weekly-wind.png)
