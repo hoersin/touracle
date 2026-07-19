@@ -46,6 +46,11 @@ Hover and click interactions:
 - **Hover anywhere on the map** to see a location tooltip (place name + coordinates). The tooltip uses a short debounce to avoid network spam.
 - **Click within ~1 mm of the GPX route** to sync the profile cursor and grey-dot marker to that position along the route. Hovering the route does *not* trigger cursor sync — only a click does.
 
+Location labels and endpoint accuracy:
+- Cursor readout labels and TourBook start/end labels are reverse-geocoded independently, but both now prefer nearby local places (for example: villages/communes close to the sampled point) over broader metro-city labels.
+- TourBook endpoint labels are generated from offline reverse geocoding first, then formatted as `Start (CC) -> End (CC)` where country code is available.
+- If a point cannot be resolved to a nearby named place, the UI falls back to coordinates.
+
 ### 6) Read the profile strip
 Below the map, the profile canvas provides an “at-a-glance” strip of the same data along distance.- **Tour day cards** are drawn at the top of the profile at each day’s midpoint distance. They match the map cards: temperature, weather icon, rain total, date.- Hovering the profile shows the same information as hovering the map.
 - Wind is typically visualized with direction indicators and a lane whose intensity reflects effective wind relative to route direction.
@@ -86,4 +91,5 @@ If you open **How Values Are Calculated**, the sidebar shows only the explanatio
 ## Troubleshooting (user-facing)
 - If the app shows missing data in Climate mode, confirm you have an offline DB available (see Installation Guide).
 - If downloads fail with rate limiting, rerun offline builder with a higher `--min-interval-s`.
+- If a TourBook endpoint label looks too far away from the visible route position, refresh weather/tour data once to rebuild endpoint labels with the latest reverse-geocoding logic.
 

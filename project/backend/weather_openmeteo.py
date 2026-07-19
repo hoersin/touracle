@@ -266,11 +266,21 @@ def fetch_daily_weather(
     years_window: int = 10,
     start_year: int | None = None,
     end_year: int | None = None,
+    include_current_year: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Wrapper to enforce single-day-per-year fetching.
     Delegates to `fetch_daily_weather_same_day` to avoid multi-year windows.
     """
-    return fetch_daily_weather_same_day(lat, lon, month, day, years_window=years_window, start_year=start_year, end_year=end_year)
+    return fetch_daily_weather_same_day(
+        lat,
+        lon,
+        month,
+        day,
+        years_window=years_window,
+        start_year=start_year,
+        end_year=end_year,
+        include_current_year=include_current_year,
+    )
 
 # --- Hourly single-day helpers and fetcher ---
 def _cache_path_hourly_oneday(
@@ -360,6 +370,7 @@ def fetch_hourly_weather_same_day(
     years_window: int = 10,
     start_year: int | None = None,
     end_year: int | None = None,
+    include_current_year: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Fetch hourly temperature for the specific calendar day per year.
     One request per year: start_date=end_date=YYYY-MM-DD. Aggregates rows across years.
@@ -367,7 +378,7 @@ def fetch_hourly_weather_same_day(
     lat2 = round(lat, 1)
     lon2 = round(lon, 1)
     today = date.today()
-    default_end = today.year - 1
+    default_end = today.year if include_current_year else (today.year - 1)
     if end_year is None:
         end_year = default_end
     else:
@@ -427,6 +438,7 @@ def fetch_daily_weather_same_day(
     years_window: int = 10,
     start_year: int | None = None,
     end_year: int | None = None,
+    include_current_year: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Fetch only the specific calendar day per year across the last `years_window` years.
     One request per year: start_date=end_date=YYYY-MM-DD. Uses 0.1° rounded coords and per-year cache.
@@ -434,7 +446,7 @@ def fetch_daily_weather_same_day(
     lat2 = round(lat, 1)
     lon2 = round(lon, 1)
     today = date.today()
-    default_end = today.year - 1
+    default_end = today.year if include_current_year else (today.year - 1)
     if end_year is None:
         end_year = default_end
     else:
@@ -504,6 +516,7 @@ def fetch_daily_weather_same_day(
                 years_window=years_window,
                 start_year=int(start_year),
                 end_year=int(end_year),
+                include_current_year=include_current_year,
             )
             if df2 is not None and len(df2) > 0:
                 log.info('[WEATHER] Fallback provider=Meteostat rows=%d', len(df2))
@@ -528,6 +541,7 @@ def fetch_daily_weather_window(
     years_window: int = 10,
     start_year: int | None = None,
     end_year: int | None = None,
+    include_current_year: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Fetch daily weather for a contiguous date window per year across the last `years_window` years.
 
@@ -555,7 +569,7 @@ def fetch_daily_weather_window(
             return float('nan')
 
     today = date.today()
-    default_end = today.year - 1
+    default_end = today.year if include_current_year else (today.year - 1)
     if end_year is None:
         end_year = default_end
     else:
@@ -621,6 +635,7 @@ def fetch_daily_weather_window(
                 years_window=years_window,
                 start_year=int(start_year),
                 end_year=int(end_year),
+                include_current_year=include_current_year,
             )
             if df2 is not None and len(df2) > 0:
                 log.info('[WEATHER] Fallback provider=Meteostat rows=%d', len(df2))

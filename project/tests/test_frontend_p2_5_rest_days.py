@@ -194,13 +194,13 @@ def test_req32_marker_called_during_profile_draw():
 # ── REQ33: Interaction Isolation ─────────────────────────────────────────────
 
 def test_req33_rest_operations_only_modify_rest_stops():
-    """REQ33: _roadbookAddRestStop only touches ROADBOOK_STATE.restStops, not boundaries."""
+    """REQ33: _roadbookAddRestStop only touches persistent rest-stop state, not boundaries."""
     source = _source()
     # The add function must not reference TOUR_SEGMENTATION_STATE
     add_start = source.index('function _roadbookAddRestStop(position)')
     add_end = source.index('function _roadbookMoveRestStop', add_start)
     add_body = source[add_start:add_end]
-    assert 'ROADBOOK_STATE.restStops' in add_body
+    assert 'roadbook.restStops' in add_body
     assert 'TOUR_SEGMENTATION_STATE' not in add_body
 
 

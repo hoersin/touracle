@@ -19,6 +19,11 @@ The UI uses weather symbols/overlays on the map and a route profile strip to pre
 In Tour Planning, each tour day also gets a **day card** — a compact label placed perpendicular to the route on the map and drawn at the top of the profile strip. Each card shows: temperature, a weather icon, rain total, and the calendar date.
 
 The map colour legend labels include units (e.g. `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`) so the scale is always self-explanatory.
+
+Location naming and route context:
+- Route cursor labels and TourBook stage endpoint labels are reverse-geocoded from sampled route coordinates.
+- The backend favors local nearby place names over broader city-level labels when both are available, reducing misleading endpoint naming on mountain/rural segments.
+- TourBook labels are rendered as endpoint pairs (`Start -> End`) so stage context remains explicit even when weather summaries are similar across adjacent days.
 ## Data sources and modes
 ### Online mode
 When running online, the backend fetches data from provider APIs (e.g. Open‑Meteo archive API; Meteostat is also in dependencies).

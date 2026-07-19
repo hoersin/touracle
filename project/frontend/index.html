@@ -35,6 +35,8 @@
       transition: width 220ms ease;
       font-family: system-ui, -apple-system, sans-serif;
       pointer-events: none;
+      display: flex;
+      flex-direction: column;
     }
     body.wm-sidebar-resizing #wmSidebar,
     body.wm-sidebar-resizing #mainPane,
@@ -69,17 +71,51 @@
     }
     #wmSidebarToggle svg { width: 18px; height: 18px; }
     #wmSidebarScroll {
-      height: calc(100vh - 52px);
-      overflow: auto;
-      padding: 10px;
+      flex: 1 1 auto;
+      min-height: 0;
+      height: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 10px 26px 10px 10px;
       box-sizing: border-box;
       pointer-events: auto;
+      overscroll-behavior: contain;
     }
     body.wm-sidebar-collapsed #wmSidebarScroll { display: none; }
+    #wmSidebarScrollbar {
+      position: absolute;
+      top: 60px;
+      right: 8px;
+      bottom: 10px;
+      width: 12px;
+      border-radius: 999px;
+      background: rgba(226, 232, 240, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      pointer-events: auto;
+      z-index: 2203;
+    }
+    #wmSidebarScrollbar.is-hidden { display: none; }
+    #wmSidebarScrollbarThumb {
+      position: absolute;
+      left: 1px;
+      width: 8px;
+      min-height: 36px;
+      border-radius: 999px;
+      background: rgba(100, 116, 139, 0.72);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
+      cursor: ns-resize;
+      touch-action: none;
+      transition: background 120ms ease;
+    }
+    #wmSidebarScrollbarThumb:hover,
+    body.wm-sidebar-scrolling #wmSidebarScrollbarThumb {
+      background: rgba(59, 130, 246, 0.82);
+    }
+    body.wm-sidebar-collapsed #wmSidebarScrollbar { display: none; }
     #wmSidebarResizeHandle {
       position: absolute;
       top: 0;
-      right: 0;
+      right: -10px;
       width: 8px;
       height: 100%;
       cursor: col-resize;
@@ -981,8 +1017,12 @@
       bottom: calc(14px + var(--wm-strategic-timeline-h, 0px));
       width: var(--wm-roadbook-panel-w);
       min-width: 280px;
-      z-index: 980;
+      z-index: 1850;
       transition: transform 180ms ease, opacity 180ms ease, width 180ms ease, min-width 180ms ease;
+    }
+    body.wm-roadbook-resizing #roadbookPanel,
+    body.wm-roadbook-resizing #roadbookResizeHandle {
+      transition: none;
     }
     #roadbookPanel.is-hidden {
       opacity: 0;
@@ -990,6 +1030,7 @@
       pointer-events: none;
     }
     .wm-roadbook-shell {
+      position: relative;
       display: flex;
       flex-direction: column;
       font-family: system-ui, -apple-system, sans-serif;
@@ -1004,10 +1045,157 @@
     .wm-roadbook-head {
       display: flex;
       align-items: center;
-      justify-content: flex-start;
+      justify-content: space-between;
       gap: 10px;
       padding: 14px 14px 8px;
       border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+    }
+    .wm-roadbook-head-tools {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .wm-plan-btn {
+      min-height: 26px;
+      border: 1px solid rgba(15,118,110,0.24);
+      background: rgba(15,118,110,0.08);
+      color: #0f766e;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 0 10px;
+      cursor: pointer;
+      transition: background 100ms ease;
+    }
+    .wm-plan-btn:hover {
+      background: rgba(15,118,110,0.14);
+    }
+    .wm-plan-dirty {
+      display: none;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      color: #b45309;
+      background: rgba(245, 158, 11, 0.14);
+      border: 1px solid rgba(217, 119, 6, 0.26);
+      border-radius: 999px;
+      padding: 2px 7px;
+      line-height: 1.4;
+    }
+    .wm-plan-dirty.is-visible {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .wm-plan-manager {
+      position: absolute;
+      top: 56px;
+      left: 12px;
+      right: 12px;
+      z-index: 1865;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 12px;
+      background: rgba(248, 250, 252, 0.9);
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden auto;
+      box-shadow: 0 18px 30px rgba(15, 23, 42, 0.16);
+      transition: max-height 180ms ease, opacity 180ms ease, padding 180ms ease, transform 180ms ease;
+      transform: translateY(-6px);
+      pointer-events: none;
+    }
+    .wm-plan-manager.is-open {
+      max-height: min(360px, calc(100vh - 140px));
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .wm-plan-manager-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .wm-plan-action-btn {
+      min-height: 24px;
+      border: 1px solid rgba(120,132,145,0.26);
+      background: #fff;
+      color: #334155;
+      border-radius: 7px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 0 8px;
+      cursor: pointer;
+    }
+    .wm-plan-list {
+      display: grid;
+      gap: 6px;
+      max-height: 640px;
+      overflow: auto;
+    }
+    .wm-plan-item {
+      border: 1px solid rgba(148,163,184,0.24);
+      border-radius: 9px;
+      background: #fff;
+      padding: 7px;
+      display: grid;
+      gap: 5px;
+    }
+    .wm-plan-item.is-active {
+      border-color: rgba(15,118,110,0.45);
+      box-shadow: 0 0 0 1px rgba(15,118,110,0.16) inset;
+    }
+    .wm-plan-item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .wm-plan-item-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-plan-item-meta {
+      font-size: 10px;
+      color: #64748b;
+      line-height: 1.35;
+    }
+    .wm-plan-item-actions {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+    .wm-plan-item-btn {
+      min-height: 22px;
+      border: 1px solid rgba(148,163,184,0.26);
+      background: rgba(248,250,252,0.92);
+      color: #334155;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 0 7px;
+      cursor: pointer;
+    }
+    .wm-plan-item-btn[data-action="load"] {
+      border-color: rgba(15,118,110,0.35);
+      color: #0f766e;
+      background: rgba(236,253,245,0.8);
+    }
+    .wm-plan-empty {
+      font-size: 11px;
+      color: #64748b;
+      padding: 6px;
+      border: 1px dashed rgba(148, 163, 184, 0.34);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.65);
     }
     .wm-roadbook-kicker {
       margin: 0 0 3px 0;
@@ -1033,11 +1221,28 @@
     .wm-roadbook-list {
       flex: 1 1 auto;
       min-height: 0;
-      overflow: auto;
+      overflow-y: scroll;
+      overflow-x: hidden;
       padding: 8px 10px;
       display: grid;
       gap: 8px;
       align-content: start;
+      scrollbar-gutter: stable;
+    }
+    .wm-roadbook-list::-webkit-scrollbar {
+      width: 12px;
+    }
+    .wm-roadbook-list::-webkit-scrollbar-track {
+      background: rgba(226, 232, 240, 0.90);
+      border-radius: 999px;
+    }
+    .wm-roadbook-list::-webkit-scrollbar-thumb {
+      background: rgba(100, 116, 139, 0.72);
+      border: 2px solid rgba(226, 232, 240, 0.90);
+      border-radius: 999px;
+    }
+    .wm-roadbook-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(59, 130, 246, 0.82);
     }
     .wm-roadbook-empty {
       padding: 12px;
@@ -1087,22 +1292,36 @@
     }
     .wm-roadbook-card-head {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 8px;
       min-width: 0;
     }
     .wm-roadbook-card-title {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .wm-roadbook-card-dayline {
       font-size: 14px;
       font-weight: 800;
       color: #0f172a;
       line-height: 1.15;
     }
+    .wm-roadbook-card-dateline {
+      font-size: 11px;
+      font-weight: 600;
+      color: #64748b;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .wm-roadbook-card-body {
       display: grid;
       grid-template-columns: 47px minmax(0, 1fr);
-      align-items: center;
-      gap: 10px;
+      align-items: start;
+      gap: 8px;
       min-width: 0;
     }
     .wm-roadbook-weather {
@@ -1115,13 +1334,51 @@
     }
     .wm-roadbook-card-copy {
       display: grid;
-      gap: 4px;
+      gap: 3px;
       min-width: 0;
+    }
+    #roadbookPanel.is-wide .wm-roadbook-card-body {
+      grid-template-columns: 56px minmax(0, 1fr);
+      gap: 12px;
+    }
+    #roadbookPanel.is-wide .wm-roadbook-card-stage [data-roadbook-stage="start"],
+    #roadbookPanel.is-wide .wm-roadbook-card-stage [data-roadbook-stage="end"] {
+      font-size: 14px;
+    }
+    #roadbookPanel.is-wide .wm-roadbook-card-row3 {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-roadbook-card-stage {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .wm-roadbook-card-stage [data-roadbook-stage="start"],
+    .wm-roadbook-card-stage [data-roadbook-stage="end"] {
+      font-size: 13px;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-roadbook-card-arrow {
+      font-size: 12px;
+      font-weight: 700;
+      color: #64748b;
+      line-height: 1;
     }
     .wm-roadbook-card-sub {
       font-size: 11px;
       color: #64748b;
       line-height: 1.35;
+      display: none;
     }
     .wm-roadbook-card-row2 {
       font-size: 12px;
@@ -1142,8 +1399,9 @@
       box-shadow: 0 16px 30px rgba(15, 118, 110, 0.14);
     }
     .wm-roadbook-card.is-selected {
-      background: linear-gradient(180deg, rgba(240,253,250,0.98), rgba(232,250,243,0.96));
-      border-color: rgba(15, 118, 110, 0.52);
+      background: linear-gradient(180deg, rgba(226,250,239,0.98), rgba(214,244,231,0.96));
+      border-color: rgba(15, 118, 110, 0.62);
+      box-shadow: 0 14px 26px rgba(15, 118, 110, 0.16);
     }
     .wm-roadbook-pill {
       flex: 0 0 auto;
@@ -1168,101 +1426,321 @@
       background: rgba(241,245,249,0.92);
       color: #64748b;
     }
-    .wm-roadbook-pill[data-status="lucky"] {
-      background: rgba(71, 215, 100, 0.16);
-      color: rgba(20, 126, 56, 0.96);
-      border: 1px solid rgba(20, 126, 56, 0.20);
-    }
-    .wm-roadbook-pill[data-status="ride"] {
-      background: rgba(179, 179, 179, 0.16);
-      color: rgba(80, 80, 80, 0.92);
-      border: 1px solid rgba(120, 132, 145, 0.22);
-    }
     .wm-roadbook-pill[data-status="rest"] {
       background: rgba(15, 118, 110, 0.10);
       color: #0f766e;
       border: 1px solid rgba(15, 118, 110, 0.18);
     }
-    /* REQ27: insert zone between roadbook cards */
+    .wm-roadbook-note-indicator {
+      margin-left: 6px;
+      font-size: 12px;
+      line-height: 1;
+      vertical-align: middle;
+    }
     .wm-roadbook-insert-zone {
-      height: 6px;
+      position: relative;
       display: flex;
       align-items: center;
-      justify-content: center;
-      opacity: 0;
-      transition: opacity 180ms ease, height 180ms ease;
-      overflow: hidden;
+      justify-content: stretch;
+      gap: 6px;
+      height: 10px;
+      margin: 0;
+      padding: 2px 0;
+      border-radius: 8px;
+      transition: background-color 170ms ease;
     }
-    .wm-roadbook-insert-zone:hover {
-      opacity: 1;
-      height: 30px;
+    .wm-roadbook-insert-zone::before {
+      content: '';
+      position: absolute;
+      left: 4px;
+      right: 4px;
+      top: 50%;
+      transform: translateY(-50%);
+      border-top: 1px dashed rgba(148, 163, 184, 0.5);
+      pointer-events: none;
+      transition: border-color 170ms ease;
+    }
+    .wm-roadbook-insert-zone:hover,
+    .wm-roadbook-insert-zone:focus-within {
+      background: rgba(248, 250, 252, 0.78);
+    }
+    .wm-roadbook-insert-zone:hover::before,
+    .wm-roadbook-insert-zone:focus-within::before {
+      border-top-color: rgba(100, 116, 139, 0.78);
     }
     .wm-roadbook-insert-btn {
-      background: rgba(15, 118, 110, 0.07);
-      border: 1.5px dashed rgba(15, 118, 110, 0.42);
+      position: relative;
+      z-index: 1;
+      background: rgba(59, 130, 246, 0.14);
+      border: 1px solid rgba(59, 130, 246, 0.35);
       border-radius: 8px;
-      color: #0f766e;
+      color: #1d4ed8;
       font-size: 11px;
       font-weight: 700;
-      padding: 3px 14px;
+      padding: 3px 10px;
       cursor: pointer;
-      width: 100%;
+      width: 50%;
+      min-height: 24px;
       text-align: center;
-      transition: background 100ms ease;
+      transition: opacity 170ms ease, background 120ms ease, border-color 120ms ease;
       white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .wm-roadbook-insert-zone:hover .wm-roadbook-insert-btn,
+    .wm-roadbook-insert-zone:focus-within .wm-roadbook-insert-btn {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .wm-roadbook-insert-btn[data-insert-type="rest"] {
+      background: rgba(16, 185, 129, 0.14);
+      border-color: rgba(16, 185, 129, 0.35);
+      color: #047857;
     }
     .wm-roadbook-insert-btn:hover {
-      background: rgba(15, 118, 110, 0.15);
+      background: rgba(59, 130, 246, 0.22);
+      border-color: rgba(59, 130, 246, 0.55);
     }
-    /* REQ28/29: rest day card controls */
-    .wm-roadbook-rest-controls {
+    .wm-roadbook-insert-btn[data-insert-type="rest"]:hover {
+      background: rgba(16, 185, 129, 0.22);
+      border-color: rgba(16, 185, 129, 0.55);
+    }
+    .wm-roadbook-rest-controls,
+    .wm-roadbook-card-actions {
       display: flex;
       align-items: center;
-      gap: 3px;
+      gap: 4px;
+      flex: 0 0 auto;
+      margin-left: auto;
+      min-width: 0;
+    }
+    .wm-roadbook-menu {
+      position: relative;
       flex: 0 0 auto;
     }
-    .wm-roadbook-move-btn {
+    .wm-roadbook-menu > summary {
+      list-style: none;
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      border: 1px solid rgba(148,163,184,0.28);
+      background: rgba(248,250,252,0.92);
+      color: #334155;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+    }
+    .wm-roadbook-menu > summary::-webkit-details-marker {
+      display: none;
+    }
+    .wm-roadbook-menu[open] > summary,
+    .wm-roadbook-menu > summary:hover {
+      border-color: rgba(15,118,110,0.38);
+      background: rgba(236,253,245,0.86);
+      color: #0f766e;
+    }
+    .wm-roadbook-menu-panel {
+      position: absolute;
+      top: 28px;
+      right: 0;
+      z-index: 5;
+      display: grid;
+      gap: 4px;
+      min-width: 156px;
+      padding: 6px;
+      border-radius: 10px;
+      border: 1px solid rgba(148,163,184,0.24);
+      background: rgba(255,255,255,0.98);
+      box-shadow: 0 12px 24px rgba(15,23,42,0.14);
+    }
+    .wm-roadbook-day-btn,
+    .wm-roadbook-move-btn,
+    .wm-roadbook-delete-btn {
       background: rgba(15, 118, 110, 0.07);
       border: 1px solid rgba(15, 118, 110, 0.22);
       border-radius: 5px;
       color: #0f766e;
-      font-size: 10px;
-      width: 22px;
-      height: 22px;
+      font-size: 11px;
+      height: 24px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      padding: 0;
+      padding: 0 8px;
       transition: background 100ms ease;
       line-height: 1;
+      width: 100%;
+      text-align: left;
     }
-    .wm-roadbook-move-btn:hover:not([disabled]) {
-      background: rgba(15, 118, 110, 0.17);
+    #roadbookResizeHandle {
+      position: fixed;
+      top: 14px;
+      right: calc(var(--wm-roadbook-panel-w) + 14px);
+      width: 12px;
+      bottom: calc(14px + var(--wm-strategic-timeline-h, 0px));
+      z-index: 1855;
+      cursor: col-resize;
+      touch-action: none;
+      background: transparent;
+      pointer-events: auto;
     }
-    .wm-roadbook-move-btn[disabled] {
-      opacity: 0.32;
+    #roadbookResizeHandle::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      right: 3px;
+      width: 4px;
+      height: 48px;
+      transform: translateY(-50%);
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.45);
+      transition: background 160ms ease;
+    }
+    #roadbookResizeHandle:hover::after,
+    body.wm-roadbook-resizing #roadbookResizeHandle::after {
+      background: rgba(15, 118, 110, 0.65);
+    }
+    body.wm-roadbook-visible #roadbookResizeHandle {
+      display: block;
+    }
+    #roadbookResizeHandle[hidden] {
+      display: none;
+    }
+    .wm-roadbook-card-actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+      margin-left: auto;
+    }
+    .wm-roadbook-day-btn[data-action="delete-day"] {
+      border-color: rgba(239,68,68,0.22);
+      color: #dc2626;
+      background: rgba(254,242,242,0.90);
+    }
+    .wm-roadbook-day-btn[data-action="add-annotation"],
+    .wm-roadbook-day-btn[data-action="clear-annotation"] {
+      border-color: rgba(59,130,246,0.30);
+      color: #1d4ed8;
+      background: rgba(239,246,255,0.92);
+    }
+    .wm-roadbook-day-btn:hover:not([disabled]) {
+      filter: brightness(0.98);
+    }
+    .wm-roadbook-day-btn[disabled] {
+      opacity: 0.35;
       cursor: default;
     }
-    .wm-roadbook-delete-btn {
-      background: rgba(239, 68, 68, 0.07);
-      border: 1px solid rgba(239, 68, 68, 0.24);
-      border-radius: 5px;
-      color: #dc2626;
-      font-size: 14px;
-      font-weight: 700;
-      width: 22px;
-      height: 22px;
-      display: inline-flex;
+    .wm-roadbook-file {
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-roadbook-notes-dialog,
+    .wm-tourday-update-dialog {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.35);
+      display: flex;
       align-items: center;
       justify-content: center;
-      cursor: pointer;
-      padding: 0;
-      transition: background 100ms ease;
-      line-height: 1;
+      z-index: 2200;
+      padding: 16px;
     }
-    .wm-roadbook-delete-btn:hover {
-      background: rgba(239, 68, 68, 0.15);
+    .wm-roadbook-notes-dialog[hidden],
+    .wm-tourday-update-dialog[hidden] {
+      display: none;
+    }
+    .wm-roadbook-notes-dialog-card,
+    .wm-tourday-update-dialog-card {
+      width: min(560px, 96vw);
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: #ffffff;
+      box-shadow: 0 16px 42px rgba(15, 23, 42, 0.24);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .wm-roadbook-notes-dialog-card h4,
+    .wm-tourday-update-dialog-card h4 {
+      margin: 0;
+      font-size: 17px;
+      color: #0f172a;
+    }
+    .wm-roadbook-notes-dialog-sub,
+    .wm-tourday-update-dialog-copy {
+      margin: 0;
+      font-size: 13px;
+      color: #334155;
+      line-height: 1.35;
+    }
+    .wm-roadbook-notes-dialog-card textarea {
+      width: 100%;
+      min-height: 140px;
+      resize: vertical;
+      box-sizing: border-box;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      font: 500 13px/1.45 system-ui, -apple-system, sans-serif;
+      color: #0f172a;
+      background: #ffffff;
+    }
+    .wm-roadbook-notes-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .wm-roadbook-notes-dialog-actions button {
+      height: 30px;
+      border-radius: 8px;
+      border: 1px solid rgba(148, 163, 184, 0.40);
+      background: #f8fafc;
+      color: #334155;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .wm-roadbook-notes-dialog-actions button[data-roadbook-notes-save="1"] {
+      border-color: rgba(15, 118, 110, 0.40);
+      background: rgba(236, 253, 245, 0.9);
+      color: #0f766e;
+    }
+    .wm-tourday-update-option {
+      display: grid;
+      gap: 4px;
+      text-align: left;
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: #f8fafc;
+      color: #0f172a;
+      padding: 10px;
+      cursor: pointer;
+    }
+    .wm-tourday-update-option[data-choice="balanced"] {
+      border-color: rgba(16, 185, 129, 0.45);
+      background: rgba(236, 253, 245, 0.88);
+    }
+    .wm-tourday-update-option-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .wm-tourday-update-option-sub,
+    .wm-tourday-update-option-copy {
+      font-size: 12px;
+      color: #475569;
+      line-height: 1.35;
     }
 
     @media (max-width: 1120px) {
@@ -1285,6 +1763,9 @@
         width: auto;
         min-width: 0;
         height: min(52vh, 420px);
+      }
+      #roadbookResizeHandle {
+        display: none;
       }
     }
 
@@ -2237,6 +2718,11 @@
       background: linear-gradient(135deg, rgba(15, 118, 110, 0.96), rgba(14, 165, 233, 0.94));
       box-shadow: 0 8px 18px rgba(14, 165, 233, 0.22);
     }
+    .wm-pref-segmented-btn[data-mode="hybrid"].is-active,
+    .wm-pref-segmented-btn[data-mode="hybrid"][aria-pressed="true"] {
+      background: linear-gradient(135deg, rgba(22, 101, 52, 0.96), rgba(8, 145, 178, 0.94));
+      box-shadow: 0 8px 18px rgba(8, 145, 178, 0.22);
+    }
     .wm-pref-segmented-btn:focus-visible {
       outline: 2px solid rgba(14,165,233,0.30);
       outline-offset: 2px;
@@ -2254,6 +2740,222 @@
       background: linear-gradient(135deg, rgba(240, 253, 250, 0.98), rgba(224, 242, 254, 0.98));
       border-color: rgba(14, 165, 233, 0.22);
       color: #0f766e;
+    }
+    .wm-pref-hint[data-mode="hybrid"] {
+      background: linear-gradient(135deg, rgba(240, 253, 244, 0.98), rgba(236, 254, 255, 0.98));
+      border-color: rgba(8, 145, 178, 0.22);
+      color: #166534;
+    }
+    .wm-pref-advanced summary {
+      list-style: none;
+      cursor: pointer;
+    }
+    .wm-pref-advanced summary::-webkit-details-marker {
+      display: none;
+    }
+    .wm-pref-advanced-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: rgba(255,255,255,0.74);
+    }
+    .wm-pref-advanced-toggle-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .wm-pref-advanced-toggle-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .wm-pref-advanced-toggle-note {
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.4;
+    }
+    .wm-pref-advanced-toggle-icon {
+      font-size: 14px;
+      color: #334155;
+      transition: transform 140ms ease;
+    }
+    .wm-pref-advanced[open] .wm-pref-advanced-toggle-icon {
+      transform: rotate(180deg);
+    }
+    .wm-pref-advanced-body {
+      display: grid;
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .wm-devtools-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .wm-devtools-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 30px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(255, 255, 255, 0.74);
+    }
+    .wm-devtools-item-copy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
+    .wm-devtools-item-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.2;
+    }
+    .wm-devtools-item-note {
+      font-size: 10px;
+      color: #64748b;
+      line-height: 1.3;
+    }
+    .wm-devtools-item .wm-toggle[disabled] {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    #diagnosticsDock {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 6px;
+      z-index: 2400;
+      display: none;
+      pointer-events: none;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    #diagnosticsDock.is-visible {
+      display: block;
+    }
+    #diagnosticsDockInner {
+      pointer-events: auto;
+      border: 1px solid rgba(51, 65, 85, 0.30);
+      border-radius: 10px;
+      background: rgba(248, 250, 252, 0.97);
+      box-shadow: 0 14px 30px rgba(15, 23, 42, 0.22);
+      overflow: hidden;
+    }
+    #diagnosticsStatusBar {
+      min-height: 24px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 3px 8px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+      font-size: 11px;
+      color: #334155;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      background: rgba(241, 245, 249, 0.95);
+    }
+    #diagnosticsConsole {
+      display: grid;
+      grid-template-rows: auto auto;
+    }
+    #diagnosticsConsoleTop {
+      min-height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 4px 8px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+      background: rgba(248, 250, 252, 0.92);
+      font-size: 11px;
+      color: #334155;
+    }
+    #diagnosticsFilterChips {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .wm-diag-chip {
+      border: 1px solid rgba(148, 163, 184, 0.42);
+      background: rgba(255, 255, 255, 0.9);
+      color: #334155;
+      border-radius: 999px;
+      height: 22px;
+      padding: 0 8px;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .wm-diag-chip.is-active {
+      border-color: rgba(8, 145, 178, 0.55);
+      color: #0e7490;
+      background: rgba(236, 254, 255, 0.95);
+    }
+    .wm-diag-actions {
+      display: flex;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .wm-diag-btn {
+      border: 1px solid rgba(148, 163, 184, 0.42);
+      background: rgba(255, 255, 255, 0.9);
+      color: #334155;
+      border-radius: 7px;
+      height: 22px;
+      padding: 0 8px;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #diagnosticsRows {
+      height: 198px;
+      overflow: auto;
+      background: rgba(248, 250, 252, 0.95);
+      padding: 4px 6px;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .wm-diag-row {
+      display: grid;
+      grid-template-columns: auto auto auto 1fr auto;
+      align-items: baseline;
+      column-gap: 10px;
+      white-space: nowrap;
+      border-bottom: 1px solid rgba(226, 232, 240, 0.55);
+      min-height: 18px;
+      padding: 1px 0;
+    }
+    .wm-diag-row:last-child {
+      border-bottom: none;
+    }
+    .wm-diag-time { color: #64748b; }
+    .wm-diag-level { font-weight: 700; width: 36px; }
+    .wm-diag-subsystem { color: #334155; width: 120px; overflow: hidden; text-overflow: ellipsis; }
+    .wm-diag-message { color: #0f172a; overflow: hidden; text-overflow: ellipsis; }
+    .wm-diag-duration { color: #475569; text-align: right; }
+    .wm-diag-row.level-INFO .wm-diag-level { color: #6b7280; }
+    .wm-diag-row.level-WARNING .wm-diag-level { color: #b45309; }
+    .wm-diag-row.level-ERROR .wm-diag-level { color: #b91c1c; }
+    .wm-diag-row.level-PERFORMANCE .wm-diag-level { color: #0369a1; }
+
+    #diagnosticsDock.is-collapsed #diagnosticsRows,
+    #diagnosticsDock.is-collapsed #diagnosticsConsoleTop {
+      display: none;
+    }
+    #diagnosticsDock.is-collapsed #diagnosticsStatusBar {
+      border-bottom: none;
     }
 
     /* Toggle switch styling (checkboxes) */
@@ -2399,6 +3101,93 @@
                 </div>
 
                 <div class="wm-pref-sections">
+                  <section class="wm-pref-section" data-wm-scope="tour">
+                    <div class="wm-pref-section-head">
+                      <h4 class="wm-pref-section-title">Tour Settings</h4>
+                      <p class="wm-pref-section-note">Core route timing, weather source, and direction.</p>
+                    </div>
+                    <div class="wm-pref-section-body">
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="startDate">
+                          <span class="wm-pref-name">Departure date</span>
+                          <span class="wm-pref-sub">Tour departure date.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <input type="date" id="startDate" class="wm-pref-date" />
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="tourDays">
+                          <span class="wm-pref-name">Duration</span>
+                          <span class="wm-pref-sub">Overall tour length in days.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="season">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit tour duration"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Tour duration" />
+                              <input type="range" id="tourDays" min="1" max="60" step="1" value="7" class="wm-slider-native" data-unit=" d" data-snap="int" aria-label="Tour duration in days" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="arrivalDate">
+                          <span class="wm-pref-name">Arrival date</span>
+                          <span class="wm-pref-sub">Adjust this directly to recalculate tour duration.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <input type="date" id="arrivalDate" class="wm-pref-date" />
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="tourWeatherMode">
+                          <span class="wm-pref-name">Weather source</span>
+                          <span class="wm-pref-sub">Choose historical climate, short-range forecast, or a hybrid day-by-day blend.</span>
+                        </label>
+                        <div class="wm-pref-control wm-pref-stack">
+                          <div class="wm-pref-segmented" role="group" aria-label="Tour weather source">
+                            <button id="tourWeatherModeClimate" class="wm-pref-segmented-btn" type="button" data-mode="climatology" aria-pressed="false">Climate</button>
+                            <button id="tourWeatherModeHybrid" class="wm-pref-segmented-btn is-active" type="button" data-mode="hybrid" aria-pressed="true">Hybrid</button>
+                            <button id="tourWeatherModeForecast" class="wm-pref-segmented-btn" type="button" data-mode="forecast" aria-pressed="false">Forecast</button>
+                          </div>
+                          <select id="tourWeatherMode" class="wm-pref-select wm-visually-hidden" aria-label="Tour weather source" title="Choose historical climatology, forecast weather, or a hybrid tour mode">
+                            <option value="climatology">Climatology: typical weather from selected years</option>
+                            <option value="hybrid" selected>Hybrid: forecast when available, otherwise climatology</option>
+                            <option value="forecast">Forecast: near-term Open-Meteo forecast</option>
+                          </select>
+                          <div id="tourWeatherModeHint" class="wm-pref-hint" data-mode="hybrid">Hybrid mode uses forecast for ride days inside the forecast horizon and falls back to historical climate for later stages.</div>
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Reverse tour</span>
+                          <span class="wm-pref-sub">Evaluate the route in reverse direction.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="reverse" class="wm-toggle" aria-label="Reverse tour" />
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <details id="advancedWeatherPrefs" class="wm-pref-section wm-pref-advanced" data-wm-scope="both">
+                    <summary>
+                      <div class="wm-pref-advanced-toggle">
+                        <div class="wm-pref-advanced-toggle-copy">
+                          <span class="wm-pref-advanced-toggle-title">Advanced Weather Preferences</span>
+                          <span class="wm-pref-advanced-toggle-note">Lucky-day thresholds and activity hours. Hidden by default, values stay live.</span>
+                        </div>
+                        <span class="wm-pref-advanced-toggle-icon" aria-hidden="true">▾</span>
+                      </div>
+                    </summary>
+                    <div class="wm-pref-advanced-body">
                   <section class="wm-pref-section" data-wm-scope="both">
                     <div class="wm-pref-section-head">
                       <h4 class="wm-pref-section-title">Lucky Days</h4>
@@ -2549,70 +3338,6 @@
                     </div>
                   </section>
 
-                  <section class="wm-pref-section" data-wm-scope="tour">
-                    <div class="wm-pref-section-head">
-                      <h4 class="wm-pref-section-title">Tour Settings</h4>
-                      <p class="wm-pref-section-note">Core route timing and direction.</p>
-                    </div>
-                    <div class="wm-pref-section-body">
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="startDate">
-                          <span class="wm-pref-name">Start date</span>
-                          <span class="wm-pref-sub">Tour departure date.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <input type="date" id="startDate" class="wm-pref-date" />
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="tourWeatherMode">
-                          <span class="wm-pref-name">Weather source</span>
-                          <span class="wm-pref-sub">Climatology uses selected historical years. Forecast will use near-term Open-Meteo forecast data.</span>
-                        </label>
-                        <div class="wm-pref-control wm-pref-stack">
-                          <div class="wm-pref-segmented" role="group" aria-label="Tour weather source">
-                            <button id="tourWeatherModeClimate" class="wm-pref-segmented-btn is-active" type="button" data-mode="climatology" aria-pressed="true">Climate</button>
-                            <button id="tourWeatherModeForecast" class="wm-pref-segmented-btn" type="button" data-mode="forecast" aria-pressed="false">Forecast</button>
-                          </div>
-                          <select id="tourWeatherMode" class="wm-pref-select wm-visually-hidden" aria-label="Tour weather source" title="Choose historical climatology or forecast weather for the tour">
-                            <option value="climatology" selected>Climatology: typical weather from selected years</option>
-                            <option value="forecast">Forecast: near-term Open-Meteo forecast</option>
-                          </select>
-                          <div id="tourWeatherModeHint" class="wm-pref-hint" data-mode="climatology">Climate mode uses the selected historical year blend. Forecast mode switches the route to live Open-Meteo forecast data and only covers the next 14 days.</div>
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="tourDays">
-                          <span class="wm-pref-name">Duration</span>
-                          <span class="wm-pref-sub">Overall tour length in days.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="season">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit tour duration"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Tour duration" />
-                              <input type="range" id="tourDays" min="1" max="60" step="1" value="7" class="wm-slider-native" data-unit=" d" data-snap="int" aria-label="Tour duration in days" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row">
-                        <div class="wm-pref-label">
-                          <span class="wm-pref-name">Reverse tour</span>
-                          <span class="wm-pref-sub">Evaluate the route in reverse direction.</span>
-                        </div>
-                        <div class="wm-pref-control wm-pref-toggle-wrap">
-                          <input type="checkbox" id="reverse" class="wm-toggle" aria-label="Reverse tour" />
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-
                   <section class="wm-pref-section" data-wm-scope="both">
                     <div class="wm-pref-section-head">
                       <h4 class="wm-pref-section-title">Data Selection</h4>
@@ -2677,9 +3402,84 @@
                   <section class="wm-pref-section" data-wm-scope="both">
                     <div class="wm-pref-section-head">
                       <h4 class="wm-pref-section-title">Advanced</h4>
-                      <p class="wm-pref-section-note">Resolution, interpolation, and visual output controls.</p>
+                      <p class="wm-pref-section-note">Resolution, interpolation, basemap evaluation, and visual output controls.</p>
                     </div>
                     <div class="wm-pref-section-body">
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="setBasemap">
+                          <span class="wm-pref-name">Basemap</span>
+                          <span class="wm-pref-sub">Developer evaluation only. Changes apply immediately and stay in the current session.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="setBasemap" class="wm-pref-select" aria-label="Basemap" title="Switch the Leaflet basemap for evaluation">
+                            <option value="osm-standard">OpenStreetMap Standard</option>
+                            <option value="carto-positron">CARTO Positron</option>
+                            <option value="opentopomap">OpenTopoMap</option>
+                            <option value="cyclosm">CyclOSM</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Developer Tools</span>
+                          <span class="wm-pref-sub">Engineering diagnostics and performance instrumentation. Hidden from normal workflows.</span>
+                        </div>
+                        <div class="wm-pref-control">
+                          <div class="wm-devtools-grid">
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Diagnostics</span>
+                                <span class="wm-devtools-item-note">Enable structured log console and live status bar.</span>
+                              </span>
+                              <input type="checkbox" id="devDiagnosticsEnabled" class="wm-toggle" aria-label="Diagnostics" />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Performance</span>
+                                <span class="wm-devtools-item-note">Enable timing measurements and performance summaries.</span>
+                              </span>
+                              <input type="checkbox" id="devPerformanceEnabled" class="wm-toggle" aria-label="Performance" checked />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Debug Overlay</span>
+                                <span class="wm-devtools-item-note">Placeholder for future map overlay diagnostics.</span>
+                              </span>
+                              <input type="checkbox" id="devDebugOverlayEnabled" class="wm-toggle" aria-label="Debug Overlay" disabled />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Weather Samples</span>
+                                <span class="wm-devtools-item-note">Placeholder for future sampling visualization.</span>
+                              </span>
+                              <input type="checkbox" id="devWeatherSamplesEnabled" class="wm-toggle" aria-label="Weather Samples" disabled />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Route Samples</span>
+                                <span class="wm-devtools-item-note">Placeholder for route point debug rendering.</span>
+                              </span>
+                              <input type="checkbox" id="devRouteSamplesEnabled" class="wm-toggle" aria-label="Route Samples" disabled />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Reverse Geocoding</span>
+                                <span class="wm-devtools-item-note">Placeholder for reverse-geocoder request traces.</span>
+                              </span>
+                              <input type="checkbox" id="devReverseGeoEnabled" class="wm-toggle" aria-label="Reverse Geocoding" disabled />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Cache Information</span>
+                                <span class="wm-devtools-item-note">Placeholder for cache internals and hit maps.</span>
+                              </span>
+                              <input type="checkbox" id="devCacheInfoEnabled" class="wm-toggle" aria-label="Cache Information" disabled />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+
                       <div class="wm-pref-row" data-wm-scope="climate">
                         <label class="wm-pref-label" for="setGridKm">
                           <span class="wm-pref-name">Grid resolution</span>
@@ -2789,6 +3589,8 @@
 
                     </div>
                   </section>
+                    </div>
+                  </details>
                 </div>
               </div>
             </div>
@@ -2940,6 +3742,9 @@
           </div>
         </details>
       </div>
+      <div id="wmSidebarScrollbar" class="is-hidden" aria-hidden="true">
+        <div id="wmSidebarScrollbarThumb"></div>
+      </div>
       <div id="wmSidebarResizeHandle" aria-hidden="true"></div>
     </aside>
 
@@ -2979,25 +3784,43 @@
           <option value="comfort_ride">Lucky Days (Active)</option>
         </select>
       </div>
-      <button id="roadbookToggle" type="button" aria-label="Show roadbook" aria-pressed="false" hidden>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+      <button id="roadbookToggle" type="button" aria-label="Show TourBook" aria-pressed="false" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 7h16" />
           <path d="M4 12h16" />
           <path d="M4 17h16" />
         </svg>
       </button>
-      <aside id="roadbookPanel" class="is-hidden" aria-label="Roadbook panel">
+      <aside id="roadbookPanel" class="is-hidden" aria-label="TourBook panel">
         <div class="wm-roadbook-shell">
           <div class="wm-roadbook-head">
             <div>
               <p class="wm-roadbook-kicker">Route Planning</p>
-              <h3 id="roadbookTitle" class="wm-roadbook-title">Roadbook</h3>
+              <h3 id="roadbookTitle" class="wm-roadbook-title">TourBook</h3>
             </div>
+            <div class="wm-roadbook-head-tools">
+              <span id="tourPlanDirty" class="wm-plan-dirty" aria-live="polite">Unsaved</span>
+              <button id="tourPlanManageBtn" class="wm-plan-btn" type="button" aria-expanded="false" aria-controls="tourPlanManager">Tour Plans</button>
+            </div>
+          </div>
+          <div id="tourPlanManager" class="wm-plan-manager" aria-hidden="true">
+            <div id="tourPlanFileInfo" class="wm-roadbook-file">File: not saved</div>
+            <div class="wm-plan-manager-actions">
+              <button id="tourPlanCreateBtn" class="wm-plan-action-btn" type="button">New</button>
+              <button id="tourPlanSaveBtn" class="wm-plan-action-btn" type="button">Save</button>
+              <button id="tourPlanOpenBtn" class="wm-plan-action-btn" type="button">Open</button>
+              <button id="tourPlanSaveAsBtn" class="wm-plan-action-btn" type="button">Save As</button>
+              <button id="tourPlanExportExcelBtn" class="wm-plan-action-btn" type="button">Export Excel</button>
+              <button id="tourPlanExportPdfBtn" class="wm-plan-action-btn" type="button">Export PDF</button>
+            </div>
+            <div id="tourPlanList" class="wm-plan-list"></div>
+            <input id="tourPlanOpenInput" type="file" accept=".json,application/json" hidden>
           </div>
           <div id="roadbookMeta" class="wm-roadbook-meta"></div>
           <div id="roadbookList" class="wm-roadbook-list"></div>
         </div>
       </aside>
+      <div id="roadbookResizeHandle" aria-hidden="true"></div>
       <div id="profilePanel" style="position:relative; width:100%;">
     <!-- Tour Summary panel anchored at top of profile, grows upward into map space -->
     <div id="tourSummary" style="position: absolute; bottom: 100%; left: 0; right: 0; border-top: 1px solid #ddd; background:#fff; z-index: 900;">
@@ -3024,9 +3847,31 @@
       </div>
     </main>
   </div>
+
+  <div id="diagnosticsDock" aria-label="Diagnostics Console">
+    <div id="diagnosticsDockInner">
+      <div id="diagnosticsStatusBar">Idle | GPX - | Ride Days - | Weather - | Cache - | Load -</div>
+      <div id="diagnosticsConsole">
+        <div id="diagnosticsConsoleTop">
+          <div id="diagnosticsFilterChips"></div>
+          <div class="wm-diag-actions">
+            <button id="diagnosticsClearBtn" class="wm-diag-btn" type="button">Clear</button>
+            <button id="diagnosticsToggleBtn" class="wm-diag-btn" type="button" aria-expanded="true">Collapse</button>
+          </div>
+        </div>
+        <div id="diagnosticsRows"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Leaflet is loaded (with fallback) at the end of body, before map.js -->
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
   <script src="/frontend/temperature_scale.js?v=1"></script>
+  <script src="/frontend/config/basemaps.js?v=1"></script>
+  <script src="/frontend/diagnostics.js?v=1"></script>
   <script src="/frontend/profile_hover_utils.js?v=1"></script>
   <script src="/profile.js?v=1"></script>
   <script src="/frontend/sidebar.js?v=1"></script>
@@ -3058,7 +3903,6 @@
             el.style.fontSize = '13px';
             el.style.textAlign = 'center';
             el.style.padding = '16px';
-            el.style.whiteSpace = 'pre-wrap';
             el.textContent = 'Map failed to initialize.\n\n' + String(msg || 'Unknown error');
           } catch (_) {}
         }
@@ -3407,7 +4251,7 @@
       }
 
       async function bootMap(){
-          const mapSrc = '/map.js?v=168';
+          const mapSrc = '/map.js?v=173';
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();

@@ -933,10 +933,104 @@ def _location_admin_importance(kind: str | None) -> int:
 def _location_candidate_score(distance_km: float, population: int, admin_importance: int) -> float:
     pop = max(0, int(population or 0))
     dist = max(0.0, float(distance_km or 0.0))
-    pop_weight = min(7.0, math.log10(max(1, pop))) * 4.0
-    distance_weight = max(0.0, 24.0 - min(60.0, dist) * 0.45)
-    admin_weight = float(admin_importance or 0) * 6.0
-    return pop_weight + distance_weight + admin_weight
+    pop_weight = min(18.0, math.log10(max(1, pop)) * 3.2)
+    distance_weight = max(0.0, 20.0 - min(80.0, dist) * 0.55)
+    admin_weight = float(admin_importance or 0) * 5.0
+    if dist <= 5.0:
+        distance_bias = 8.0
+    elif dist <= 12.0:
+        distance_bias = 4.0
+    elif dist <= 20.0:
+        distance_bias = 1.0
+    elif dist <= 35.0:
+        distance_bias = 0.0
+    elif dist <= 50.0:
+        distance_bias = -4.0
+    else:
+        distance_bias = -12.0
+    return pop_weight + distance_weight + admin_weight + distance_bias
+
+
+def _should_prefer_offline_city(online_choice: dict[str, Any] | None, offline_city: dict[str, Any] | None) -> bool:
+    if offline_city is None:
+        return False
+    if online_choice is None:
+        return True
+    try:
+        online_admin = int(online_choice.get('admin_importance') or 0)
+        online_score = float(online_choice.get('score') or 0.0)
+        offline_score = float(offline_city.get('score') or 0.0)
+        offline_dist = float(offline_city.get('distance_km') or 999.0)
+    except Exception:
+        return False
+    if offline_dist > 15.0:
+        return False
+    if online_admin >= 3:
+        return False
+    return offline_score >= (online_score + 6.0)
+
+
+def _should_prefer_offline_local_name(online_choice: dict[str, Any] | None, offline_local: dict[str, str] | None) -> bool:
+    if online_choice is None or offline_local is None:
+        return False
+    try:
+        online_name = str(online_choice.get('name') or '').strip().lower()
+        online_kind = str(online_choice.get('source_kind') or '').strip().lower()
+        local_name = str(offline_local.get('name') or '').strip().lower()
+        local_dist = float(offline_local.get('distance_km') or 999.0)
+    except Exception:
+        return False
+    if not local_name or local_name == online_name:
+        return False
+    if local_dist > 12.0:
+        return False
+    online_source = str(online_choice.get('source') or '').strip().lower()
+    # Allow override of broad online or offline-city candidates when a closer local match exists.
+    if online_source == 'offline-city':
+        chosen_dist = float(online_choice.get('distance_km') or 999.0)
+        return local_dist < chosen_dist - 0.5
+    # Allow reverse_geocoder to override a broad online city label when it is meaningfully closer.
+    if online_source == 'online-reverse' and online_kind == 'city':
+        return local_dist <= 5.0
+    return online_kind in ('county', 'state_district', 'display_name', 'geonamescache', 'offline-nearby-city-override')
+
+
+def _should_prefer_nearby_city_over_online(online_choice: dict[str, Any] | None, nearby_city: dict[str, Any] | None) -> bool:
+    if online_choice is None or nearby_city is None:
+        return False
+    try:
+        online_name = str(online_choice.get('name') or '').strip().lower()
+        online_kind = str(online_choice.get('source_kind') or '').strip().lower()
+        city_name = str(nearby_city.get('name') or '').strip().lower()
+        city_dist = float(nearby_city.get('distance_km') or 999.0)
+        city_pop = int(nearby_city.get('population') or 0)
+    except Exception:
+        return False
+    if online_kind != 'city':
+        return False
+    if not city_name or city_name == online_name:
+        return False
+    if city_dist > 8.0:
+        return False
+    return city_pop >= 3000
+
+
+def _reverse_candidate_effective_score(candidate: dict[str, Any] | None) -> float:
+    if not isinstance(candidate, dict):
+        return -1e9
+    try:
+        score = float(candidate.get('score') or 0.0)
+    except Exception:
+        score = 0.0
+    try:
+        zoom = int(candidate.get('zoom') or 0)
+    except Exception:
+        zoom = 0
+    kind = str(candidate.get('source_kind') or '').strip().lower()
+    zoom_bonus = max(0.0, float(zoom - 10) * 1.8)
+    if kind in ('city', 'county', 'state_district') and zoom <= 13:
+        zoom_bonus -= 6.0
+    return score + zoom_bonus
 
 
 def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
@@ -944,20 +1038,25 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
             return None
         address = payload.get('address') if isinstance(payload.get('address'), dict) else {}
+        # Prefer local administrative/place names before broad city labels.
         primary_keys = (
-            'city',
+            'municipality',
             'town',
             'village',
-            'hamlet',
-            'municipality',
             'locality',
             'suburb',
             'city_district',
+            'hamlet',
+            'city',
         )
         fallback_keys = (
             'county',
             'state_district',
         )
+        try:
+            payload_zoom = int(payload.get('_wm_zoom') or 0)
+        except Exception:
+            payload_zoom = 0
         best: dict[str, Any] | None = None
         for key in primary_keys:
             raw = address.get(key)
@@ -970,9 +1069,12 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
                         'admin_importance': _location_admin_importance(key),
                         'population': 0,
                         'distance_km': 0.0,
+                        'source': 'online-reverse',
+                        'source_kind': key,
+                        'zoom': payload_zoom,
                         'score': _location_candidate_score(0.0, 0, _location_admin_importance(key)),
                     }
-                    if best is None or float(candidate['score']) > float(best['score']):
+                    if best is None:
                         best = candidate
         for key in fallback_keys:
             raw = address.get(key)
@@ -985,6 +1087,9 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
                         'admin_importance': _location_admin_importance(key),
                         'population': 0,
                         'distance_km': 0.0,
+                        'source': 'online-reverse',
+                        'source_kind': key,
+                        'zoom': payload_zoom,
                         'score': _location_candidate_score(0.0, 0, _location_admin_importance(key)),
                     }
                     if best is None or float(candidate['score']) > float(best['score']):
@@ -999,6 +1104,9 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
                     'admin_importance': 1,
                     'population': 0,
                     'distance_km': 0.0,
+                    'source': 'online-reverse',
+                    'source_kind': 'display_name',
+                    'zoom': payload_zoom,
                     'score': _location_candidate_score(0.0, 0, 1),
                 }
                 if best is None or float(candidate['score']) > float(best['score']):
@@ -1049,10 +1157,12 @@ def _reverse_station_fallback(lat: float, lon: float) -> dict[str, str] | None:
         'name': name,
         'country': '',
         'label': name,
+        'source': 'offline-station',
+        'distance_km': f'{float(dist_km):.3f}',
     }
 
 
-def _reverse_offline_city_candidate(lat: float, lon: float) -> dict[str, Any] | None:
+def _reverse_offline_city_candidate(lat: float, lon: float, *, prefer_nearest: bool = False) -> dict[str, Any] | None:
     global _REVERSE_OFFLINE_CITY_CANDIDATES
     try:
         lat_f = float(lat)
@@ -1091,7 +1201,7 @@ def _reverse_offline_city_candidate(lat: float, lon: float) -> dict[str, Any] | 
         if abs(city_lat - lat_f) > 1.5 or abs(city_lon - lon_f) > 1.5:
             continue
         dist_km = haversine_km(lat_f, lon_f, city_lat, city_lon)
-        if dist_km > 60.0:
+        if dist_km > 35.0:
             continue
         candidate = {
             'name': city_name,
@@ -1099,13 +1209,27 @@ def _reverse_offline_city_candidate(lat: float, lon: float) -> dict[str, Any] | 
             'distance_km': dist_km,
             'population': population,
             'admin_importance': 6 if population >= 100000 else (5 if population >= 25000 else 4),
+            'source': 'offline-city',
+            'source_kind': 'geonamescache',
         }
         candidate['score'] = _location_candidate_score(
             candidate['distance_km'],
             candidate['population'],
             candidate['admin_importance'],
         )
-        if best is None or float(candidate['score']) > float(best['score']):
+        if best is None:
+            best = candidate
+            continue
+        if prefer_nearest:
+            best_dist = float(best.get('distance_km') or 999.0)
+            cand_dist = float(candidate.get('distance_km') or 999.0)
+            if cand_dist < best_dist - 0.1:
+                best = candidate
+                continue
+            if abs(cand_dist - best_dist) <= 0.1 and int(candidate.get('population') or 0) > int(best.get('population') or 0):
+                best = candidate
+                continue
+        if float(candidate['score']) > float(best['score']):
             best = candidate
     if best is None:
         return None
@@ -1122,6 +1246,8 @@ def _reverse_offline_city_fallback(lat: float, lon: float) -> dict[str, str] | N
         'name': city_name,
         'country': country_code,
         'label': f'{city_name} ({country_code})' if country_code else city_name,
+        'source': 'offline-city',
+        'distance_km': f'{float(candidate.get("distance_km") or 0.0):.3f}',
     }
 
 
@@ -1149,19 +1275,22 @@ def _reverse_offline_nearest_place_fallback(lat: float, lon: float) -> dict[str,
         match_lon = float(match.get('lon'))
     except Exception:
         return None
-    if not name or haversine_km(lat_f, lon_f, match_lat, match_lon) > 20.0:
+    dist_km = haversine_km(lat_f, lon_f, match_lat, match_lon)
+    if not name or dist_km > 20.0:
         return None
     return {
         'name': name,
         'country': country_code,
         'label': f'{name} ({country_code})' if country_code else name,
+        'source': 'offline-nearest-place',
+        'distance_km': f'{dist_km:.3f}',
     }
 
 
 def _reverse_offline_fallback(lat: float, lon: float) -> dict[str, str] | None:
     return (
-        _reverse_offline_city_fallback(lat, lon)
-        or _reverse_offline_nearest_place_fallback(lat, lon)
+        _reverse_offline_nearest_place_fallback(lat, lon)
+        or _reverse_offline_city_fallback(lat, lon)
         or _reverse_station_fallback(lat, lon)
     )
 
@@ -1220,7 +1349,7 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
         }
         payloads: list[dict[str, Any]] = []
         hit_rate_limit = False
-        for zoom in ('14', '13', '12', '10'):
+        for zoom in ('18', '17', '16', '15', '14', '13', '12', '10'):
             resp = requests.get(
                 'https://nominatim.openstreetmap.org/reverse',
                 params={
@@ -1240,24 +1369,52 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
                 continue
             payload = resp.json()
             if isinstance(payload, dict):
+                payload['_wm_zoom'] = int(zoom)
                 payloads.append(payload)
 
         chosen: dict[str, Any] | None = None
         for payload in payloads:
             candidate = _pick_reverse_geocode_name(payload)
-            if candidate and (chosen is None or float(candidate.get('score') or 0.0) > float(chosen.get('score') or 0.0)):
+            if candidate and (chosen is None or _reverse_candidate_effective_score(candidate) > _reverse_candidate_effective_score(chosen)):
                 chosen = candidate
         offline_city = _reverse_offline_city_candidate(lat_f, lon_f)
-        if offline_city and (chosen is None or float(offline_city.get('score') or 0.0) > float(chosen.get('score') or 0.0)):
+        if _should_prefer_offline_city(chosen, offline_city):
             chosen = offline_city
+        nearby_city = _reverse_offline_city_candidate(lat_f, lon_f, prefer_nearest=True)
+        if _should_prefer_nearby_city_over_online(chosen, nearby_city):
+            chosen = {
+                **nearby_city,
+                'source': 'offline-city',
+                'source_kind': 'offline-nearby-city-override',
+            }
+        offline_local = _reverse_offline_nearest_place_fallback(lat_f, lon_f)
+        if _should_prefer_offline_local_name(chosen, offline_local):
+            chosen = {
+                'name': str(offline_local.get('name') or '').strip(),
+                'country': str(offline_local.get('country') or '').strip(),
+                'distance_km': float(offline_local.get('distance_km') or 0.0),
+                'population': 0,
+                'admin_importance': 3,
+                'source': 'offline-nearest-place',
+                'source_kind': 'offline-nearest-place-override',
+                'score': _location_candidate_score(float(offline_local.get('distance_km') or 0.0), 0, 3),
+            }
         if chosen and chosen.get('name'):
             chosen_name = str(chosen.get('name') or '').strip()
             chosen_country = str(chosen.get('country') or '').strip()
+            chosen_source = str(chosen.get('source') or 'online-reverse').strip()
+            chosen_distance = chosen.get('distance_km')
             out = {
                 'name': str(chosen_name),
                 'country': str(chosen_country or ''),
                 'label': f'{chosen_name} ({chosen_country})' if chosen_country else str(chosen_name),
+                'source': chosen_source,
             }
+            if chosen_distance is not None:
+                try:
+                    out['distance_km'] = f'{float(chosen_distance):.3f}'
+                except Exception:
+                    pass
             with _REVERSE_GEOCODE_CACHE_LOCK:
                 if len(_REVERSE_GEOCODE_CACHE) >= 512:
                     try:
@@ -1378,6 +1535,8 @@ def api_location_label():
         'location': str(resolved.get('label') or ''),
         'location_name': str(resolved.get('name') or ''),
         'location_country': str(resolved.get('country') or ''),
+        'location_source': str(resolved.get('source') or ''),
+        'location_distance_km': str(resolved.get('distance_km') or ''),
     })
 
 
@@ -1402,24 +1561,68 @@ def api_stage_names():
         
         stage_names = []
         previous_end_name = request.args.get('previous_end_name', '')
-        
+
+        def _geo_to_stage_candidate(lat: float, lon: float) -> list[dict[str, Any]] | None:
+            """Offline-geocode a stage endpoint and return it as a compute_stage_name candidate."""
+            try:
+                geo = _reverse_geocode_location(lat, lon, allow_online=False)
+                if not geo:
+                    return None
+                name = str(geo.get('name') or '').strip()
+                country = str(geo.get('country') or '').strip()
+                if not name:
+                    return None
+                full_label = f'{name} ({country})' if country else name
+                try:
+                    dist_km = float(geo.get('distance_km') or 0.0)
+                except Exception:
+                    dist_km = 0.0
+                return [{
+                    'name': full_label,
+                    'population': 10000,
+                    'admin_type': 'town',
+                    'lat': lat,
+                    'lon': lon,
+                    'distance_km': dist_km,
+                }]
+            except Exception:
+                return None
+
+        def _geo_stage_label(lat: float, lon: float) -> str:
+            """Return a formatted 'Name (CC)' label for a stage endpoint, or empty string."""
+            cands = _geo_to_stage_candidate(lat, lon)
+            if cands and cands[0].get('name'):
+                return str(cands[0]['name'])
+            return ''
+
         for stage in stages:
             if not isinstance(stage, (list, tuple)) or len(stage) < 4:
                 stage_names.append('Stage')
                 continue
-            
+
             try:
                 start_lat = float(stage[0])
                 start_lon = float(stage[1])
                 end_lat = float(stage[2])
                 end_lon = float(stage[3])
-                
-                name = compute_stage_name(
-                    start_lat, start_lon, end_lat, end_lon,
-                    previous_stage_end_name=previous_end_name if previous_end_name else None
-                )
+
+                start_label = _geo_stage_label(start_lat, start_lon)
+                end_label = _geo_stage_label(end_lat, end_lon)
+
+                if start_label and end_label:
+                    name = f'{start_label} → {end_label}'
+                elif start_label:
+                    name = start_label
+                elif end_label:
+                    name = end_label
+                else:
+                    # Fallback: scenic region / coordinate approach via compute_stage_name
+                    name = compute_stage_name(
+                        start_lat, start_lon, end_lat, end_lon,
+                        previous_stage_end_name=previous_end_name if previous_end_name else None
+                    )
                 stage_names.append(name)
-                
+
                 # Extract end name for continuity
                 if ' → ' in name:
                     previous_end_name = name.split(' → ')[-1].strip()

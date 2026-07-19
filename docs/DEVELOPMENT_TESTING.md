@@ -65,3 +65,19 @@ Note: `--lon-min -28` is the current default and covers Iceland. Older builds us
   The current version counter is in the `bootMap()` function near the bottom of `index.html`.
 - The backend guarantees at least one representative sampled point per tour day even when `--step-km` exceeds the day-segment length. If you see a day with no station, look for `[PLAN] Missing-day sample augmentation failed` in the server log.
 
+## Reverse-geocoding regression checks
+After reverse-geocoding changes, validate both cursor labels and TourBook endpoint labels:
+
+1. Single-point lookup
+```bash
+curl -s "http://127.0.0.1:5002/api/location_label?lat=43.229&lon=-1.679"
+```
+Expected: a nearby local place label (e.g. `Igantzi (ES)` for this sample point), not a far metro fallback.
+
+2. Stage endpoint naming
+```bash
+curl -sG "http://127.0.0.1:5002/api/stage_names" \
+  --data-urlencode 'stages=[[43.4938,-1.4745,43.229,-1.679]]'
+```
+Expected: endpoint-form stage label (e.g. `Bayonne (FR) -> Igantzi (ES)`) with no empty side and no unrelated far city.
+

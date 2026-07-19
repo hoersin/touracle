@@ -179,10 +179,11 @@ def fetch_daily_weather_same_day_meteostat(
     years_window: int = 10,
     start_year: int | None = None,
     end_year: int | None = None,
+    include_current_year: bool = False,
 ) -> pd.DataFrame:
     """Fetch only the specific calendar day per year across the requested years via Meteostat."""
     today = date.today()
-    default_end = today.year - 1
+    default_end = today.year if include_current_year else (today.year - 1)
     if end_year is None:
         end_year = default_end
     else:
@@ -234,6 +235,7 @@ def fetch_daily_weather_window_meteostat(
     years_window: int = 10,
     start_year: int | None = None,
     end_year: int | None = None,
+    include_current_year: bool = False,
 ) -> pd.DataFrame:
     """Fetch daily weather for a contiguous date window per year across the requested years via Meteostat."""
     span_days = int(span_days)
@@ -244,7 +246,7 @@ def fetch_daily_weather_window_meteostat(
         span_days = 180
 
     today = date.today()
-    default_end = today.year - 1
+    default_end = today.year if include_current_year else (today.year - 1)
     if end_year is None:
         end_year = default_end
     else:

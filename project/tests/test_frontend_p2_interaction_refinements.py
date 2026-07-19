@@ -92,8 +92,7 @@ def test_drag_end_keeps_dragged_segment_selected():
     """After drag end, dragged segment remains selected/active."""
     source = _source()
     assert 'const draggedDayKey = `ride-${Math.max(0, Number(TOUR_DRAG_STATE.boundaryIndex) || 0)}`;' in source
-    assert 'ROADBOOK_STATE.selectedDayId = draggedDayKey;' in source
-    assert 'ROADBOOK_STATE.activeDayId = draggedDayKey;' in source
+    assert "_setSelectedTourDay(draggedDayKey, { forceMapFit: true });" in source
 
 
 def test_profile_click_selects_segment():
@@ -102,6 +101,24 @@ def test_profile_click_selects_segment():
     assert 'function _tourDayKeyAtProfileClientPoint(profile, clientX, clientY, options = {})' in source
     assert 'const selectedDayKey = _tourDayKeyAtProfileClientPoint(LAST_PROFILE, e && e.clientX, e && e.clientY, { includeDrag: true });' in source
     assert '_roadbookSelectDay(selectedDayKey);' in source
+
+
+def test_selected_tour_day_single_source_helpers_exist():
+    source = _source()
+    assert 'let SELECTED_TOUR_DAY_KEY = null;' in source
+    assert 'function _getSelectedTourDayKey()' in source
+    assert 'function _setSelectedTourDay(dayKey, opts = {})' in source
+    assert 'SELECTED_TOUR_DAY_KEY = key;' in source
+    assert '_fitSelectedTourDayOnMap(key, { animate: true });' in source
+
+
+def test_roadbook_hover_is_visual_only_and_click_selects():
+    source = _source()
+    assert "hoverDayId: null" in source
+    assert "ROADBOOK_STATE.hoverDayId = nextKey || null;" in source
+    assert "_roadbookSyncCardSelectionUi();" in source
+    assert "card.addEventListener('click', () => { _roadbookSelectDay(dayKey); });" in source
+    assert "card.addEventListener('mouseenter', () => { _roadbookSetHoverDay(dayKey); });" in source
 
 
 def test_drag_tooltip_shows_day_km_and_hm_on_second_line():

@@ -79,3 +79,8 @@ def test_montpellier_profile_distance_matches_full_route_length():
     mid_km = float(dist[mid_idx])
     assert abs(mid_km - (last * 0.5)) / max(1.0, last) < 0.05, (
         f'Midpoint {mid_km:.2f} km not near half of total {last:.2f} km')
+
+    elev_m = profile_ev['profile']['elev_m']
+    sampled_points = profile_ev['profile']['sampled_points']
+    assert isinstance(elev_m, list) and len(elev_m) == len(sampled_points), 'invalid profile elevations'
+    assert any(value is not None for value in elev_m), 'expected carried profile elevations'

@@ -11,8 +11,8 @@ def _source() -> str:
 
 def test_req35_central_tour_plan_object_exists():
     source = _source()
-    assert "let TOUR_PLAN = {" in source
-    assert "id: 'tour-plan-local'" in source
+    assert "function createTourPlan(overrides = {})" in source
+    assert "let TOUR_PLAN = createTourPlan(" in source
     assert "roadbook:" in source
     assert "settings:" in source
     assert "metadata:" in source
@@ -20,7 +20,7 @@ def test_req35_central_tour_plan_object_exists():
 
 def test_req36_weather_mode_union_documented():
     source = _source()
-    assert "@typedef {'forecast'|'historical-year'|'historical-median'} WeatherMode" in source
+    assert "@typedef {'forecast'|'hybrid'|'historical-year'|'historical-median'} WeatherMode" in source
     assert "function _normalizeWeatherMode(value)" in source
 
 
@@ -34,13 +34,14 @@ def test_req37_weather_context_exists():
 
 def test_req38_roadbook_state_owned_by_tour_plan():
     source = _source()
-    assert "ROADBOOK_STATE = TOUR_PLAN.roadbook.state;" in source
-    assert "function _syncTourPlanStateAlias()" in source
+    assert "roadbook: {" in source
+    assert "restStops:" in source
+    assert "nextRestId:" in source
 
 
 def test_req39_boundaries_synced_to_tour_plan():
     source = _source()
-    assert "TOUR_PLAN.roadbook.boundariesKm = committed.slice();" in source
+    assert "boundariesKm: committed.slice()," in source
     assert "const preferred = Array.isArray(TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.boundariesKm)" in source
 
 
@@ -58,17 +59,17 @@ def test_req41_weather_is_derived_not_persisted_in_tour_plan_days():
 
 def test_req42_shared_roadbook_adapter_exists_across_modes():
     source = _source()
-    assert "function legacyRoadbookViewModel()" in source
-    assert "function legacyWeatherViewModel()" in source
-    assert "mode: getTourWeatherContextMode()," in source
+    assert "function getRideDays(plan = TOUR_PLAN)" in source
+    assert "function getRestDays(plan = TOUR_PLAN)" in source
+    assert "function getDayById(dayKey, plan = TOUR_PLAN)" in source
 
 
 def test_snapshot_persists_new_architecture_objects():
     source = _source()
-    assert "tourPlan: TOUR_PLAN && typeof TOUR_PLAN === 'object' ? TOUR_PLAN : null," in source
+    assert "tourPlan: serializeTourPlan(TOUR_PLAN)," in source
     assert "weatherContext: WEATHER_CONTEXT && typeof WEATHER_CONTEXT === 'object' ? WEATHER_CONTEXT : null," in source
 
 
 def test_start_date_propagates_into_tour_plan_settings():
     source = _source()
-    assert "TOUR_PLAN.settings.startDate = startDateInput && startDateInput.value ? String(startDateInput.value) : null;" in source
+    assert "startDate: startDateInput && startDateInput.value ? String(startDateInput.value) : ''," in source

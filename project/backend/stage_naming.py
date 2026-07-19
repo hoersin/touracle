@@ -152,29 +152,28 @@ def compute_stage_name(
         A formatted stage description string.
     """
     
-    # Priority 1: Scenic regions
+    # Priority 1: Scenic regions — only used when candidates do not supply a real name.
     scenic_start, scenic_start_score = _scenic_region_score(start_lat, start_lon)
     scenic_end, scenic_end_score = _scenic_region_score(end_lat, end_lon)
-    
-    # If both start and end are in scenic regions, use them
-    if scenic_start and scenic_end:
+
+    # Resolve geocoded names from candidates first.
+    geo_start = _pick_endpoint_name(start_lat, start_lon, start_candidates, 'start',
+                                     avoid_name=previous_stage_end_name)
+    geo_end = _pick_endpoint_name(end_lat, end_lon, end_candidates, 'end')
+
+    # Use scenic regions only when the geocoded name is absent (no candidates supplied).
+    effective_start = geo_start or (scenic_start if scenic_start else '')
+    effective_end = geo_end or (scenic_end if scenic_end else '')
+
+    # If both endpoints landed in the same scenic region and have no geocoded names, return region.
+    if not geo_start and not geo_end and scenic_start and scenic_end:
         if scenic_start == scenic_end:
             return scenic_start
-        else:
-            return f"{scenic_start} → {scenic_end}"
-    
-    if scenic_start and not scenic_end:
-        return f"{scenic_start} → {_pick_endpoint_name(end_lat, end_lon, end_candidates, 'end')}"
-    
-    if scenic_end and not scenic_start:
-        return f"{_pick_endpoint_name(start_lat, start_lon, start_candidates, 'start')} → {scenic_end}"
-    
+        return f"{scenic_start} → {scenic_end}"
+
     # Priority 2: Meaningful start/destination towns
-    start_name = _pick_endpoint_name(
-        start_lat, start_lon, start_candidates, 'start',
-        avoid_name=previous_stage_end_name  # Avoid same name as previous endpoint
-    )
-    end_name = _pick_endpoint_name(end_lat, end_lon, end_candidates, 'end')
+    start_name = effective_start
+    end_name = effective_end
     
     # Priority 3: Handle duplicates or insignificant endpoints
     if start_name == end_name or start_name == previous_stage_end_name:
@@ -187,6 +186,46 @@ def compute_stage_name(
         alt_end = _find_nearby_significant_town(end_lat, end_lon, end_candidates, avoid_name=start_name)
         if alt_end:
             end_name = alt_end
+
+    if start_name and end_name and start_name == end_name:
+        alt_end = _find_nearby_meaningful_place(end_lat, end_lon, end_candidates, avoid_name=start_name)
+        if alt_end:
+            end_name = alt_end
+        else:
+            alt_start = _find_nearby_meaningful_place(start_lat, start_lon, start_candidates, avoid_name=end_name)
+            if alt_start:
+                start_name = alt_start
+
+    if start_name and end_name and start_name == end_name:
+        alt_end_wide = _find_nearby_meaningful_place(
+            end_lat,
+            end_lon,
+            end_candidates,
+            avoid_name=start_name,
+            min_population=TINY_VILLAGE_THRESHOLD,
+            max_distance_km=90.0,
+        )
+        if alt_end_wide:
+            end_name = alt_end_wide
+        else:
+            alt_start_wide = _find_nearby_meaningful_place(
+                start_lat,
+                start_lon,
+                start_candidates,
+                avoid_name=end_name,
+                min_population=TINY_VILLAGE_THRESHOLD,
+                max_distance_km=90.0,
+            )
+            if alt_start_wide:
+                start_name = alt_start_wide
+
+    if start_name and end_name and start_name == end_name:
+        scenic_start, _ = _scenic_region_score(start_lat, start_lon)
+        scenic_end, _ = _scenic_region_score(end_lat, end_lon)
+        if scenic_start and scenic_start != end_name:
+            start_name = scenic_start
+        elif scenic_end and scenic_end != start_name:
+            end_name = scenic_end
     
     # Priority 4: Fallback to coordinates
     if not start_name:
@@ -294,6 +333,50 @@ def _find_nearby_significant_town(
             best_score = score
             best_name = name
     
+    return best_name
+
+
+def _find_nearby_meaningful_place(
+    lat: float,
+    lon: float,
+    candidates: Optional[List[Dict[str, Any]]] = None,
+    avoid_name: Optional[str] = None,
+    min_population: int = TOWN_SIZE_THRESHOLD,
+    max_distance_km: float = 35.0,
+) -> Optional[str]:
+    """Find a meaningful nearby place when strict large-town fallback fails."""
+    if not candidates or not isinstance(candidates, list):
+        return None
+
+    best_name = None
+    best_score = -1.0
+
+    for candidate in candidates:
+        name = str(candidate.get("name") or "").strip()
+        if not name:
+            continue
+        if avoid_name and name.lower() == avoid_name.lower():
+            continue
+
+        pop = int(candidate.get("population") or 0)
+        admin_type = str(candidate.get("admin_type") or "").lower()
+        if pop < min_population and admin_type not in ("town", "city", "municipality"):
+            continue
+
+        cand_lat = float(candidate.get("lat", lat))
+        cand_lon = float(candidate.get("lon", lon))
+        distance_km = _haversine_km(lat, lon, cand_lat, cand_lon)
+        if distance_km > max_distance_km:
+            continue
+
+        distance_score = max(0.0, max_distance_km - distance_km)
+        population_score = math.log10(max(1, pop)) if pop > 0 else 0.0
+        type_bonus = 1.2 if admin_type in ("city", "town") else 0.8 if admin_type == "municipality" else 0.0
+        score = distance_score + population_score + type_bonus
+        if score > best_score:
+            best_score = score
+            best_name = name
+
     return best_name
 
 
