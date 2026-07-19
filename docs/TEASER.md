@@ -1,25 +1,33 @@
-# WeatherMap — teaser
+# WeatherMap - teaser
 
-Plan tours with a quick, visual “gut check” of weather comfort along your route — and explore long‑term climate patterns on an interactive map.
+Plan tours with a quick visual weather-comfort check along your GPX route, then switch to Climatic Map mode to explore long-term seasonal patterns.
 
-- Tour Planning: upload a GPX route, preview conditions, and spot risky days fast. **Per-day cards** on the map and profile strip show temperature, weather icon, rain total, and a lucky-day indicator for each tour day.
-- Climatic Map: scrub through the year and switch timescales (daily → weekly → monthly → quarterly → yearly) to see stable patterns.
-- One consistent legend: layer, year, and timescale live right on the map.
+- Tour Planning: upload a GPX route and get day-by-day weather cards (temperature, rain, icon, lucky-day signal) plus profile context.
+- Climatic Map: browse temperature and wind layers by timescale (daily to yearly) for planning windows and route strategy.
+- Same route context in both modes: route overlay remains visible while you compare day-level tour conditions vs climate background.
 
 ## Screenshots
 
-### Tour Planning
+### Tour Planning - different GPX routes
 
-![Tour Planning](teaser/01-tour-planning.png)
+Freiburg -> Bern
 
-### Climatic Map — Monthly temperature
+![Tour Planning - Freiburg to Bern](teaser/10-tour-route-freiburg-bern.png)
 
-![Climatic Map — Monthly temperature](teaser/02-climate-monthly-temperature.png)
+Milano -> Rome
 
-### Climatic Map — Weekly wind
+![Tour Planning - Milano to Rome](teaser/11-tour-route-milano-rome.png)
 
-![Climatic Map — Weekly wind](teaser/03-climate-weekly-wind.png)
+Vienna -> Berlin
 
-### Climatic Map — Monthly rain (Europe)
+![Tour Planning - Vienna to Berlin](teaser/12-tour-route-vienna-berlin.png)
 
-![Climatic Map — Monthly rain (Europe)](teaser/04-climate-monthly-rain-europe.png)
+### Climatic Map mode
+
+Monthly temperature layer
+
+![Climatic Map - Monthly temperature](teaser/02-climate-monthly-temperature.png)
+
+Weekly wind layer
+
+![Climatic Map - Weekly wind](teaser/03-climate-weekly-wind.png)
