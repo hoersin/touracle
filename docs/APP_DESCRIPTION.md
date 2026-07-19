@@ -3,6 +3,10 @@
 ## Purpose
 Touracle (a.k.a. “WeatherMap” in this repository) is a local-first web application for planning cycling and bikepacking routes with weather awareness.
 
+Sprint 5.3 introduces a native Tour project format (`.tour`) so work is saved/restored as a full planning project (route + plans + project preferences), not as isolated GPX or TourBook fragments.
+
+Sprint 5.4 unifies weather tile layout and date presentation across map markers and the route profile so date context stays readable without duplicating date strings in every tile.
+
 It combines:
 - A **Tour Planning** view: you upload a GPX route and the app samples points along the route, then visualizes weather statistics along the route and across days.
 - A **Climatic Map** view: you explore climatology (temperature / rain / wind / comfort) as a map layer for a chosen calendar day.
@@ -17,6 +21,11 @@ The app focuses on weather that strongly affects cycling:
 
 The UI uses weather symbols/overlays on the map and a route profile strip to present the same underlying statistics from two angles.
 In Tour Planning, each tour day also gets a **day card** — a compact label placed perpendicular to the route on the map and drawn at the top of the profile strip. Each card shows: temperature, a weather icon, rain total, and the calendar date.
+
+Date presentation consistency (Sprint 5.4):
+- Route start/finish endpoint markers and map weather station cards now use weekday-only labels (for example: `Wed`).
+- Profile weather cards keep weather details in the tile itself (temperature, icon, rain), while date metadata is rendered as a centered 3-line calendar block below each tile (`Day N`, `Wed Jul 12`, `2026`).
+- TourBook full-date rendering remains unchanged.
 
 The map colour legend labels include units (e.g. `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`) so the scale is always self-explanatory.
 
@@ -47,4 +56,10 @@ This repository is a prototype-style app. It does **not** currently aim to provi
 ## Repository naming
 - The top-level folder name may be `WeatherMap`.
 - The app name in the README and UI is “Touracle / Bikepacking Weather Map”.
+
+## Native project architecture
+- Primary object: Tour Project
+- Route GPX is one component of the project
+- A single project can contain multiple independent Tour Plans for planning variants
+- TourBook is planning/visualization and export; persistence is managed at project level
 

@@ -2868,6 +2868,73 @@ def upload_gpx():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/upload_gpx_text', methods=['POST'])
+def upload_gpx_text():
+    """Import embedded GPX XML text (used by Tour project files)."""
+    try:
+        session_id = _resolve_request_session_id(create=True)
+        data = request.get_json(silent=True) or {}
+        content = str(data.get('content') or '')
+        name = str(data.get('name') or 'route.gpx').strip() or 'route.gpx'
+        original_name = Path(name).name
+        if not original_name.lower().endswith('.gpx'):
+            original_name = f"{original_name}.gpx"
+        if not content.strip():
+            return jsonify({"error": "No GPX content provided"}), 400
+        if '<gpx' not in content.lower():
+            return jsonify({"error": "Invalid GPX content"}), 400
+
+        ts = int(time.time())
+        upload_dir = _session_upload_dir(str(session_id))
+        safe_name = f"uploaded_{ts}_{uuid.uuid4().hex[:12]}.gpx"
+        out_path = upload_dir / safe_name
+        out_path.write_text(content, encoding='utf-8')
+
+        # Quick structural validation before activating as current route.
+        try:
+            ET.parse(out_path)
+        except Exception:
+            try:
+                out_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return jsonify({"error": "Uploaded GPX content is not parseable"}), 400
+
+        save_session_state({
+            "last_gpx_path": str(out_path),
+            "last_gpx_name": _display_gpx_name_for_path(out_path, original_name),
+        }, session_id=str(session_id))
+
+        log.info('[UPLOAD] Saved embedded GPX %s', out_path)
+        return jsonify({
+            "path": str(out_path),
+            "name": safe_name,
+            "original_name": str(original_name),
+            "session_id": str(session_id),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/gpx_content', methods=['GET'])
+def api_gpx_content():
+    """Return the active GPX as raw XML text for .tour project serialization."""
+    try:
+        session_id = _resolve_request_session_id(create=True)
+        path = _resolve_session_gpx(None, session_id=str(session_id) if session_id else None)
+        if not path.exists() or path.suffix.lower() != '.gpx':
+            return jsonify({"error": "No active GPX route"}), 404
+        text = path.read_text(encoding='utf-8', errors='replace')
+        name = _display_gpx_name_for_path(path, str(path.name))
+        return jsonify({
+            "path": str(path),
+            "name": str(name),
+            "content": text,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/map')
 def api_map():
     date = request.args.get('date', None)  # expected MM-DD

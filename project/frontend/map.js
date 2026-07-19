@@ -358,6 +358,16 @@
   const tourPlanFileInfo = document.getElementById('tourPlanFileInfo');
   const tourPlanList = document.getElementById('tourPlanList');
   const tourPlanDirtyBadge = document.getElementById('tourPlanDirty');
+  const tourProjectTitleEl = document.getElementById('tourProjectTitle');
+  const tourProjectStatusEl = document.getElementById('tourProjectStatus');
+  const tourProjectNewBtn = document.getElementById('tourProjectNewBtn');
+  const tourProjectOpenBtn = document.getElementById('tourProjectOpenBtn');
+  const tourProjectSaveBtn = document.getElementById('tourProjectSaveBtn');
+  const tourProjectSaveAsBtn = document.getElementById('tourProjectSaveAsBtn');
+  const tourProjectImportGpxBtn = document.getElementById('tourProjectImportGpxBtn');
+  const tourProjectReplaceGpxBtn = document.getElementById('tourProjectReplaceGpxBtn');
+  const tourProjectExportGpxBtn = document.getElementById('tourProjectExportGpxBtn');
+  const tourProjectOpenInput = document.getElementById('tourProjectOpenInput');
   const roadbookMeta = document.getElementById('roadbookMeta');
   const roadbookList = document.getElementById('roadbookList');
   const tourSummaryPanel = document.getElementById('tourSummary');
@@ -954,6 +964,9 @@
   };
   const TOUR_PLAN_STORAGE_KEY = 'wm_tour_plan_store_v1';
   const TOUR_PLAN_ACTIVE_ID_KEY = 'wm_active_tour_plan_id_v1';
+  const TOUR_PROJECT_FORMAT_KEY = 'touracle-tour-project';
+  const TOUR_PROJECT_FORMAT_VERSION = 1;
+  const TOUR_PROJECT_SCHEMA_VERSION = 1;
   const TOUR_PLAN_AUTOSAVE_DEBOUNCE_MS = 1800;
   let ACTIVE_TOUR_PLAN_ID = null;
   let ACTIVE_TOUR_PLAN_FILE_HANDLE = null;
@@ -1090,6 +1103,7 @@
         tourPlanDirtyBadge.classList.toggle('is-visible', TOUR_PLAN_IS_DIRTY);
       }
     } catch (_) {}
+    try { _setProjectStatusUi(TOUR_PLAN_IS_DIRTY); } catch (_) {}
   }
 
   function _tourPlanSetActiveFileContext(handle, nameHint = '') {
@@ -1099,9 +1113,177 @@
       ACTIVE_TOUR_PLAN_FILE_NAME = handle && typeof handle.name === 'string' ? String(handle.name || '').trim() : fallbackName;
       if (tourPlanFileInfo) {
         const name = ACTIVE_TOUR_PLAN_FILE_NAME || 'not saved';
-        tourPlanFileInfo.textContent = `File: ${name}`;
+        tourPlanFileInfo.textContent = `Tour file: ${name}`;
       }
     } catch (_) {}
+    try { _refreshProjectHeaderUi(); } catch (_) {}
+  }
+
+  function _projectRouteDisplayName() {
+    try {
+      const raw = (LAST_GPX_NAME && String(LAST_GPX_NAME).trim())
+        ? String(LAST_GPX_NAME).trim()
+        : getBaseName(LAST_GPX_PATH || '');
+      const cleaned = _cleanRouteDisplayName(raw || 'Untitled Tour');
+      return cleaned || 'Untitled Tour';
+    } catch (_) {
+      return 'Untitled Tour';
+    }
+  }
+
+  function _setProjectStatusUi(isDirty) {
+    const dirty = !!isDirty;
+    try {
+      if (tourProjectStatusEl) {
+        tourProjectStatusEl.textContent = dirty ? '● Modified' : '● Saved';
+        tourProjectStatusEl.style.color = dirty ? '#b45309' : '#0f766e';
+      }
+    } catch (_) {}
+  }
+
+  function _refreshProjectHeaderUi() {
+    try {
+      const title = _projectRouteDisplayName();
+      if (tourProjectTitleEl) tourProjectTitleEl.textContent = title;
+    } catch (_) {}
+    _setProjectStatusUi(TOUR_PLAN_IS_DIRTY);
+  }
+
+  function _collectAllTourPlansForProject() {
+    const byId = {};
+    try {
+      const plans = TourPlanStorageService.listTourPlans();
+      for (const item of plans) {
+        const id = String(item && item.id || '').trim();
+        if (!id) continue;
+        const entry = TourPlanStorageService.loadTourPlan(id);
+        if (!entry || !entry.plan) continue;
+        byId[id] = {
+          id,
+          title: String(entry.title || 'Tour plan'),
+          routeId: String(entry.routeId || ''),
+          updatedAt: Number(entry.updatedAt) || Date.now(),
+          weatherMode: String(entry.weatherMode || 'historical-median'),
+          plan: deserializeTourPlan(entry.plan),
+          weatherContext: entry.weatherContext && typeof entry.weatherContext === 'object' ? { ...entry.weatherContext } : null,
+        };
+      }
+    } catch (_) {}
+    const activeId = String(ACTIVE_TOUR_PLAN_ID || '').trim();
+    if (activeId && !byId[activeId]) {
+      byId[activeId] = {
+        id: activeId,
+        title: String((TOUR_PLAN && TOUR_PLAN.title) || 'Tour plan'),
+        routeId: String((TOUR_PLAN && TOUR_PLAN.routeId) || ''),
+        updatedAt: Date.now(),
+        weatherMode: String(_normalizeWeatherMode(WEATHER_CONTEXT && WEATHER_CONTEXT.mode)),
+        plan: serializeTourPlan(TOUR_PLAN),
+        weatherContext: WEATHER_CONTEXT && typeof WEATHER_CONTEXT === 'object' ? { ...WEATHER_CONTEXT } : null,
+      };
+    }
+    return byId;
+  }
+
+  async function _fetchActiveGpxContentForProject() {
+    try {
+      if (!_hasActiveGpxSelection()) return null;
+      const resp = await fetch('/api/gpx_content');
+      if (!resp.ok) return null;
+      const payload = await resp.json();
+      const content = String(payload && payload.content || '');
+      if (!content.trim()) return null;
+      const name = String(payload && payload.name || LAST_GPX_NAME || 'route.gpx');
+      return {
+        name,
+        path: String(payload && payload.path || LAST_GPX_PATH || ''),
+        content,
+        embedded: true,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function _tourProjectFilePayload() {
+    const plansById = _collectAllTourPlansForProject();
+    const activePlanId = String(ACTIVE_TOUR_PLAN_ID || Object.keys(plansById)[0] || '').trim();
+    const gpx = await _fetchActiveGpxContentForProject();
+    return {
+      format: TOUR_PROJECT_FORMAT_KEY,
+      projectVersion: TOUR_PROJECT_FORMAT_VERSION,
+      schemaVersion: TOUR_PROJECT_SCHEMA_VERSION,
+      savedAt: (new Date()).toISOString(),
+      metadata: {
+        title: _projectRouteDisplayName(),
+        app: 'Touracle',
+      },
+      gpx: gpx || {
+        name: String(LAST_GPX_NAME || ''),
+        path: String(LAST_GPX_PATH || ''),
+        content: '',
+        embedded: false,
+      },
+      activePlanId,
+      tourPlans: plansById,
+      weatherSettings: {
+        mode: String(_normalizeWeatherMode(WEATHER_CONTEXT && WEATHER_CONTEXT.mode)),
+        historicalYear: (WEATHER_CONTEXT && WEATHER_CONTEXT.historicalYear !== undefined) ? WEATHER_CONTEXT.historicalYear : null,
+        historicalYears: Array.isArray(SETTINGS && SETTINGS.strategicYears) ? SETTINGS.strategicYears.slice() : null,
+      },
+      preferences: {
+        departureDate: String(startDateInput && startDateInput.value || ''),
+        totalDays: Math.max(1, Math.round(Number(tourDaysInput && tourDaysInput.value) || 1)),
+        reverse: !!REVERSED,
+        routeWeatherMode: String(getWeatherQualityMode()),
+      },
+      future: {},
+      // Legacy bridge field so older loaders can still recover the active TourPlan.
+      tourPlan: serializeTourPlan(TOUR_PLAN),
+      weatherContext: WEATHER_CONTEXT && typeof WEATHER_CONTEXT === 'object' ? { ...WEATHER_CONTEXT } : null,
+    };
+  }
+
+  function _tourProjectPayloadFromLegacy(parsed) {
+    const source = (parsed && typeof parsed === 'object') ? parsed : {};
+    const legacyPlan = (source.tourPlan && typeof source.tourPlan === 'object') ? source.tourPlan : source;
+    const normalizedPlan = deserializeTourPlan(legacyPlan);
+    const planId = String(normalizedPlan.id || _nextTourPlanId());
+    return {
+      format: TOUR_PROJECT_FORMAT_KEY,
+      projectVersion: TOUR_PROJECT_FORMAT_VERSION,
+      schemaVersion: TOUR_PROJECT_SCHEMA_VERSION,
+      metadata: {
+        title: String(normalizedPlan.title || _projectRouteDisplayName()),
+        app: 'Touracle',
+      },
+      gpx: {
+        name: String(LAST_GPX_NAME || ''),
+        path: String(LAST_GPX_PATH || ''),
+        content: '',
+        embedded: false,
+      },
+      activePlanId: planId,
+      tourPlans: {
+        [planId]: {
+          id: planId,
+          title: String(normalizedPlan.title || 'Tour plan'),
+          routeId: String(normalizedPlan.routeId || ''),
+          updatedAt: Date.now(),
+          weatherMode: String(_normalizeWeatherMode(source && source.weatherContext && source.weatherContext.mode)),
+          plan: normalizedPlan,
+          weatherContext: source && source.weatherContext && typeof source.weatherContext === 'object' ? { ...source.weatherContext } : null,
+        },
+      },
+      weatherSettings: {
+        mode: String(_normalizeWeatherMode(source && source.weatherContext && source.weatherContext.mode)),
+      },
+      preferences: {
+        departureDate: String(normalizedPlan && normalizedPlan.settings && normalizedPlan.settings.startDate || ''),
+      },
+      future: {},
+      tourPlan: normalizedPlan,
+      weatherContext: source && source.weatherContext && typeof source.weatherContext === 'object' ? { ...source.weatherContext } : null,
+    };
   }
 
   function _tourPlanFilePayload() {
@@ -1117,7 +1299,8 @@
     if (!handle || typeof handle.createWritable !== 'function') return false;
     try {
       const writable = await handle.createWritable();
-      const json = JSON.stringify(_tourPlanFilePayload(), null, 2);
+      const payload = await _tourProjectFilePayload();
+      const json = JSON.stringify(payload, null, 2);
       await writable.write(json);
       await writable.close();
       _tourPlanSetActiveFileContext(handle);
@@ -1178,6 +1361,38 @@
   function _markTourPlanChanged() {
     _setTourPlanDirty(true);
     _queueTourPlanAutosave();
+  }
+
+  let PROJECT_DIRTY_WATCHERS_BOUND = false;
+  function _bindProjectDirtyWatchers() {
+    if (PROJECT_DIRTY_WATCHERS_BOUND) return;
+    PROJECT_DIRTY_WATCHERS_BOUND = true;
+    const controls = [
+      startDateInput,
+      arrivalDateInput,
+      tourDaysInput,
+      tourWeatherModeSelect,
+      weatherQualitySelect,
+      reverseCheck,
+      setHistLast,
+      setHistYears,
+      setTempCold,
+      setTempHot,
+      setRainHigh,
+      setWindHeadComfort,
+      setWindTailComfort,
+      setActiveHourStart,
+      setActiveHourEnd,
+      setWindWeighting,
+      setOverlayMode,
+    ].filter(Boolean);
+    for (const el of controls) {
+      try {
+        el.addEventListener('change', () => {
+          try { _markTourPlanChanged(); } catch (_) {}
+        });
+      } catch (_) {}
+    }
   }
 
   function _tourBookRefreshAll(opts = {}) {
@@ -1556,6 +1771,7 @@
       try { _persistTourSnapshot(); } catch (_) {}
       try { _tourPlanSetActiveFileContext(ACTIVE_TOUR_PLAN_FILE_HANDLE, ACTIVE_TOUR_PLAN_FILE_NAME); } catch (_) {}
       _setTourPlanDirty(false);
+      try { _refreshProjectHeaderUi(); } catch (_) {}
       return true;
     } catch (_) {
       return false;
@@ -1579,6 +1795,7 @@
       }
       try { _tourPlanSetActiveFileContext(ACTIVE_TOUR_PLAN_FILE_HANDLE, ACTIVE_TOUR_PLAN_FILE_NAME); } catch (_) {}
       _setTourPlanDirty(false);
+      try { _refreshProjectHeaderUi(); } catch (_) {}
       try { _renderTourPlanManager(); } catch (_) {}
       return true;
     } catch (_) {
@@ -1695,8 +1912,8 @@
         const [picked] = await window.showOpenFilePicker({
           multiple: false,
           types: [{
-            description: 'Touracle TourBook',
-            accept: { 'application/json': ['.json'] },
+            description: 'Touracle Tour Project',
+            accept: { 'application/json': ['.tour', '.json'] },
           }],
         });
         if (!picked) return false;
@@ -1718,26 +1935,70 @@
       if (!file) return false;
       const text = await file.text();
       const parsed = JSON.parse(String(text || '{}'));
-      const payload = (parsed && parsed.tourPlan && typeof parsed.tourPlan === 'object') ? parsed.tourPlan : parsed;
-      const loaded = deserializeTourPlan(payload);
-      updateTourPlan(loaded);
-      ACTIVE_TOUR_PLAN_ID = String(loaded.id || ACTIVE_TOUR_PLAN_ID || '');
-      if (parsed && parsed.weatherContext && typeof parsed.weatherContext === 'object') {
+      const projectPayload = (parsed && parsed.format === TOUR_PROJECT_FORMAT_KEY)
+        ? parsed
+        : _tourProjectPayloadFromLegacy(parsed);
+      const plansObj = (projectPayload && projectPayload.tourPlans && typeof projectPayload.tourPlans === 'object')
+        ? projectPayload.tourPlans
+        : {};
+
+      // Replace local TourPlan store with file payload plans.
+      try {
+        _tourPlanStoreWrite({ version: 1, plans: plansObj });
+      } catch (_) {}
+
+      // Restore embedded GPX first when present.
+      try {
+        const gpx = projectPayload && projectPayload.gpx && typeof projectPayload.gpx === 'object' ? projectPayload.gpx : null;
+        const gpxContent = gpx ? String(gpx.content || '') : '';
+        if (gpx && gpx.embedded === true && gpxContent.trim()) {
+          const importResp = await fetch('/api/upload_gpx_text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: String(gpx.name || 'route.gpx'),
+              content: gpxContent,
+            }),
+          });
+          if (importResp.ok) {
+            const imported = await importResp.json();
+            LAST_GPX_PATH = imported && imported.path ? String(imported.path) : LAST_GPX_PATH;
+            LAST_GPX_NAME = imported && imported.original_name ? String(imported.original_name) : LAST_GPX_NAME;
+            try { _persistLastGpxSelection(); } catch (_) {}
+            try { updateDropZoneLabel(); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+
+      const activeId = String(projectPayload && projectPayload.activePlanId || '').trim();
+      const fallbackId = String(Object.keys(plansObj)[0] || '').trim();
+      const loadId = activeId || fallbackId;
+      const entry = loadId ? TourPlanStorageService.loadTourPlan(loadId) : null;
+      if (entry && _tourPlanApplyLoadedEntry(entry)) {
+        ACTIVE_TOUR_PLAN_ID = String(entry.id || loadId || ACTIVE_TOUR_PLAN_ID || '');
+      }
+
+      // Global weather context fallback from project payload.
+      if (projectPayload && projectPayload.weatherContext && typeof projectPayload.weatherContext === 'object') {
         WEATHER_CONTEXT = {
           ...WEATHER_CONTEXT,
-          ...parsed.weatherContext,
-          mode: _normalizeWeatherMode(parsed.weatherContext.mode),
+          ...projectPayload.weatherContext,
+          mode: _normalizeWeatherMode(projectPayload.weatherContext.mode),
+        };
+      } else if (projectPayload && projectPayload.weatherSettings && typeof projectPayload.weatherSettings === 'object') {
+        WEATHER_CONTEXT = {
+          ...WEATHER_CONTEXT,
+          mode: _normalizeWeatherMode(projectPayload.weatherSettings.mode),
         };
       }
-      TOUR_SEGMENTATION_STATE.boundariesKm = Array.isArray(loaded && loaded.roadbook && loaded.roadbook.boundariesKm)
-        ? loaded.roadbook.boundariesKm.slice()
-        : null;
+
       ROADBOOK_CACHE = null;
       _roadbookResetState();
       _tourBookRefreshAll({ skipDirtyClear: true });
       _setTourPlanDirty(false);
-      _tourPlanSetActiveFileContext(handle, file.name || 'tourbook.json');
-      try { _saveCurrentTourPlan(); } catch (_) {}
+      _tourPlanSetActiveFileContext(handle, file.name || 'tour.tour');
+      try { _refreshProjectHeaderUi(); } catch (_) {}
+      try { loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true }); } catch (_) {}
       return true;
     } catch (e) {
       alert(`Open failed: ${e && e.message ? e.message : e}`);
@@ -1749,10 +2010,10 @@
     try {
       if (window.showSaveFilePicker) {
         const handle = await window.showSaveFilePicker({
-          suggestedName: `${String((TOUR_PLAN && TOUR_PLAN.title) || 'tourbook').replace(/\s+/g, '_')}.json`,
+          suggestedName: `${String(_projectRouteDisplayName() || 'tour').replace(/\s+/g, '_')}.tour`,
           types: [{
-            description: 'Touracle TourBook',
-            accept: { 'application/json': ['.json'] },
+            description: 'Touracle Tour Project',
+            accept: { 'application/json': ['.tour', '.json'] },
           }],
         });
         if (!handle) return false;
@@ -1760,17 +2021,18 @@
         if (!ok) throw new Error('Could not write selected file');
         return true;
       }
-      const json = JSON.stringify(_tourPlanFilePayload(), null, 2);
+      const payload = await _tourProjectFilePayload();
+      const json = JSON.stringify(payload, null, 2);
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${String((TOUR_PLAN && TOUR_PLAN.title) || 'tourbook').replace(/\s+/g, '_')}.json`;
+      a.download = `${String(_projectRouteDisplayName() || 'tour').replace(/\s+/g, '_')}.tour`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      _tourPlanSetActiveFileContext(null, a.download || 'tourbook.json');
+      _tourPlanSetActiveFileContext(null, a.download || 'tour.tour');
       _setTourPlanDirty(false);
       return true;
     } catch (e) {
@@ -1869,11 +2131,96 @@
 
   function _initTourPlanManagerBindings() {
     try {
+      // Sprint 5.3: TourBook is planning/export only; project persistence is handled at Tour level.
+      try {
+        if (tourPlanCreateBtn) tourPlanCreateBtn.style.display = 'none';
+        if (tourPlanSaveBtn) tourPlanSaveBtn.style.display = 'none';
+        if (tourPlanOpenBtn) tourPlanOpenBtn.style.display = 'none';
+        if (tourPlanSaveAsBtn) tourPlanSaveAsBtn.style.display = 'none';
+      } catch (_) {}
+
       if (tourPlanManageBtn) {
         tourPlanManageBtn.addEventListener('click', () => {
           _toggleTourPlanManager();
         });
       }
+
+      if (tourProjectNewBtn) {
+        tourProjectNewBtn.addEventListener('click', () => {
+          if (TOUR_PLAN_IS_DIRTY && !confirm('Unsaved changes will be discarded. Create a new tour?')) return;
+          const fresh = createTourPlan({
+            title: 'New Tour',
+            routeId: 'route-local',
+            settings: {
+              startDate: startDateInput && startDateInput.value ? String(startDateInput.value) : '',
+            },
+          });
+          updateTourPlan(fresh);
+          ACTIVE_TOUR_PLAN_ID = String(fresh.id || _nextTourPlanId());
+          TourPlanStorageService.saveTourPlan(TOUR_PLAN, WEATHER_CONTEXT, { setActive: true });
+          _tourPlanSetActiveFileContext(null, 'not saved');
+          _setTourPlanDirty(true);
+          _roadbookResetState();
+          _renderRoadbookPanel();
+          _roadbookRefreshLinkedViews();
+          _renderTourPlanManager();
+          _refreshProjectHeaderUi();
+        });
+      }
+      if (tourProjectOpenBtn) {
+        tourProjectOpenBtn.addEventListener('click', () => {
+          _tourPlanOpenFromFile().catch(() => {});
+        });
+      }
+      if (tourProjectSaveBtn) {
+        tourProjectSaveBtn.addEventListener('click', () => {
+          _saveCurrentTourPlan();
+          if (ACTIVE_TOUR_PLAN_FILE_HANDLE) {
+            _tourPlanSaveToHandle(ACTIVE_TOUR_PLAN_FILE_HANDLE).catch(() => {});
+          } else {
+            _tourPlanSaveAsFile().catch(() => {});
+          }
+        });
+      }
+      if (tourProjectSaveAsBtn) {
+        tourProjectSaveAsBtn.addEventListener('click', () => {
+          _tourPlanSaveAsFile().catch(() => {});
+        });
+      }
+      if (tourProjectImportGpxBtn || tourProjectReplaceGpxBtn) {
+        const triggerImport = () => {
+          try {
+            const gpxInput = document.getElementById('gpxFileInput');
+            if (gpxInput) gpxInput.click();
+          } catch (_) {}
+        };
+        if (tourProjectImportGpxBtn) tourProjectImportGpxBtn.addEventListener('click', triggerImport);
+        if (tourProjectReplaceGpxBtn) tourProjectReplaceGpxBtn.addEventListener('click', triggerImport);
+      }
+      if (tourProjectExportGpxBtn) {
+        tourProjectExportGpxBtn.addEventListener('click', async () => {
+          try {
+            const resp = await fetch('/api/gpx_content');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const payload = await resp.json();
+            const content = String(payload && payload.content || '');
+            if (!content.trim()) throw new Error('No GPX content available');
+            const name = String(payload && payload.name || LAST_GPX_NAME || 'route.gpx').replace(/\s+/g, '_');
+            const blob = new Blob([content], { type: 'application/gpx+xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = name.toLowerCase().endsWith('.gpx') ? name : `${name}.gpx`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          } catch (err) {
+            alert(`Export GPX failed: ${err && err.message ? err.message : err}`);
+          }
+        });
+      }
+
       if (tourPlanCreateBtn) {
         tourPlanCreateBtn.addEventListener('click', () => {
           const baseTitle = String(LAST_GPX_NAME || 'Tour plan');
@@ -1942,6 +2289,7 @@
       if (wantedId) {
         const entry = TourPlanStorageService.loadTourPlan(wantedId);
         if (entry && _tourPlanApplyLoadedEntry(entry)) {
+          try { _refreshProjectHeaderUi(); } catch (_) {}
           _renderTourPlanManager();
           return;
         }
@@ -1956,6 +2304,7 @@
       updateTourPlan(defaultPlan);
       _saveCurrentTourPlan();
       _tourPlanSetActiveFileContext(ACTIVE_TOUR_PLAN_FILE_HANDLE, ACTIVE_TOUR_PLAN_FILE_NAME);
+      try { _refreshProjectHeaderUi(); } catch (_) {}
       _renderTourPlanManager();
     } catch (_) {}
   }
@@ -5461,6 +5810,8 @@
           LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
           _persistLastGpxSelection();
           updateDropZoneLabel();
+          try { _refreshProjectHeaderUi(); } catch (_) {}
+          try { _markTourPlanChanged(); } catch (_) {}
           try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
           try { applyPrefsFromFormAndPersist(); } catch (_) {}
           try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
@@ -5493,6 +5844,8 @@
           LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
           _persistLastGpxSelection();
           updateDropZoneLabel();
+          try { _refreshProjectHeaderUi(); } catch (_) {}
+          try { _markTourPlanChanged(); } catch (_) {}
           try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
           try { applyPrefsFromFormAndPersist(); } catch (_) {}
           try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
@@ -5529,6 +5882,7 @@
         dropZone.textContent = 'Drop GPX here to load route (or click to choose)';
       }
     } catch (_) {}
+    try { _refreshProjectHeaderUi(); } catch (_) {}
   }
 
   function _hasActiveGpxSelection() {
@@ -5947,6 +6301,29 @@
     }
   }
 
+  function _weekdayMonthDayShort(dateIso) {
+    try {
+      const d = new Date(`${String(dateIso || '').slice(0, 10)}T00:00:00Z`);
+      return d.toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        timeZone: 'UTC',
+      });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _yearFromIso(dateIso) {
+    try {
+      const d = new Date(`${String(dateIso || '').slice(0, 10)}T00:00:00Z`);
+      return String(d.getUTCFullYear());
+    } catch (_) {
+      return '';
+    }
+  }
+
   function _createRouteEndpointMarker(lat, lon, type, labelDateISO) {
     try {
       const accent = (type === 'start') ? '#2f7a45' : '#b24334';
@@ -5955,7 +6332,7 @@
         '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;transform:translateY(-2px);">',
         `  <div style="display:flex;flex-direction:column;align-items:center;gap:1px;min-width:74px;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,0.96);border:1px solid rgba(15,23,42,0.12);box-shadow:0 6px 16px rgba(15,23,42,0.16);font-family:system-ui,-apple-system,sans-serif;color:#0f172a;line-height:1;">`,
         `    <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${accent};">${title}</div>`,
-        `    <div style="font-size:11px;font-weight:600;">${_weekdayShort(labelDateISO)} ${_dayMonthShort(labelDateISO)}</div>`,
+        `    <div style="font-size:11px;font-weight:600;">${_weekdayShort(labelDateISO)}</div>`,
         '  </div>',
         `  <div style="width:9px;height:9px;border-radius:999px;background:${accent};border:2px solid rgba(255,255,255,0.96);box-shadow:0 2px 6px rgba(15,23,42,0.18);"></div>`,
         '</div>',
@@ -6408,7 +6785,7 @@
         : null;
     const dateLabel = (() => {
       try {
-        if (props && props.date) return _fmtIsoDayMonthCompact(String(props.date));
+        if (props && props.date) return _weekdayShort(String(props.date));
       } catch (_) {}
       return '';
     })();
@@ -6841,7 +7218,7 @@
       const d = new Date(`${startIso}T00:00:00Z`);
       if (!Number.isFinite(d.getTime())) return '';
       d.setUTCDate(d.getUTCDate() + Number(dayIdx || 0));
-      return _fmtIsoDayMonthCompact(d.toISOString().slice(0, 10));
+      return _weekdayShort(d.toISOString().slice(0, 10));
     } catch (_) {
       return '';
     }
@@ -17283,14 +17660,16 @@
       const chartTop = Math.max(0, Math.round(padTop));
       const chartBottom = Math.max(chartTop + 64, Math.round(padTop + Math.max(1, innerH)));
       const desiredTop = chartTop + 10;
-      const stackTop = Math.min(chartBottom - 68, Math.max(chartTop + 10, desiredTop));
+      const stackTop = Math.min(chartBottom - 98, Math.max(chartTop + 10, desiredTop));
       const boxW = 48;
-      const boxH = 62;
+      const boxH = 56;
       const luckyY = stackTop + 10;
       const tempY = stackTop + 23;
       const iconTop = stackTop + 25;
       const rainY = stackTop + 49;
-      const dateY = stackTop + 58;
+      const calDayY = stackTop + 66;
+      const calDateY = stackTop + 78;
+      const calYearY = stackTop + 89;
       const canvasRect = profileCanvas && profileCanvas.getBoundingClientRect ? profileCanvas.getBoundingClientRect() : null;
       const canvasWidth = Math.max(boxW, Math.round(canvasRect && Number.isFinite(canvasRect.width) ? canvasRect.width : 0));
 
@@ -17388,7 +17767,9 @@
           const lucky = (daySummary && typeof daySummary.lucky === 'boolean') ? daySummary.lucky : null;
           const logIdx = rideToLogical.has(dayIdx) ? rideToLogical.get(dayIdx) : dayIdx;
           const logDateIso = _roadbookLogicalDateIso(logIdx);
-          const dateLabel = (logDateIso ? _fmtIsoDayMonthCompact(logDateIso) : _tourRouteDayCardDateLabel(dayIdx)) || '—';
+          const dateIso = logDateIso || '';
+          const calendarDateLabel = dateIso ? _weekdayMonthDayShort(dateIso) : '';
+          const calendarYearLabel = dateIso ? _yearFromIso(dateIso) : '';
           const rainLabel = Number.isFinite(rainMm) ? `${fmt(rainMm, 0)} mm` : '';
 
           drawLabelBox(x, stackTop);
@@ -17413,9 +17794,15 @@
             profileCtx.font = '500 9px system-ui, -apple-system, sans-serif';
             profileCtx.fillText(rainLabel, x, rainY);
           }
+          profileCtx.fillStyle = '#334155';
+          profileCtx.font = '600 9px system-ui, -apple-system, sans-serif';
+          profileCtx.fillText(`Day ${dayIdx + 1}`, x, calDayY);
+          profileCtx.fillStyle = '#475569';
+          profileCtx.font = '600 10px system-ui, -apple-system, sans-serif';
+          profileCtx.fillText(calendarDateLabel || '—', x, calDateY);
           profileCtx.fillStyle = '#64748b';
-          profileCtx.font = '500 10px system-ui, -apple-system, sans-serif';
-          profileCtx.fillText(dateLabel, x, dateY);
+          profileCtx.font = '500 9px system-ui, -apple-system, sans-serif';
+          profileCtx.fillText(calendarYearLabel || '', x, calYearY);
         } catch (_) {
           continue;
         }
@@ -20457,6 +20844,7 @@
   try { _applyTourWeatherModeUi(); } catch (_) {}
   try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
   try { _bootTourPlanPersistence(); } catch (_) {}
+  try { _bindProjectDirtyWatchers(); } catch (_) {}
   try { _diagInitUi(); } catch (_) {}
   updateFetchWeatherLabel();
 

@@ -3,6 +3,25 @@
 ## Concepts
 - **Tour Planning**: route-centric. You work with a GPX track and weather is sampled along the route.
 - **Climatic Map**: area-centric. You explore climatology layers over the map for a chosen calendar day.
+- **Tour Project**: the main working object. A Tour can contain one route GPX plus multiple Tour Plans.
+
+## Tour Files
+Touracle now uses a native project file format (`.tour`) for primary save/load workflows.
+
+Typical workflow:
+- New Tour
+- Import GPX
+- Edit one or more Tour Plans
+- Save Tour (`.tour`)
+
+Available file actions:
+- New Tour
+- Open Tour
+- Save Tour
+- Save Tour As
+- Import GPX / Replace GPX
+- Export GPX
+- Export TourBook (Excel/PDF)
 
 ## Tour Planning (route mode)
 ### 1) Start
@@ -38,7 +57,7 @@ Depending on settings, overlays can represent:
 - temperature (median for that day)
 - a weather icon (sun / partly cloudy / rain)
 - rain total in mm
-- the calendar date
+- weekday-only date context (`Mon` ... `Sun`)
 
 The legend below the mode selector always includes units: `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`.
 
@@ -52,7 +71,13 @@ Location labels and endpoint accuracy:
 - If a point cannot be resolved to a nearby named place, the UI falls back to coordinates.
 
 ### 6) Read the profile strip
-Below the map, the profile canvas provides an “at-a-glance” strip of the same data along distance.- **Tour day cards** are drawn at the top of the profile at each day’s midpoint distance. They match the map cards: temperature, weather icon, rain total, date.- Hovering the profile shows the same information as hovering the map.
+Below the map, the profile canvas provides an “at-a-glance” strip of the same data along distance.
+- **Tour day cards** are drawn at the top of the profile at each day’s midpoint distance. The weather tile itself contains only weather values (temperature, icon, rain).
+- A centered 3-line calendar block appears below each profile tile:
+	- `Day N`
+	- `Wed Jul 12` style short date
+	- `2026` (year)
+- Hovering the profile shows the same information as hovering the map.
 - Wind is typically visualized with direction indicators and a lane whose intensity reflects effective wind relative to route direction.
 
 ### 7) Tour summary band

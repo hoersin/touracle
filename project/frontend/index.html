@@ -3037,8 +3037,23 @@
       </div>
       <div id="wmSidebarScroll">
         <details class="wm-section" id="wmSectionTour" open>
-          <summary>Tour Setup</summary>
+          <summary>TOUR</summary>
           <div class="wm-section-body">
+            <div id="tourProjectPanel" style="margin-bottom:10px; border:1px solid #dbe7dd; border-radius:10px; padding:10px; background:#f8fffa;">
+              <div style="font-size:11px; font-weight:700; letter-spacing:0.04em; color:#37554a; margin-bottom:4px;">CURRENT TOUR</div>
+              <div id="tourProjectTitle" style="font-size:13px; font-weight:700; color:#1f2937; margin-bottom:4px;">Untitled Tour</div>
+              <div id="tourProjectStatus" style="font-size:12px; color:#0f766e; margin-bottom:8px;">● Saved</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                <button id="tourProjectNewBtn" type="button" class="wm-pref-action-btn">New Tour...</button>
+                <button id="tourProjectOpenBtn" type="button" class="wm-pref-action-btn">Open Tour...</button>
+                <button id="tourProjectSaveBtn" type="button" class="wm-pref-action-btn">Save Tour</button>
+                <button id="tourProjectSaveAsBtn" type="button" class="wm-pref-action-btn">Save Tour As...</button>
+                <button id="tourProjectImportGpxBtn" type="button" class="wm-pref-action-btn">Import GPX...</button>
+                <button id="tourProjectReplaceGpxBtn" type="button" class="wm-pref-action-btn">Replace GPX...</button>
+                <button id="tourProjectExportGpxBtn" type="button" class="wm-pref-action-btn" style="grid-column:1 / span 2;">Export GPX...</button>
+              </div>
+              <input id="tourProjectOpenInput" type="file" accept=".tour,.json,application/json" hidden>
+            </div>
             <div id="controls">
               <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-size:12px; color:#2a7a2a; cursor:pointer; white-space:normal;">Drop GPX here to load route (or click to choose)</div>
               <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
@@ -3814,7 +3829,7 @@
               <button id="tourPlanExportPdfBtn" class="wm-plan-action-btn" type="button">Export PDF</button>
             </div>
             <div id="tourPlanList" class="wm-plan-list"></div>
-            <input id="tourPlanOpenInput" type="file" accept=".json,application/json" hidden>
+            <input id="tourPlanOpenInput" type="file" accept=".tour,.json,application/json" hidden>
           </div>
           <div id="roadbookMeta" class="wm-roadbook-meta"></div>
           <div id="roadbookList" class="wm-roadbook-list"></div>
@@ -4251,7 +4266,7 @@
       }
 
       async function bootMap(){
-          const mapSrc = '/map.js?v=173';
+          const mapSrc = '/map.js?v=175';
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();

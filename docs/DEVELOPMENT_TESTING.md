@@ -25,6 +25,12 @@ From repo root:
 pytest -q
 ```
 
+Targeted regression suites for recent planning sprints:
+```bash
+pytest -q project/tests/test_sprint53_tour_project_architecture.py
+pytest -q project/tests/test_sprint54_unified_weather_tile_layout.py
+```
+
 Notes:
 - Some tests may access external services depending on your configuration and network.
 
