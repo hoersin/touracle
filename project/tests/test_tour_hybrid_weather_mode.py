@@ -44,11 +44,13 @@ def test_hybrid_mode_uses_current_year_history_for_past_and_today():
     assert spec_future is None
 
 
-def test_hybrid_mode_forces_online_route_path_server_side():
+def test_hybrid_mode_keeps_forecast_online_but_historical_hybrid_offline_first_server_side():
     source = (BACKEND_DIR / 'app.py').read_text(encoding='utf-8')
-    assert "if tour_weather_mode in ('forecast', 'hybrid'):" in source
+    assert "if tour_weather_mode == 'forecast':" in source
+    assert "elif tour_weather_mode == 'hybrid':" in source
     assert 'offline_only = False' in source
     assert 'force_online = True' in source
+    assert 'Hybrid policy: prefer offline historical climatology' in source
 
 
 def test_location_scoring_prefers_recognizable_places_over_hamlets():

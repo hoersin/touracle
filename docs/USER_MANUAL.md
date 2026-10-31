@@ -19,8 +19,7 @@ Available file actions:
 - Open Tour
 - Save Tour
 - Save Tour As
-- Import GPX / Replace GPX
-- Export GPX
+- Import GPX
 - Export TourBook (Excel/PDF)
 
 ## Tour Planning (route mode)

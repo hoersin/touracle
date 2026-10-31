@@ -24,6 +24,8 @@
       gpxPoints: null,
       rideDays: null,
       weatherSamples: null,
+      elevationLossPct: null,
+      elevationSource: null,
       cacheHitRatio: null,
       lastLoadMs: null,
       memoryMB: null,

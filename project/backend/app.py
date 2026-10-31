@@ -45,7 +45,17 @@ def _json_default(obj: Any):
 
 # Import sibling modules when running as a script
 import logging
-from route_sampling import sample_route, sample_route_data, load_gpx_route, haversine_km, load_gpx
+from route_sampling import (
+    sample_route,
+    sample_route_data,
+    load_gpx_route,
+    haversine_km,
+    load_gpx,
+    compute_elevation_stats_from_route_data,
+    compute_elevation_stats_from_series,
+    compare_elevation_stats,
+    compute_segment_ascent_sum,
+)
 try:
     from stations import StationIndex
 except Exception:  # pragma: no cover
@@ -2474,6 +2484,10 @@ def _get_offline_stats(
         candidate_stores.append(store)
 
     if requested_years:
+        # Explicit year requests must prefer exact-year stores. A global/default
+        # offline DB is only a last-resort fallback after the requested spans are
+        # exhausted; otherwise a newer single-year DB (for example 2026) can
+        # incorrectly satisfy a historical request for 2024/2025.
         probe_years: list[int] = [requested_years[0], requested_years[-1], *reversed(requested_years)]
         for probe_year in probe_years:
             store = _resolve_offline_store_for_year(int(probe_year), point=(float(lat), float(lon)))
@@ -2481,9 +2495,6 @@ def _get_offline_stats(
                 continue
             if all(_store_supports_year(store, int(year)) for year in requested_years):
                 _add_candidate(store)
-        fallback_store = _get_offline_store()
-        if fallback_store is not None and all(_store_supports_year(fallback_store, int(year)) for year in requested_years):
-            _add_candidate(fallback_store)
 
     for store in candidate_stores:
         try:
@@ -3336,6 +3347,7 @@ def api_map_stream():
     grid_deg_param = request.args.get('grid_deg')
     fetch_mode = request.args.get('mode', 'single_day')
     profile_step_km_param = request.args.get('profile_step_km')
+    elevation_validation_param = request.args.get('elevation_validation')
     # Tour-day assignment params
     start_date_param = request.args.get('start_date')  # YYYY-MM-DD
     tour_weather_mode_param = request.args.get('tour_weather_mode')
@@ -3345,6 +3357,7 @@ def api_map_stream():
     years_selected_req = _parse_years_csv(request.args.get('years'))
     reverse_param = request.args.get('reverse')
     dry_run_param = request.args.get('dry_run')
+    weather_only_param = request.args.get('weather_only')
     reset_api_param = request.args.get('reset_api')
     force_online_param = request.args.get('force_online')
     # Comfort thresholds from frontend settings
@@ -3385,6 +3398,8 @@ def api_map_stream():
         session_state = load_session_state(session_id=str(session_id) if session_id else None)
         # Prevent parallel heavy streams: assign token; dry-run streams do not cancel main
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
+        weather_only_stream = str(weather_only_param).lower() in ('1', 'true', 'yes', 'on')
+        elevation_validation_mode = str(elevation_validation_param).lower() in ('1', 'true', 'yes', 'on')
         offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
         force_online = str(force_online_param).lower() in ('1', 'true', 'yes', 'on')
         tour_weather_mode = _normalize_tour_weather_mode(
@@ -3393,9 +3408,20 @@ def api_map_stream():
         )
         temp_mode = _normalize_climate_mode(temp_mode_param)
         active_hour_start, active_hour_end = _parse_active_hours(active_hours_param)
-        if tour_weather_mode in ('forecast', 'hybrid'):
-            offline_only = False
-            force_online = True
+        if tour_weather_mode == 'forecast':
+            if offline_only:
+                tour_weather_mode = 'climatology'
+            else:
+                offline_only = False
+                force_online = True
+        elif tour_weather_mode == 'hybrid':
+            if offline_only:
+                tour_weather_mode = 'climatology'
+            else:
+                # Hybrid policy: prefer offline historical climatology for past/current
+                # days and use online forecast only for dates in forecast horizon.
+                # Keep force_online as requested, but do not auto-force it.
+                offline_only = False
         local_token = _issue_stream_token(str(session_id) if session_id else None, is_dry_run)
         try:
             gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
@@ -3439,31 +3465,162 @@ def api_map_stream():
                     set_force_online(False)
             except Exception:
                 pass
+            elevation_diagnostics = None
+            elevation_perf_ms = {}
+            elevation_source_dist_km = []
+            elevation_source_m = []
+            profile_display_geometry_key = 'profile_sampling'
+            profile_display_geometry_reason = 'sampled_profile_for_rendering'
             try:
                 step_km = float(step_km_param) if step_km_param else 25.0
+                t0_gpx = time.perf_counter()
                 route_data = load_gpx_route(str(gpx_path))
+                elevation_perf_ms['gpx_import_ms'] = (time.perf_counter() - t0_gpx) * 1000.0
+                t0_weather_sample = time.perf_counter()
                 sampled_route = sample_route_data(route_data, step_km=step_km)
+                elevation_perf_ms['weather_sampling_ms'] = (time.perf_counter() - t0_weather_sample) * 1000.0
                 sampled_points = sampled_route['sampled_points']
                 glyph_cum_km = [float(v) for v in sampled_route['sampled_dist_km']]
                 route_feature = route_data['route_geojson']
-                # Denser sampling for elevation profile (no weather fetching)
-                # Keep relief detail about 3x finer than the weather glyph spacing.
-                try:
-                    if profile_step_km_param:
-                        profile_step_km = float(profile_step_km_param)
-                    else:
-                        profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
-                except Exception:
-                    profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
-                try:
-                    profile_route = sample_route_data(route_data, step_km=profile_step_km)
-                    profile_points = profile_route['sampled_points']
-                    profile_dist_km = [float(v) for v in profile_route['sampled_dist_km']]
-                    profile_elev_m = list(profile_route['sampled_elev_m'])
-                except Exception:
+                source_points = list(route_data.get('points') or [])
+                elevation_source_dist_km = [float(v) for v in list(route_data.get('cum_km') or [])]
+                elevation_source_m = [
+                    (float(pt[2]) if (isinstance(pt, (tuple, list)) and len(pt) >= 3 and pt[2] is not None) else None)
+                    for pt in source_points
+                ]
+                if weather_only_stream:
+                    # Weather-only refresh: keep route sampling for station lookup,
+                    # but skip dense profile recalculation and profile diagnostics.
                     profile_points = sampled_points
                     profile_dist_km = list(glyph_cum_km)
-                    profile_elev_m = [None for _ in profile_points]
+                    profile_elev_m = list(sampled_route.get('sampled_elev_m', []))
+                else:
+                    # Denser sampling for elevation profile (no weather fetching)
+                    # Keep relief detail about 3x finer than the weather glyph spacing.
+                    try:
+                        if profile_step_km_param:
+                            profile_step_km = float(profile_step_km_param)
+                        else:
+                            profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
+                    except Exception:
+                        profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
+                    try:
+                        t0_profile_sample = time.perf_counter()
+                        profile_route = sample_route_data(route_data, step_km=profile_step_km)
+                        elevation_perf_ms['profile_sampling_ms'] = (time.perf_counter() - t0_profile_sample) * 1000.0
+                        profile_points = profile_route['sampled_points']
+                        profile_dist_km = [float(v) for v in profile_route['sampled_dist_km']]
+                        profile_elev_m = list(profile_route['sampled_elev_m'])
+                    except Exception:
+                        profile_points = sampled_points
+                        profile_dist_km = list(glyph_cum_km)
+                        profile_elev_m = [None for _ in profile_points]
+
+                    # Prefer original GPX geometry for profile rendering so ascent/descent
+                    # shown in the chart remain consistent with the high-fidelity source.
+                    try:
+                        source_profile_points = [
+                            (float(pt[0]), float(pt[1]))
+                            for pt in source_points
+                            if isinstance(pt, (tuple, list)) and len(pt) >= 2
+                        ]
+                        source_profile_dist_km = [float(v) for v in list(route_data.get('cum_km') or [])]
+                        if len(source_profile_points) >= 2 and len(source_profile_points) == len(source_profile_dist_km):
+                            profile_points = source_profile_points
+                            profile_dist_km = source_profile_dist_km
+                            profile_elev_m = list(elevation_source_m)
+                            profile_display_geometry_key = 'original_gpx'
+                            profile_display_geometry_reason = 'source_profile_prevents_elevation_loss'
+                    except Exception:
+                        pass
+
+                    original_stats = compute_elevation_stats_from_route_data(route_data, stage_key='original_gpx', label='Original GPX')
+                    weather_stats = compute_elevation_stats_from_series(
+                        [float(v) for v in sampled_route.get('sampled_dist_km', [])],
+                        list(sampled_route.get('sampled_elev_m', [])),
+                        stage_key='weather_sampling',
+                        label=f'Weather Sampling ({step_km:.2f} km)',
+                    )
+                    profile_stats = compute_elevation_stats_from_series(
+                        [float(v) for v in profile_dist_km],
+                        list(profile_elev_m),
+                        stage_key='profile_sampling',
+                        label=f'Profile Sampling ({profile_step_km:.2f} km)',
+                    )
+                    weather_loss = compare_elevation_stats(original_stats, weather_stats)
+                    profile_loss = compare_elevation_stats(original_stats, profile_stats)
+                    weather_stats.update({
+                        'ascent_loss_m': float(weather_loss.get('ascent_loss_m', 0.0)),
+                        'ascent_loss_pct': float(weather_loss.get('ascent_loss_pct', 0.0)),
+                        'descent_loss_m': float(weather_loss.get('descent_loss_m', 0.0)),
+                        'descent_loss_pct': float(weather_loss.get('descent_loss_pct', 0.0)),
+                    })
+                    profile_stats.update({
+                        'ascent_loss_m': float(profile_loss.get('ascent_loss_m', 0.0)),
+                        'ascent_loss_pct': float(profile_loss.get('ascent_loss_pct', 0.0)),
+                        'descent_loss_m': float(profile_loss.get('descent_loss_m', 0.0)),
+                        'descent_loss_pct': float(profile_loss.get('descent_loss_pct', 0.0)),
+                    })
+                    elevation_diagnostics = {
+                        'version': 1,
+                        'validation_mode': bool(elevation_validation_mode),
+                        'displayed_geometry_key': str(profile_display_geometry_key),
+                        'displayed_geometry_reason': str(profile_display_geometry_reason),
+                        'ascent_source_geometry_key': 'original_gpx',
+                        'profile_matches_ascent_source': bool(profile_display_geometry_key == 'original_gpx'),
+                        'stages': [original_stats, weather_stats, profile_stats],
+                        'comparisons': {
+                            'weather_vs_original': weather_loss,
+                            'profile_vs_original': profile_loss,
+                        },
+                        'timings_ms': {k: float(v) for k, v in elevation_perf_ms.items()},
+                        'validation': {
+                            'distance_conserved_weather': abs(float(weather_stats.get('distance_km', 0.0)) - float(original_stats.get('distance_km', 0.0))) <= 0.2,
+                            'distance_conserved_profile': abs(float(profile_stats.get('distance_km', 0.0)) - float(original_stats.get('distance_km', 0.0))) <= 0.2,
+                            'profile_sampling_acceptable': float(profile_loss.get('ascent_loss_pct', 0.0)) <= 10.0,
+                            'no_missing_elevation_in_source': int(original_stats.get('missing_elevation_points', 0)) == 0,
+                            'stage_ascent_matches_total': None,
+                            'stage_ascent_delta_m': None,
+                        },
+                    }
+                    try:
+                        log.info(
+                            '[ELEV] %s: %d pts, %.2f km, min=%s m, max=%s m, ascent=%.1f m, descent=%.1f m, missing=%d',
+                            original_stats.get('label'),
+                            int(original_stats.get('points', 0)),
+                            float(original_stats.get('distance_km', 0.0)),
+                            str(original_stats.get('min_elevation_m')),
+                            str(original_stats.get('max_elevation_m')),
+                            float(original_stats.get('ascent_m', 0.0)),
+                            float(original_stats.get('descent_m', 0.0)),
+                            int(original_stats.get('missing_elevation_points', 0)),
+                        )
+                        log.info(
+                            '[ELEV] %s: %d pts, %.2f km, ascent=%.1f m (loss %.1f m / %.1f%%), descent=%.1f m (loss %.1f m / %.1f%%)',
+                            weather_stats.get('label'),
+                            int(weather_stats.get('points', 0)),
+                            float(weather_stats.get('distance_km', 0.0)),
+                            float(weather_stats.get('ascent_m', 0.0)),
+                            float(weather_stats.get('ascent_loss_m', 0.0)),
+                            float(weather_stats.get('ascent_loss_pct', 0.0)),
+                            float(weather_stats.get('descent_m', 0.0)),
+                            float(weather_stats.get('descent_loss_m', 0.0)),
+                            float(weather_stats.get('descent_loss_pct', 0.0)),
+                        )
+                        log.info(
+                            '[ELEV] %s: %d pts, %.2f km, ascent=%.1f m (loss %.1f m / %.1f%%), descent=%.1f m (loss %.1f m / %.1f%%)',
+                            profile_stats.get('label'),
+                            int(profile_stats.get('points', 0)),
+                            float(profile_stats.get('distance_km', 0.0)),
+                            float(profile_stats.get('ascent_m', 0.0)),
+                            float(profile_stats.get('ascent_loss_m', 0.0)),
+                            float(profile_stats.get('ascent_loss_pct', 0.0)),
+                            float(profile_stats.get('descent_m', 0.0)),
+                            float(profile_stats.get('descent_loss_m', 0.0)),
+                            float(profile_stats.get('descent_loss_pct', 0.0)),
+                        )
+                    except Exception:
+                        pass
             except Exception as exc:
                 log.warning('[SSE] route setup failed for %s: %s', gpx_path_str, exc, exc_info=True)
                 if not is_dry_run:
@@ -3531,6 +3688,12 @@ def api_map_stream():
                         profile_points = list(reversed(profile_points))
                         profile_dist_km = [route_total_km - float(d) for d in reversed(profile_dist_km)]
                         profile_elev_m = list(reversed(profile_elev_m))
+                    except Exception:
+                        pass
+                    try:
+                        if elevation_source_dist_km and elevation_source_m:
+                            elevation_source_dist_km = [route_total_km - float(d) for d in reversed(elevation_source_dist_km)]
+                            elevation_source_m = list(reversed(elevation_source_m))
                     except Exception:
                         pass
                     log.info('[PLAN] Reversed route and sampled points for tour')
@@ -3777,25 +3940,28 @@ def api_map_stream():
             except Exception:
                 years_start = None
                 years_end = None
-            route_msg = json.dumps({
-                "route": route_feature,
-                "route_segments": route_segments,
-                "start_marker": start_marker,
-                "end_marker": end_marker,
-                # Echo the GPX actually used so the frontend can keep the
-                # "Loaded GPX" label consistent even when an override is missing.
-                "gpx_path": str(gpx_path),
-                "gpx_name": _display_gpx_name_for_path(gpx_path, session_state.get('last_gpx_name')),
-                "years_start": years_start,
-                "years_end": years_end,
-                "total": total
-            })
-            # Abort if a newer non-dry-run stream started
-            if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
-                log.info('[SSE] stream cancelled before route emit')
-                return
-            yield f"event: route\ndata: {route_msg}\n\n"
-            log.info('[SSE] route emitted: points=%d', total)
+            if not weather_only_stream:
+                route_msg = json.dumps({
+                    "route": route_feature,
+                    "route_segments": route_segments,
+                    "start_marker": start_marker,
+                    "end_marker": end_marker,
+                    # Echo the GPX actually used so the frontend can keep the
+                    # "Loaded GPX" label consistent even when an override is missing.
+                    "gpx_path": str(gpx_path),
+                    "gpx_name": _display_gpx_name_for_path(gpx_path, session_state.get('last_gpx_name')),
+                    "years_start": years_start,
+                    "years_end": years_end,
+                    "total": total
+                })
+                # Abort if a newer non-dry-run stream started
+                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
+                    log.info('[SSE] stream cancelled before route emit')
+                    return
+                yield f"event: route\ndata: {route_msg}\n\n"
+                log.info('[SSE] route emitted: points=%d', total)
+            else:
+                log.info('[SSE] weather_only=1: skipping route emit')
         except Exception:
             pass
         sampled_total_km = float(profile_dist_km[-1]) if profile_dist_km else 0.0
@@ -3872,35 +4038,65 @@ def api_map_stream():
                 for k, m in enumerate(marks):
                     d = start_date + _dt.timedelta(days=int(k))
                     day_boundaries.append({"distance_km": float(m), "day_index": int(k), "date": d.isoformat()})
+                try:
+                    if elevation_diagnostics:
+                        seg_stats = compute_segment_ascent_sum(elevation_source_dist_km, elevation_source_m, marks)
+                        stage_sum = float(seg_stats.get('sum_ascent_m', 0.0))
+                        source_total = 0.0
+                        for st in list(elevation_diagnostics.get('stages') or []):
+                            if str(st.get('key')) == 'original_gpx':
+                                source_total = float(st.get('ascent_m', 0.0))
+                                break
+                        delta = abs(stage_sum - source_total)
+                        tol = max(1.0, source_total * 0.002)
+                        validation = dict(elevation_diagnostics.get('validation') or {})
+                        validation['stage_ascent_matches_total'] = bool(delta <= tol)
+                        validation['stage_ascent_delta_m'] = float(delta)
+                        validation['stage_ascent_sum_m'] = float(stage_sum)
+                        validation['stage_ascent_tol_m'] = float(tol)
+                        elevation_diagnostics['validation'] = validation
+                        elevation_diagnostics['segment_ascent_m'] = list(seg_stats.get('segment_ascent_m') or [])
+                except Exception:
+                    pass
         except Exception:
             pass
 
         # Emit profile event with necessary arrays
-        try:
-            prof_msg = json.dumps({
-                "profile": {
-                    "sampled_points": [[float(lon), float(lat)] for (lat, lon) in profile_points],
-                    "sampled_dist_km": [float(v) for v in profile_dist_km],
-                    "sampled_heading_deg": sampled_heading_deg,
-                    "elev_m": profile_elev_m,
-                    "day_boundaries": day_boundaries
-                }
-            })
-            # Cancel check before profile emit
-            if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
-                log.info('[SSE] stream cancelled before profile emit')
-                return
-            yield f"event: profile\ndata: {prof_msg}\n\n"
-            # Optional dry-run: after sending profile, finish without station fetching
+        if not weather_only_stream:
             try:
-                if str(dry_run_param).lower() in ('1','true','yes'):
-                    yield "event: done\ndata: {\"stations_count\": 0}\n\n"
-                    log.info('[SSE] dry-run done (profile only)')
+                prof_msg = json.dumps({
+                    "profile": {
+                        "sampled_points": [[float(lon), float(lat)] for (lat, lon) in profile_points],
+                        "sampled_dist_km": [float(v) for v in profile_dist_km],
+                        "sampled_heading_deg": sampled_heading_deg,
+                        "elev_m": profile_elev_m,
+                        "day_boundaries": day_boundaries,
+                        "elevation_source": {
+                            "key": "original_gpx",
+                            "label": "Original GPX",
+                            "dist_km": [float(v) for v in elevation_source_dist_km],
+                            "elev_m": elevation_source_m,
+                        },
+                        "elevation_diagnostics": elevation_diagnostics,
+                    }
+                })
+                # Cancel check before profile emit
+                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
+                    log.info('[SSE] stream cancelled before profile emit')
                     return
-            except Exception:
-                pass
-        except Exception as _e:
-            log.warning('[SSE] profile emit failed: %s', _e)
+                yield f"event: profile\ndata: {prof_msg}\n\n"
+                # Optional dry-run: after sending profile, finish without station fetching
+                try:
+                    if str(dry_run_param).lower() in ('1','true','yes'):
+                        yield "event: done\ndata: {\"stations_count\": 0}\n\n"
+                        log.info('[SSE] dry-run done (profile only)')
+                        return
+                except Exception:
+                    pass
+            except Exception as _e:
+                log.warning('[SSE] profile emit failed: %s', _e)
+        else:
+            log.info('[SSE] weather_only=1: skipping profile emit')
 
         # Helper: nearest segment day assignment using route_segments
         def _nearest_segment_day(lat: float, lon: float):
@@ -4269,8 +4465,9 @@ def api_map_stream():
 
         reuse_per_day = str(reuse_per_day_param).lower() in ('1', 'true', 'yes', 'on')
         require_point_level_offline_stats = bool(reuse_per_day and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
+        route_start_effective_mode = _effective_tour_weather_mode(tour_weather_mode, start_date)
 
-        if tour_planning and sampled_points and reuse_per_day and tour_weather_mode == 'climatology' and (not require_point_level_offline_stats):
+        if tour_planning and sampled_points and reuse_per_day and route_start_effective_mode == 'climatology' and (not require_point_level_offline_stats):
             # Tour Planning (optional): reuse stats PER DAY (not for the whole tour).
             # Default behavior is per-point stats (day + coordinate) so long routes
             # do not show repeated glyphs within a day segment.

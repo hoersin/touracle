@@ -2078,6 +2078,37 @@
     .wm-progress .bar { position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: #1e90ff; transition: width 0.18s linear; }
     .wm-progress.loading .bar { width: 30%; animation: wm-indeterminate 1.2s ease-in-out infinite; }
     .wm-progress-value { min-width: 42px; font-size: 12px; font-weight: 700; color: #334155; text-align: right; }
+    .wm-progress-details {
+      margin-top: 6px;
+      padding: 7px 8px;
+      border: 1px solid #d7e2ef;
+      border-radius: 6px;
+      background: #f8fbff;
+      font-size: 11px;
+      line-height: 1.35;
+      color: #334155;
+      display: grid;
+      gap: 2px;
+    }
+    .wm-progress-details .wm-progress-phase {
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .wm-progress-details .wm-progress-metric {
+      color: #1e3a8a;
+      font-variant-numeric: tabular-nums;
+    }
+    .wm-progress-details .wm-progress-note {
+      color: #475569;
+    }
+    .wm-progress-details.is-error {
+      background: #fff7f7;
+      border-color: #f2c8c8;
+    }
+    .wm-progress-details.is-done {
+      background: #f6fff8;
+      border-color: #c9eacb;
+    }
     @keyframes wm-indeterminate { 0% { left: -30%; } 50% { left: 50%; } 100% { left: 100%; } }
     
     /* Prominent weather fetch button */
@@ -3049,8 +3080,6 @@
                 <button id="tourProjectSaveBtn" type="button" class="wm-pref-action-btn">Save Tour</button>
                 <button id="tourProjectSaveAsBtn" type="button" class="wm-pref-action-btn">Save Tour As...</button>
                 <button id="tourProjectImportGpxBtn" type="button" class="wm-pref-action-btn">Import GPX...</button>
-                <button id="tourProjectReplaceGpxBtn" type="button" class="wm-pref-action-btn">Replace GPX...</button>
-                <button id="tourProjectExportGpxBtn" type="button" class="wm-pref-action-btn" style="grid-column:1 / span 2;">Export GPX...</button>
               </div>
               <input id="tourProjectOpenInput" type="file" accept=".tour,.json,application/json" hidden>
             </div>
@@ -3068,6 +3097,11 @@
                 <div id="progressPercent" class="wm-progress-value" aria-live="polite"></div>
               </div>
               <div id="sseStatus" style="margin-top:6px; font-size:12px; color:#555;">Stream: idle</div>
+              <div id="progressDetails" class="wm-progress-details" aria-live="polite">
+                <div id="progressPhaseLine" class="wm-progress-phase">Idle: no active weather stream</div>
+                <div id="progressMetricLine" class="wm-progress-metric">Elapsed 00:00 • last update just now</div>
+                <div id="progressNoteLine" class="wm-progress-note">Long tours and live forecast requests can take a while. Status updates appear here continuously.</div>
+              </div>
             </div>
 
             <div id="strategicControls">
@@ -3821,10 +3855,6 @@
           <div id="tourPlanManager" class="wm-plan-manager" aria-hidden="true">
             <div id="tourPlanFileInfo" class="wm-roadbook-file">File: not saved</div>
             <div class="wm-plan-manager-actions">
-              <button id="tourPlanCreateBtn" class="wm-plan-action-btn" type="button">New</button>
-              <button id="tourPlanSaveBtn" class="wm-plan-action-btn" type="button">Save</button>
-              <button id="tourPlanOpenBtn" class="wm-plan-action-btn" type="button">Open</button>
-              <button id="tourPlanSaveAsBtn" class="wm-plan-action-btn" type="button">Save As</button>
               <button id="tourPlanExportExcelBtn" class="wm-plan-action-btn" type="button">Export Excel</button>
               <button id="tourPlanExportPdfBtn" class="wm-plan-action-btn" type="button">Export PDF</button>
             </div>
@@ -3881,7 +3911,7 @@
 
   <!-- Leaflet is loaded (with fallback) at the end of body, before map.js -->
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
   <script src="/frontend/temperature_scale.js?v=1"></script>

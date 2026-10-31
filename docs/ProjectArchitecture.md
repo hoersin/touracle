@@ -98,8 +98,6 @@ Project-centric commands:
 - Save Tour
 - Save Tour As
 - Import GPX
-- Replace GPX
-- Export GPX
 - Export TourBook (Excel/PDF)
 
 TourBook persistence is removed as a primary concept. TourBook is now a planning/visualization component plus export surface.
