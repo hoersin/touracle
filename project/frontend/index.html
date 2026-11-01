@@ -18,6 +18,16 @@
       --wm-roadbook-panel-w: min(360px, 20vw);
       --wm-roadbook-gap: 14px;
       --wm-roadbook-panel-w-active: 0px;
+      --wm-ui-primary: #0f766e;
+      --wm-ui-primary-2: #0ea5a4;
+      --wm-ui-primary-text: #ffffff;
+      --wm-ui-surface: rgba(255,255,255,0.9);
+      --wm-ui-surface-strong: #ffffff;
+      --wm-ui-border: rgba(15, 23, 42, 0.12);
+      --wm-ui-border-strong: rgba(15, 23, 42, 0.18);
+      --wm-ui-text: #0f172a;
+      --wm-ui-muted: #475569;
+      --wm-ui-radius: 12px;
     }
     body.wm-sidebar-collapsed { --wm-sidebar-w-active: var(--wm-sidebar-w-collapsed); }
     body.wm-roadbook-visible { --wm-roadbook-panel-w-active: calc(var(--wm-roadbook-panel-w) + var(--wm-roadbook-gap) + 8px); }
@@ -290,7 +300,261 @@
     #controls input,
     #controls select,
     #controls label { font-family: inherit; }
+    #controls button,
+    #controls select {
+      border-radius: var(--wm-ui-radius);
+      border: 1px solid var(--wm-ui-border);
+      background: var(--wm-ui-surface);
+      color: var(--wm-ui-text);
+      min-height: 32px;
+      box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+    }
+    #controls select {
+      padding: 4px 10px;
+      font-size: 12px;
+      background: var(--wm-ui-surface-strong);
+    }
+    #controls button:focus-visible,
+    #controls select:focus-visible {
+      outline: 2px solid rgba(14, 165, 233, 0.28);
+      outline-offset: 2px;
+      border-color: rgba(14, 165, 233, 0.4);
+    }
+    #fetchWeather {
+      background: linear-gradient(135deg, var(--wm-ui-primary), var(--wm-ui-primary-2));
+      border-color: rgba(15, 118, 110, 0.42);
+      color: var(--wm-ui-primary-text);
+      font-weight: 800;
+      padding: 8px 16px;
+      min-height: 40px;
+      border-radius: 14px;
+      box-shadow: 0 8px 20px rgba(15, 118, 110, 0.24);
+    }
+    #stopWeather {
+      background: rgba(255,255,255,0.94);
+      border-color: var(--wm-ui-border-strong);
+      color: var(--wm-ui-text);
+      font-weight: 700;
+      padding: 8px 14px;
+      min-height: 40px;
+      border-radius: 14px;
+    }
     #strategicControls { display: none; }
+
+    .wm-slot-panel {
+      margin-top: 8px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 14px;
+      padding: 10px;
+      background:
+        radial-gradient(circle at top right, rgba(125, 211, 252, 0.16), transparent 42%),
+        linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98));
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+    }
+    .wm-slot-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .wm-slot-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .wm-slot-label {
+      font-size: 11px;
+      color: #334155;
+      font-weight: 700;
+    }
+    .wm-slot-select {
+      min-height: 32px;
+      border-radius: 10px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      background: rgba(255,255,255,0.92);
+      color: #0f172a;
+      font-size: 12px;
+      padding: 5px 10px;
+    }
+    .wm-slot-status {
+      font-size: 12px;
+      color: #475569;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .wm-slot-results {
+      display: grid;
+      gap: 8px;
+    }
+    .wm-pref-action-btn.wm-slot-opt-btn {
+      min-height: 34px;
+      padding: 8px 14px;
+      font-weight: 800;
+      --wm-ui-surface: rgba(15,118,110,0.08);
+      --wm-ui-border: rgba(15,118,110,0.24);
+      --wm-ui-text: #0f766e;
+      border-color: rgba(15,118,110,0.24) !important;
+      background: rgba(15,118,110,0.08) !important;
+      color: #0f766e !important;
+      box-shadow: none !important;
+    }
+    .wm-pref-action-btn.wm-slot-opt-btn:hover {
+      background: rgba(15,118,110,0.14);
+      border-color: rgba(15,118,110,0.28);
+    }
+    .wm-pref-action-btn.wm-slot-opt-btn:focus-visible {
+      outline: 2px solid rgba(16, 185, 129, 0.35);
+      outline-offset: 2px;
+    }
+    .wm-slot-apply-btn {
+      min-height: 34px;
+    }
+    .wm-slot-card {
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 14px;
+      padding: 8px;
+      background: rgba(255,255,255,0.96);
+      box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
+    }
+    .wm-slot-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .wm-slot-card-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .wm-slot-chip {
+      font-size: 10px;
+      padding: 2px 8px;
+      border-radius: var(--wm-ui-radius);
+      border: 1px solid rgba(15, 118, 110, 0.26);
+      background: rgba(240, 253, 250, 0.96);
+      color: #115e59;
+      font-weight: 700;
+      text-transform: lowercase;
+    }
+    .wm-slot-mini-graph-wrap {
+      margin-top: 4px;
+      border: 1px solid rgba(15, 23, 42, 0.09);
+      border-radius: 10px;
+      overflow: hidden;
+      background: rgba(255,255,255,0.98);
+      padding: 3px 4px;
+    }
+    .wm-slot-mini-graph {
+      display: block;
+      width: 100%;
+      height: 72px;
+    }
+    .wm-slot-year-graph-wrap {
+      margin-top: 5px;
+      border: 1px solid rgba(15, 23, 42, 0.11);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.98);
+      padding: 4px 4px 2px 4px;
+    }
+    .wm-slot-year-graph-head {
+      font-size: 10px;
+      font-weight: 700;
+      color: #334155;
+      padding: 1px 2px 3px 2px;
+    }
+    .wm-slot-year-graph {
+      display: block;
+      width: 100%;
+      height: 136px;
+    }
+    .wm-slot-unified-host {
+      margin-top: 6px;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 12px;
+      padding: 8px;
+      background: rgba(255,255,255,0.98);
+    }
+    .wm-slot-curve-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .wm-slot-curve-pill {
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      background: rgba(255,255,255,0.92);
+      color: #334155;
+      border-radius: 10px;
+      min-height: 28px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .wm-slot-curve-pill.is-active {
+      border-color: rgba(15, 118, 110, 0.45);
+      background: rgba(240, 253, 250, 0.95);
+      color: #115e59;
+    }
+    .wm-slot-curve-swatch {
+      width: 9px;
+      height: 9px;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .wm-slot-curve-readout {
+      font-size: 12px;
+      color: #1f2937;
+      font-weight: 800;
+      margin-bottom: 6px;
+      min-height: 34px;
+      line-height: 1.35;
+    }
+    .wm-slot-curve-readout .wm-slot-readout-sub {
+      font-size: 11px;
+      color: #475569;
+      font-weight: 700;
+    }
+    .wm-slot-curve-title {
+      margin: 2px 0 6px 0;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 900;
+      color: #0f172a;
+      letter-spacing: 0.01em;
+    }
+    .wm-slot-curve-scroll {
+      overflow: hidden;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      border-radius: 10px;
+      background: rgba(248, 250, 252, 0.98);
+      padding: 2px;
+      width: 100%;
+    }
+    .wm-slot-curve-svg {
+      display: block;
+      width: 100%;
+      min-height: 280px;
+    }
+    .wm-slot-curve-hint {
+      margin-top: 6px;
+      font-size: 10px;
+      color: #64748b;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+    .wm-slot-curve-actions {
+      margin-top: 8px;
+      display: flex;
+      justify-content: flex-start;
+      gap: 8px;
+    }
 
       /* Climate mode uses a stable neutral basemap stack without CSS effects. */
       #map .wm-neutral-base-pane,
@@ -2313,10 +2577,10 @@
       flex: 1 1 auto;
       min-height: 32px;
       padding: 8px 12px;
-      border-radius: 999px;
-      border: 1px solid rgba(15, 23, 42, 0.10);
-      background: rgba(255,255,255,0.78);
-      color: #0f172a;
+      border-radius: var(--wm-ui-radius);
+      border: 1px solid var(--wm-ui-border);
+      background: var(--wm-ui-surface);
+      color: var(--wm-ui-text);
       font-size: 11px;
       font-weight: 700;
       box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
@@ -2327,7 +2591,7 @@
     }
     .wm-pref-action-btn:hover {
       background: rgba(248, 250, 252, 0.98);
-      border-color: rgba(15, 23, 42, 0.16);
+      border-color: var(--wm-ui-border-strong);
     }
     .wm-pref-action-btn:focus-visible {
       outline: 2px solid rgba(14,165,233,0.30);
@@ -2421,10 +2685,10 @@
       width: 100%;
       min-height: 38px;
       padding: 8px 12px;
-      border-radius: 12px;
-      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: var(--wm-ui-radius);
+      border: 1px solid var(--wm-ui-border);
       background: rgba(255,255,255,0.88);
-      color: #0f172a;
+      color: var(--wm-ui-text);
       font-size: 12px;
       box-sizing: border-box;
       box-shadow: inset 0 1px 1px rgba(15, 23, 42, 0.03);
@@ -3089,6 +3353,31 @@
               <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                 <button id="fetchWeather">Get Weather Data</button>
                 <button id="stopWeather">Stop</button>
+              </div>
+              <div class="wm-slot-panel">
+                <div class="wm-slot-toolbar">
+                  <div class="wm-slot-row">
+                    <button id="tourSlotOptimizeBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Find Best Tour Time Slot</button>
+                    <label for="tourSlotGranularity" class="wm-slot-label">Steps</label>
+                    <select id="tourSlotGranularity" class="wm-slot-select">
+                    <option value="day" selected>Daily (finer)</option>
+                    <option value="week">Weekly (faster)</option>
+                  </select>
+                    <label for="tourSlotDirectionMode" class="wm-slot-label">Direction</label>
+                    <select id="tourSlotDirectionMode" class="wm-slot-select">
+                    <option value="forward" selected>Forward</option>
+                    <option value="reverse">Backward</option>
+                  </select>
+                    <label for="tourSlotHorizonYears" class="wm-slot-label">Horizon</label>
+                    <select id="tourSlotHorizonYears" class="wm-slot-select">
+                    <option value="1">Last year</option>
+                    <option value="3" selected>Last 3 years</option>
+                    <option value="5">Last 5 years</option>
+                  </select>
+                  </div>
+                </div>
+                <div id="tourSlotStatus" class="wm-slot-status">Optimizer idle.</div>
+                <div id="tourSlotResults" class="wm-slot-results"></div>
               </div>
               <div class="wm-progress-row">
                 <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">

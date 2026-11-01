@@ -1,6 +1,6 @@
 from flask import Flask, jsonify, send_from_directory, request, Response, g, has_request_context
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import os
 import time
 import threading
@@ -91,6 +91,11 @@ except Exception:  # pragma: no cover
         return "Stage"
     def build_stage_names(*args, **kwargs):  # type: ignore
         return []
+
+try:
+    from tour_slot_optimizer import optimize_tour_slots
+except Exception:  # pragma: no cover
+    optimize_tour_slots = None  # type: ignore
 
 app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / 'frontend'))
 # Development: disable static file caching to ensure fresh frontend assets
@@ -2591,6 +2596,9 @@ def _get_offline_stats(
 PROGRESS: Dict[str, Dict[str, Any]] = {}
 PROGRESS_LOCK = threading.Lock()
 
+TOUR_SLOT_JOBS: Dict[str, Dict[str, Any]] = {}
+TOUR_SLOT_JOBS_LOCK = threading.Lock()
+
 # Session-scoped SSE stream control to prevent parallel heavy streams
 STREAM_LOCK = threading.Lock()
 STREAM_TOKENS_BY_SESSION: Dict[str, int] = {}
@@ -2653,6 +2661,111 @@ def _get_progress(job_id: str, session_id: Optional[str] = None) -> Dict[str, An
         out = dict(st)
         out['known'] = True
         return out
+
+
+def _tour_slot_job_key(job_id: str, session_id: Optional[str]) -> str:
+    return _progress_key(job_id, session_id)
+
+
+def _set_tour_slot_job(job_id: str, session_id: Optional[str], payload: Dict[str, Any]) -> None:
+    with TOUR_SLOT_JOBS_LOCK:
+        TOUR_SLOT_JOBS[_tour_slot_job_key(job_id, session_id)] = dict(payload)
+
+
+def _get_tour_slot_job(job_id: str, session_id: Optional[str]) -> Dict[str, Any] | None:
+    with TOUR_SLOT_JOBS_LOCK:
+        item = TOUR_SLOT_JOBS.get(_tour_slot_job_key(job_id, session_id))
+        return dict(item) if isinstance(item, dict) else None
+
+
+def _merge_tour_slot_job(job_id: str, session_id: Optional[str], updates: Dict[str, Any]) -> None:
+    with TOUR_SLOT_JOBS_LOCK:
+        key = _tour_slot_job_key(job_id, session_id)
+        cur = dict(TOUR_SLOT_JOBS.get(key) or {})
+        cur.update(dict(updates or {}))
+        TOUR_SLOT_JOBS[key] = cur
+
+
+def _slot_start_count(anchor_year: int, step_days: int) -> int:
+    try:
+        step_i = max(1, int(step_days))
+        d = _dt.date(int(anchor_year), 1, 1)
+        end = _dt.date(int(anchor_year), 12, 31)
+        count = 0
+        while d <= end:
+            count += 1
+            d += _dt.timedelta(days=step_i)
+        return max(1, count)
+    except Exception:
+        return 53 if int(step_days or 7) >= 7 else 366
+
+
+def _run_tour_slot_optimizer_job(
+    *,
+    job_id: str,
+    session_id: Optional[str],
+    route_data: Dict[str, Any],
+    total_days: int,
+    rest_day_indexes: list[int],
+    boundaries_km: list[float],
+    years_selected: list[int],
+    anchor_year: int,
+    direction_mode: str,
+    objective_mode: str,
+    slot_step_days: int,
+    lucky_thresholds: Dict[str, float],
+    top_n: int,
+) -> None:
+    try:
+        _merge_tour_slot_job(job_id, session_id, {
+            'status': 'running',
+            'started_at': time.time(),
+            'error': None,
+        })
+
+        def _weather_lookup(lat: float, lon: float, month: int, day: int, years: list[int]) -> Dict[str, Any] | None:
+            try:
+                stats = _get_offline_stats(
+                    float(lat),
+                    float(lon),
+                    int(month),
+                    int(day),
+                    years_selected=[int(y) for y in years],
+                    allow_span_mismatch=True,
+                )
+                return dict(stats) if isinstance(stats, dict) else None
+            except Exception:
+                return None
+
+        result = optimize_tour_slots(  # type: ignore[misc]
+            route_data=route_data,
+            total_days=int(total_days),
+            rest_day_indexes=list(rest_day_indexes or []),
+            boundaries_km=list(boundaries_km or []),
+            years_selected=[int(y) for y in years_selected],
+            anchor_year=int(anchor_year),
+            direction_mode=str(direction_mode or 'auto_compare'),
+            objective_mode=str(objective_mode or 'most_lucky_days'),
+            slot_step_days=int(slot_step_days),
+            lucky_thresholds=dict(lucky_thresholds or {}),
+            top_n=int(top_n),
+            weather_lookup=_weather_lookup,
+            progress_cb=lambda: progress_tick(job_id, 1, session_id=session_id),
+        )
+        progress_done(job_id, session_id=session_id)
+        _merge_tour_slot_job(job_id, session_id, {
+            'status': 'done',
+            'finished_at': time.time(),
+            'result': result,
+            'error': None,
+        })
+    except Exception as exc:
+        progress_done(job_id, session_id=session_id)
+        _merge_tour_slot_job(job_id, session_id, {
+            'status': 'error',
+            'finished_at': time.time(),
+            'error': str(exc),
+        })
 
 
 # -------------------- Session persistence --------------------
@@ -3334,6 +3447,228 @@ def api_session():
         return Response(json.dumps(st_out), mimetype='application/json')
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/tour_slot_optimizer/start', methods=['POST'])
+def api_tour_slot_optimizer_start():
+    if optimize_tour_slots is None:
+        return jsonify({'error': 'tour slot optimizer unavailable'}), 501
+
+    try:
+        session_id = _resolve_request_session_id(create=True)
+        payload = request.get_json(silent=True) or {}
+        state = load_session_state(session_id=str(session_id) if session_id else None)
+
+        gpx_override = payload.get('gpx_path')
+        gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
+        route_data = load_gpx_route(str(gpx_path))
+
+        total_days_raw = payload.get('totalDays', state.get('tour_days', 7))
+        try:
+            total_days = max(1, int(total_days_raw))
+        except Exception:
+            total_days = 7
+
+        rest_day_indexes_raw = payload.get('restDayIndexes')
+        if not isinstance(rest_day_indexes_raw, list):
+            rest_day_indexes_raw = []
+        rest_day_indexes: list[int] = []
+        for item in rest_day_indexes_raw:
+            try:
+                rest_day_indexes.append(int(item))
+            except Exception:
+                continue
+
+        boundaries_raw = payload.get('boundariesKm')
+        if not isinstance(boundaries_raw, list):
+            boundaries_raw = []
+        boundaries_km: list[float] = []
+        for item in boundaries_raw:
+            try:
+                boundaries_km.append(float(item))
+            except Exception:
+                continue
+
+        direction_mode = str(payload.get('directionMode') or 'auto_compare').strip().lower()
+        if direction_mode not in ('forward', 'reverse', 'auto_compare'):
+            direction_mode = 'auto_compare'
+
+        objective_mode = str(payload.get('objectiveMode') or 'most_lucky_days').strip().lower()
+        if objective_mode not in (
+            'most_lucky_days',
+            'highest_avg_temperature',
+            'lowest_precip_sum',
+            'lowest_headwind_sum',
+            'balanced_penalty',
+        ):
+            objective_mode = 'most_lucky_days'
+
+        slot_granularity = str(payload.get('slotGranularity') or 'week').strip().lower()
+        if slot_granularity not in ('day', 'week'):
+            slot_granularity = 'week'
+        slot_step_days = 1 if slot_granularity == 'day' else 7
+
+        lucky_thresholds_raw = payload.get('luckyThresholds')
+        lucky_thresholds: Dict[str, float] = {}
+        if isinstance(lucky_thresholds_raw, dict):
+            for src_key, dst_key, default_value in (
+                ('tempCold', 'temp_cold', 5.0),
+                ('tempHot', 'temp_hot', 30.0),
+                ('rainHigh', 'rain_high', 10.0),
+                ('windHeadComfort', 'wind_head_comfort', 4.0),
+                ('windTailComfort', 'wind_tail_comfort', 10.0),
+            ):
+                try:
+                    v = float(lucky_thresholds_raw.get(src_key, default_value))
+                except Exception:
+                    v = float(default_value)
+                if not math.isfinite(v):
+                    v = float(default_value)
+                lucky_thresholds[dst_key] = float(v)
+        if not lucky_thresholds:
+            lucky_thresholds = {
+                'temp_cold': 5.0,
+                'temp_hot': 30.0,
+                'rain_high': 10.0,
+                'wind_head_comfort': 4.0,
+                'wind_tail_comfort': 10.0,
+            }
+
+        top_n_raw = payload.get('topN', 5)
+        try:
+            top_n = max(1, min(20, int(top_n_raw)))
+        except Exception:
+            top_n = 5
+
+        anchor_year = None
+        try:
+            anchor_year = int(payload.get('anchorYear'))
+        except Exception:
+            anchor_year = None
+        if anchor_year is None:
+            try:
+                start_date_raw = str(payload.get('startDate') or state.get('start_date') or '').strip()
+                if start_date_raw:
+                    anchor_year = int(_dt.date.fromisoformat(start_date_raw).year)
+            except Exception:
+                anchor_year = None
+        if anchor_year is None:
+            anchor_year = int(_dt.date.today().year)
+
+        years_selected_raw = payload.get('yearsSelected')
+        years_selected: list[int] = []
+        if isinstance(years_selected_raw, list):
+            for item in years_selected_raw:
+                try:
+                    y = int(item)
+                    if 1900 <= y <= 2200:
+                        years_selected.append(y)
+                except Exception:
+                    continue
+        if not years_selected:
+            horizon_raw = payload.get('horizonYears', 3)
+            try:
+                horizon = int(horizon_raw)
+            except Exception:
+                horizon = 3
+            if horizon not in (1, 3, 5):
+                horizon = 3
+            end_year = int(_dt.date.today().year) - 1
+            start_year = end_year - int(horizon) + 1
+            years_selected = list(range(start_year, end_year + 1))
+
+        dirs = 2 if direction_mode == 'auto_compare' else 1
+        progress_total = max(1, _slot_start_count(int(anchor_year), int(slot_step_days)) * dirs)
+
+        job_id = uuid.uuid4().hex
+        progress_init(job_id, progress_total, session_id=str(session_id) if session_id else None)
+        _set_tour_slot_job(job_id, str(session_id) if session_id else None, {
+            'job_id': job_id,
+            'status': 'queued',
+            'created_at': time.time(),
+            'result': None,
+            'error': None,
+            'meta': {
+                'gpx_path': str(gpx_path),
+                'total_days': int(total_days),
+                'rest_day_indexes': list(rest_day_indexes),
+                'boundaries_km': list(boundaries_km),
+                'years_selected': list(years_selected),
+                'anchor_year': int(anchor_year),
+                'direction_mode': direction_mode,
+                'objective_mode': objective_mode,
+                'slot_granularity': slot_granularity,
+                'slot_step_days': int(slot_step_days),
+                'lucky_thresholds': dict(lucky_thresholds),
+                'top_n': int(top_n),
+            },
+        })
+
+        worker = threading.Thread(
+            target=_run_tour_slot_optimizer_job,
+            kwargs={
+                'job_id': job_id,
+                'session_id': str(session_id) if session_id else None,
+                'route_data': route_data,
+                'total_days': int(total_days),
+                'rest_day_indexes': list(rest_day_indexes),
+                'boundaries_km': list(boundaries_km),
+                'years_selected': list(years_selected),
+                'anchor_year': int(anchor_year),
+                'direction_mode': direction_mode,
+                'objective_mode': objective_mode,
+                'slot_step_days': int(slot_step_days),
+                'lucky_thresholds': dict(lucky_thresholds),
+                'top_n': int(top_n),
+            },
+            daemon=True,
+        )
+        worker.start()
+
+        return jsonify({
+            'job_id': job_id,
+            'status': 'queued',
+            'progress_total': progress_total,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tour_slot_optimizer/progress/<job_id>', methods=['GET'])
+def api_tour_slot_optimizer_progress(job_id: str):
+    try:
+        session_id = _resolve_request_session_id(create=True)
+        st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
+        job = _get_tour_slot_job(job_id, str(session_id) if session_id else None)
+        status = str((job or {}).get('status') or ('done' if st.get('done') else 'running'))
+        return jsonify({
+            'job_id': str(job_id),
+            'status': status,
+            'progress': st,
+            'error': (job or {}).get('error'),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tour_slot_optimizer/result/<job_id>', methods=['GET'])
+def api_tour_slot_optimizer_result(job_id: str):
+    try:
+        session_id = _resolve_request_session_id(create=True)
+        st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
+        job = _get_tour_slot_job(job_id, str(session_id) if session_id else None)
+        if not job:
+            return jsonify({'error': 'Unknown optimizer job id'}), 404
+        return jsonify({
+            'job_id': str(job_id),
+            'status': str(job.get('status') or 'unknown'),
+            'progress': st,
+            'meta': dict(job.get('meta') or {}),
+            'result': job.get('result'),
+            'error': job.get('error'),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/map_stream')

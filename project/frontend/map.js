@@ -273,6 +273,12 @@
   const tourDaysInput = document.getElementById('tourDays');
   const fetchWeatherBtn = document.getElementById('fetchWeather');
   const stopWeatherBtn = document.getElementById('stopWeather');
+  const tourSlotOptimizeBtn = document.getElementById('tourSlotOptimizeBtn');
+  const tourSlotGranularity = document.getElementById('tourSlotGranularity');
+  const tourSlotDirectionMode = document.getElementById('tourSlotDirectionMode');
+  const tourSlotHorizonYears = document.getElementById('tourSlotHorizonYears');
+  const tourSlotStatus = document.getElementById('tourSlotStatus');
+  const tourSlotResults = document.getElementById('tourSlotResults');
   const shareBtn = document.getElementById('share');
   const weatherQualitySelect = document.getElementById('weatherQuality');
 
@@ -6663,6 +6669,819 @@
       spanLabel: (start === end) ? String(start) : `${start}–${end}`,
       discontiguous: years.length !== count,
     };
+  }
+
+  let TOUR_SLOT_OPTIMIZER_JOB_ID = null;
+  let TOUR_SLOT_OPTIMIZER_TIMER = null;
+
+  function _setTourSlotStatus(text) {
+    try {
+      if (tourSlotStatus) tourSlotStatus.textContent = String(text || '');
+    } catch (_) {}
+  }
+
+  function _clearTourSlotPoll() {
+    try {
+      if (TOUR_SLOT_OPTIMIZER_TIMER) clearTimeout(TOUR_SLOT_OPTIMIZER_TIMER);
+    } catch (_) {}
+    TOUR_SLOT_OPTIMIZER_TIMER = null;
+  }
+
+  function _setOptimizerProgress(completed, total, label) {
+    try {
+      if (!progressEl || !progressBar) return;
+      stopProgressAnim();
+      PROGRESS_PHASE = 'optimizer';
+      const t = Math.max(1, Number(total) || 1);
+      const c = Math.max(0, Math.min(t, Number(completed) || 0));
+      const pct = Math.max(0, Math.min(100, Math.round((100 * c) / t)));
+      progressEl.classList.remove('loading');
+      progressBar.style.width = `${pct}%`;
+      if (progressPercentEl) {
+        const prefix = String(label || 'Optimizer');
+        progressPercentEl.textContent = `${prefix}: ${pct}% (${c}/${t})`;
+      }
+    } catch (_) {}
+  }
+
+  function _finishOptimizerProgress(ok) {
+    try {
+      if (!progressEl || !progressBar) return;
+      stopProgressAnim();
+      PROGRESS_PHASE = 'optimizer';
+      progressEl.classList.remove('loading');
+      progressBar.style.width = ok ? '100%' : String(progressBar.style.width || '0%');
+      if (progressPercentEl) {
+        progressPercentEl.textContent = ok ? 'Optimizer: 100% complete' : 'Optimizer: failed';
+      }
+    } catch (_) {}
+  }
+
+  function _collectTourSlotOptimizerPayload() {
+    const model = _roadbookBuild(LAST_PROFILE || null);
+    const days = Array.isArray(model && model.days) ? model.days : [];
+    const restDayIndexes = days
+      .filter((day) => String(day && day.type || '') === 'rest')
+      .map((day) => Math.max(0, Math.round(Number(day && day.logicalIdx) || 0)));
+    const totalDays = Math.max(1, Math.round(Number(tourDaysInput && tourDaysInput.value) || (days.length || 1)));
+    const boundariesKm = (() => {
+      try {
+        const fromPlan = Array.isArray(TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.boundariesKm)
+          ? TOUR_PLAN.roadbook.boundariesKm
+          : null;
+        if (fromPlan && fromPlan.length) {
+          return fromPlan
+            .map((v) => Number(v))
+            .filter((v) => Number.isFinite(v));
+        }
+      } catch (_) {}
+      try {
+        return _tourNormalizedBoundaryKm(LAST_PROFILE || null, false)
+          .map((v) => Number(v))
+          .filter((v) => Number.isFinite(v));
+      } catch (_) {
+        return [];
+      }
+    })();
+    const startDate = (startDateInput && startDateInput.value)
+      ? String(startDateInput.value)
+      : (new Date()).toISOString().slice(0, 10);
+    const horizonYears = Math.max(1, Math.round(Number(tourSlotHorizonYears && tourSlotHorizonYears.value) || 3));
+    const directionModeRaw = String(tourSlotDirectionMode && tourSlotDirectionMode.value || 'forward').trim().toLowerCase();
+    const directionMode = (directionModeRaw === 'forward' || directionModeRaw === 'reverse')
+      ? directionModeRaw
+      : 'forward';
+    const objectiveMode = 'most_lucky_days';
+    const slotGranularityRaw = String(tourSlotGranularity && tourSlotGranularity.value || 'day').trim().toLowerCase();
+    const slotGranularity = (slotGranularityRaw === 'day' || slotGranularityRaw === 'week')
+      ? slotGranularityRaw
+      : 'day';
+    const luckyThresholds = _tourLuckyThresholds();
+    return {
+      totalDays,
+      restDayIndexes,
+      boundariesKm,
+      startDate,
+      anchorYear: Number(startDate.slice(0, 4)) || (new Date()).getFullYear(),
+      directionMode,
+      objectiveMode,
+      slotGranularity,
+      luckyThresholds,
+      horizonYears,
+      topN: 5,
+    };
+  }
+
+  function _renderTourSlotOptimizerResults(resultPayload) {
+    if (!tourSlotResults) return;
+    const result = (resultPayload && typeof resultPayload === 'object') ? resultPayload : {};
+    const confidence = String(result.confidence || '').trim();
+    const meta = (result.meta && typeof result.meta === 'object') ? result.meta : {};
+    const scoreInterpretation = String(meta.score_interpretation || '').trim();
+    const formulaText = String(meta.score_formula_human || meta.score_formula || '').trim();
+    const bundle = (meta.year_penalty_curve_bundle && typeof meta.year_penalty_curve_bundle === 'object') ? meta.year_penalty_curve_bundle : {};
+    const curvesRaw = Array.isArray(bundle.curves) ? bundle.curves : [];
+    const defaultCurveId = String(bundle.default_curve_id || meta.objective_mode || 'most_lucky_days');
+    const anchorYear = Number(bundle.anchor_year || meta.anchor_year || (new Date()).getUTCFullYear());
+    const slotStepDays = Math.max(1, Math.round(Number(meta.slot_step_days || 7)));
+    const totalTourDays = Math.max(1, Math.round(Number(meta.total_days || 1)));
+    const requestedYears = Array.isArray(meta.requested_years) ? meta.requested_years : [];
+    const actualYearsUsed = Array.isArray(meta.actual_years_used) ? meta.actual_years_used : [];
+    const missingRequestedYears = Array.isArray(meta.missing_requested_years) ? meta.missing_requested_years : [];
+    if (!curvesRaw.length) {
+      tourSlotResults.innerHTML = '';
+      return;
+    }
+
+    const applySlot = (startIso, direction, curveLabel) => {
+      try {
+        const start = String(startIso || '').slice(0, 10);
+        const dir = String(direction || 'forward').toLowerCase();
+        if (startDateInput && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
+          startDateInput.value = start;
+          try { startDateInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+        }
+        _applyReverseTourState(dir === 'reverse', { refresh: false });
+        try { _tourSyncTimelineFromInputs(); } catch (_) {}
+        try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
+        markDataStale();
+        try {
+          OFFLINE_FALLBACK_ACTIVE = false;
+          if (LAST_PROFILE) loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });
+          else loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
+        } catch (_) {}
+        _setTourSlotStatus(`Applied slot: ${start} (${dir}) from ${curveLabel}. Refresh started.`);
+      } catch (_) {}
+    };
+
+    const html = [];
+    if (confidence) {
+      html.push(`<div style="font-size:11px;color:#0f172a;font-weight:700;">Confidence: ${_htmlEsc(confidence)}</div>`);
+    }
+    if (scoreInterpretation === 'lower_is_better') {
+      html.push('<div style="font-size:11px;color:#0f172a;font-weight:700;">Score semantics: LOWER is better.</div>');
+    } else if (scoreInterpretation === 'higher_is_better') {
+      html.push('<div style="font-size:11px;color:#0f172a;font-weight:700;">Score semantics: HIGHER is better.</div>');
+    }
+    if (formulaText) {
+      html.push(`<div style="font-size:10px;color:#64748b;">Formula: ${_htmlEsc(formulaText)}</div>`);
+    }
+    if (requestedYears.length) {
+      html.push(`<div style="font-size:10px;color:#334155;">Requested years: ${_htmlEsc(requestedYears.join(', '))}</div>`);
+    }
+    if (actualYearsUsed.length) {
+      html.push(`<div style="font-size:10px;color:#334155;">Years actually used: ${_htmlEsc(actualYearsUsed.join(', '))}</div>`);
+    }
+    if (missingRequestedYears.length) {
+      html.push(`<div style="font-size:10px;color:#b45309;">Warning: missing requested years in coverage: ${_htmlEsc(missingRequestedYears.join(', '))}</div>`);
+    }
+    html.push(`
+      <div class="wm-slot-unified-host">
+        <div class="wm-slot-curve-legend" id="wmSlotCurveLegend"></div>
+        <div class="wm-slot-curve-readout" id="wmSlotCurveReadout">Move cursor over the graph to inspect slots.</div>
+        <div class="wm-slot-curve-title" id="wmSlotCurveTitle">Tour Slot Optimizer</div>
+        <div class="wm-slot-curve-scroll">
+          <svg class="wm-slot-curve-svg" id="wmSlotCurveSvg" role="img" aria-label="Full-year optimizer value curves"></svg>
+        </div>
+        <div class="wm-slot-curve-hint">Wheel: zoom, Drag: pan, Click: select slot.</div>
+        <div class="wm-slot-curve-actions">
+          <button type="button" id="wmSlotResetView" class="wm-pref-action-btn wm-slot-apply-btn">Reset View</button>
+          <button type="button" id="wmSlotApplySelected" class="wm-pref-action-btn wm-slot-apply-btn">Apply Selected Slot</button>
+        </div>
+      </div>
+    `);
+    tourSlotResults.innerHTML = html.join('');
+
+    const legendHost = document.getElementById('wmSlotCurveLegend');
+    const readoutHost = document.getElementById('wmSlotCurveReadout');
+    const titleHost = document.getElementById('wmSlotCurveTitle');
+    const svg = document.getElementById('wmSlotCurveSvg');
+    const resetBtn = document.getElementById('wmSlotResetView');
+    const applyBtn = document.getElementById('wmSlotApplySelected');
+    if (!legendHost || !readoutHost || !titleHost || !svg || !resetBtn || !applyBtn) return;
+
+    const palette = {
+      most_lucky_days: '#0f766e',
+      highest_avg_temperature: '#ea580c',
+      lowest_precip_sum: '#2563eb',
+      lowest_headwind_sum: '#7c3aed',
+    };
+
+    const curves = curvesRaw.map((curve) => {
+      const id = String(curve && curve.id || 'curve');
+      const label = String(curve && curve.objective_label || id);
+      const unit = String(curve && curve.unit || 'score');
+      const valueLabel = String(curve && (curve.value_label || curve.penalty_label) || 'Value');
+      const higherIsBetter = !!(curve && curve.higher_is_better);
+      const points = (Array.isArray(curve && curve.points) ? curve.points : [])
+        .map((p) => {
+          const iso = String(p && p.start_date || '');
+          const ms = Date.parse(`${iso}T00:00:00Z`);
+          const valueRaw = Number(p && (p.value != null ? p.value : p.penalty));
+          const score = Number(p && p.score);
+          const direction = String(p && p.direction || 'forward');
+          return (Number.isFinite(ms) && Number.isFinite(valueRaw))
+            ? { iso, ms, value: valueRaw, score: Number.isFinite(score) ? score : null, direction }
+            : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.ms - b.ms);
+      const optimaMap = new Map();
+      for (const o of (Array.isArray(curve && curve.optima) ? curve.optima : [])) {
+        const d = String(o && o.start_date || '');
+        const r = Number(o && o.rank);
+        if (d && Number.isFinite(r)) optimaMap.set(d, Math.round(r));
+      }
+      return {
+        id,
+        label,
+        unit,
+        valueLabel,
+        higherIsBetter,
+        color: palette[id] || '#334155',
+        points,
+        optimaMap,
+      };
+    }).filter((c) => c.points.length);
+
+    if (!curves.length) return;
+
+    const dateSet = new Set();
+    for (const c of curves) for (const p of c.points) dateSet.add(p.ms);
+    const dates = Array.from(dateSet).sort((a, b) => a - b);
+    if (!dates.length) return;
+
+    const state = {
+      selectedCurveId: (curves.find((c) => c.id === defaultCurveId) || curves[0]).id,
+      selectedDateMs: dates[0],
+      hoverDateMs: null,
+      viewMinMs: dates[0],
+      viewMaxMs: dates[dates.length - 1],
+      dragActive: false,
+      dragStartX: 0,
+      dragMinMs: dates[0],
+      dragMaxMs: dates[dates.length - 1],
+    };
+
+    const nearestPoint = (curve, targetMs) => {
+      if (!curve || !curve.points.length || !Number.isFinite(targetMs)) return null;
+      let best = curve.points[0];
+      let bestDist = Math.abs(best.ms - targetMs);
+      for (let i = 1; i < curve.points.length; i++) {
+        const p = curve.points[i];
+        const d = Math.abs(p.ms - targetMs);
+        if (d < bestDist) {
+          best = p;
+          bestDist = d;
+        }
+      }
+      return best;
+    };
+
+    const currentCurve = () => curves.find((c) => c.id === state.selectedCurveId) || curves[0];
+    const selectedPoint = () => {
+      const c = currentCurve();
+      const target = state.selectedDateMs;
+      return nearestPoint(c, target);
+    };
+
+    const hoverPoint = () => {
+      const c = currentCurve();
+      if (!Number.isFinite(state.hoverDateMs)) return null;
+      return nearestPoint(c, state.hoverDateMs);
+    };
+
+    const formatDate = (ms) => {
+      try {
+        return new Date(ms).toISOString().slice(0, 10);
+      } catch (_) {
+        return 'n/a';
+      }
+    };
+
+    const formatDirection = (dir) => {
+      const d = String(dir || '').toLowerCase();
+      if (d === 'reverse') return 'backward';
+      return 'forward';
+    };
+
+    const formatXAxisLabel = (ms) => {
+      try {
+        return new Date(ms).toLocaleDateString('en-US', {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          timeZone: 'UTC',
+        });
+      } catch (_) {
+        return formatDate(ms);
+      }
+    };
+
+    const niceStep = (v) => {
+      const x = Math.max(1e-6, Number(v) || 1);
+      const p = Math.pow(10, Math.floor(Math.log10(x)));
+      const n = x / p;
+      if (n <= 1) return 1 * p;
+      if (n <= 2) return 2 * p;
+      if (n <= 5) return 5 * p;
+      return 10 * p;
+    };
+
+    const renderLegend = () => {
+      legendHost.innerHTML = curves.map((c) => {
+        const active = c.id === state.selectedCurveId;
+        return `<button type="button" class="wm-slot-curve-pill${active ? ' is-active' : ''}" data-curve-id="${_htmlEsc(c.id)}"><span class="wm-slot-curve-swatch" style="background:${_htmlEsc(c.color)}"></span>${_htmlEsc(c.label)}</button>`;
+      }).join('');
+      const selectedCurve = currentCurve();
+      titleHost.textContent = selectedCurve ? `${selectedCurve.label} (${selectedCurve.unit})` : 'Tour Slot Optimizer';
+      legendHost.querySelectorAll('[data-curve-id]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const id = String(btn.getAttribute('data-curve-id') || '');
+          if (!id) return;
+          state.selectedCurveId = id;
+          const pt = selectedPoint();
+          if (pt) state.selectedDateMs = pt.ms;
+          renderLegend();
+          renderGraph();
+          renderReadout();
+        });
+      });
+    };
+
+    const renderReadout = () => {
+      const curve = currentCurve();
+      const selected = selectedPoint();
+      const hover = hoverPoint();
+      if (!curve || !selected) {
+        readoutHost.textContent = 'No slot data available at cursor position.';
+        applyBtn.disabled = true;
+        return;
+      }
+      const selectedRank = curve.optimaMap.get(selected.iso);
+      const selectedLine = `Selected: ${curve.valueLabel} ${fmt(selected.value, 2)} ${curve.unit} on ${selected.iso} (${formatDirection(selected.direction)})${selectedRank ? ` · optimum #${selectedRank}` : ''}`;
+      let hoverLine = '';
+      if (hover) {
+        const hoverRank = curve.optimaMap.get(hover.iso);
+        hoverLine = `Hover: ${curve.valueLabel} ${fmt(hover.value, 2)} ${curve.unit} on ${hover.iso} (${formatDirection(hover.direction)})${hoverRank ? ` · optimum #${hoverRank}` : ''}`;
+      } else {
+        hoverLine = 'Hover: move cursor over the graph to inspect another slot.';
+      }
+      readoutHost.innerHTML = `<div>${_htmlEsc(selectedLine)}</div><div class="wm-slot-readout-sub">${_htmlEsc(hoverLine)}</div>`;
+      applyBtn.disabled = false;
+    };
+
+    const renderGraph = () => {
+      const minX = dates[0];
+      const maxX = dates[dates.length - 1];
+      const fullSpan = Math.max(86400000, maxX - minX);
+      let viewMin = Math.max(minX, Math.min(maxX - 86400000, Number(state.viewMinMs) || minX));
+      let viewMax = Math.min(maxX, Math.max(minX + 86400000, Number(state.viewMaxMs) || maxX));
+      if (viewMax - viewMin < 86400000) {
+        viewMin = minX;
+        viewMax = maxX;
+      }
+      state.viewMinMs = viewMin;
+      state.viewMaxMs = viewMax;
+
+      const selected = currentCurve();
+      const curveStats = new Map();
+      for (const c of curves) {
+        const finiteVals = c.points.map((p) => Number(p.value)).filter(Number.isFinite);
+        const vmin = Math.min(...finiteVals);
+        const vmax = Math.max(...finiteVals);
+        curveStats.set(c.id, {
+          min: Number.isFinite(vmin) ? vmin : 0.0,
+          max: Number.isFinite(vmax) ? vmax : 1.0,
+        });
+      }
+
+      const selectedVisible = selected.points.filter((p) => p.ms >= viewMin && p.ms <= viewMax).map((p) => Number(p.value)).filter(Number.isFinite);
+      let visibleMin = selectedVisible.length ? Math.min(...selectedVisible) : 0.0;
+      let visibleMax = selectedVisible.length ? Math.max(...selectedVisible) : 1.0;
+      if (!(visibleMax > visibleMin)) {
+        const pad = Math.max(1.0, Math.abs(visibleMax) * 0.1);
+        visibleMin -= pad;
+        visibleMax += pad;
+      }
+      const visibleRange = visibleMax - visibleMin;
+      const valuePad = Math.max(1e-6, visibleRange * 0.08);
+      const yMin = visibleMin - valuePad;
+      const yMax = visibleMax + valuePad;
+
+      const hostWidth = Math.max(320, Math.round(Number((svg.parentElement && svg.parentElement.clientWidth) || tourSlotResults.clientWidth || 980)));
+      const W = Math.max(320, hostWidth - 2);
+      const H = Math.max(320, Math.min(560, Math.round(W * 0.62)));
+      svg.style.height = `${H}px`;
+      const padL = 70;
+      const padR = 26;
+      const padT = 18;
+      const padB = 62;
+      const pw = W - padL - padR;
+      const ph = H - padT - padB;
+      const xAt = (ms) => {
+        if (viewMax <= viewMin) return padL + pw / 2;
+        return padL + ((ms - viewMin) / (viewMax - viewMin)) * pw;
+      };
+      const yAt = (v) => {
+        const vv = Number(v);
+        const t = (vv - yMin) / Math.max(1e-9, yMax - yMin);
+        return padT + (ph - Math.max(0, Math.min(1, t)) * ph);
+      };
+
+      const yStep = niceStep((yMax - yMin) / 6);
+      const yStart = Math.floor(yMin / yStep) * yStep;
+      const yEnd = Math.ceil(yMax / yStep) * yStep;
+      const yTicks = [];
+      for (let y = yStart; y <= yEnd + 1e-9; y += yStep) yTicks.push(y);
+      const yMinor = yStep / 2;
+
+      const grid = [];
+      for (let y = yStart; y <= yEnd + 1e-9; y += yMinor) {
+        if (y < yMin - yMinor || y > yMax + yMinor) continue;
+        const yy = yAt(y).toFixed(2);
+        const major = Math.abs((y / yStep) - Math.round(y / yStep)) < 1e-6;
+        grid.push(`<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${major ? 'rgba(30,41,59,0.28)' : 'rgba(148,163,184,0.18)'}" stroke-width="1"/>`);
+      }
+
+      const spanDays = Math.max(1, Math.round((viewMax - viewMin) / 86400000));
+      let tickStepDays = 7;
+      let tickMajorEvery = 1;
+      if (spanDays <= 14) {
+        tickStepDays = 1;
+        tickMajorEvery = 1;
+      } else if (spanDays <= 24) {
+        tickStepDays = 2;
+        tickMajorEvery = 1;
+      } else if (spanDays <= 35) {
+        tickStepDays = 3;
+        tickMajorEvery = 1;
+      } else if (spanDays <= 55) {
+        tickStepDays = 7;
+        tickMajorEvery = 1;
+      } else if (spanDays <= 80) {
+        tickStepDays = 14;
+        tickMajorEvery = 1;
+      } else if (spanDays <= 180) {
+        tickStepDays = 21;
+        tickMajorEvery = 1;
+      } else {
+        tickStepDays = 35;
+        tickMajorEvery = 1;
+      }
+      const firstTick = Math.floor(viewMin / 86400000) * 86400000;
+      const majorCountEstimate = Math.max(1, Math.floor(spanDays / Math.max(1, tickStepDays)) + 1);
+      const labelEvery = (majorCountEstimate > Math.max(6, Math.floor(pw / 120))) ? 2 : 1;
+      let tickIdx = 0;
+      let majorLabelIdx = 0;
+      for (let ms = firstTick; ms <= viewMax + (tickStepDays * 86400000); ms += tickStepDays * 86400000) {
+        if (ms < viewMin || ms > viewMax) {
+          tickIdx += 1;
+          continue;
+        }
+        const xx = xAt(ms).toFixed(2);
+        const major = (tickIdx % tickMajorEvery) === 0;
+        grid.push(`<line x1="${xx}" y1="${padT}" x2="${xx}" y2="${padT + ph}" stroke="${major ? 'rgba(30,41,59,0.28)' : 'rgba(148,163,184,0.18)'}" stroke-width="1"/>`);
+        if (major) {
+          grid.push(`<line x1="${xx}" y1="${(padT + ph).toFixed(2)}" x2="${xx}" y2="${(padT + ph + 8).toFixed(2)}" stroke="rgba(51,65,85,0.55)" stroke-width="1.2"/>`);
+          const lbl = formatXAxisLabel(ms);
+          if ((majorLabelIdx % labelEvery) === 0) {
+            grid.push(`<text x="${xx}" y="${H - 26}" text-anchor="middle" font-size="10" fill="#334155" font-weight="700">${_htmlEsc(lbl)}</text>`);
+          }
+          majorLabelIdx += 1;
+        }
+        tickIdx += 1;
+      }
+
+      const paths = [];
+      for (const c of curves) {
+        const st = curveStats.get(c.id) || { min: 0, max: 1 };
+        const cMin = Number(st.min);
+        const cMax = Number(st.max);
+        const visible = c.points.filter((p) => p.ms >= viewMin && p.ms <= viewMax);
+        if (!visible.length) continue;
+        const d = visible.map((p, idx) => {
+          let yVal = Number(p.value);
+          if (c.id !== selected.id) {
+            if (cMax > cMin) {
+              const t = (Number(p.value) - cMin) / (cMax - cMin);
+              yVal = yMin + Math.max(0, Math.min(1, t)) * (yMax - yMin);
+            } else {
+              yVal = (yMin + yMax) * 0.5;
+            }
+          }
+          return `${idx === 0 ? 'M' : 'L'} ${xAt(p.ms).toFixed(2)} ${yAt(yVal).toFixed(2)}`;
+        }).join(' ');
+        const active = c.id === state.selectedCurveId;
+        paths.push(`<path d="${d}" fill="none" stroke="${c.color}" stroke-width="${active ? 3.2 : 1.7}" opacity="${active ? 0.98 : 0.42}" data-curve-path="${_htmlEsc(c.id)}"/>`);
+      }
+
+      const selPt = selectedPoint();
+      const hovPt = hoverPoint();
+      const markers = [];
+      if (selected) {
+        for (const p of selected.points) {
+          if (p.ms < viewMin || p.ms > viewMax) continue;
+          const rank = selected.optimaMap.get(p.iso);
+          if (!rank) continue;
+          const cx = xAt(p.ms).toFixed(2);
+          const cy = yAt(p.value).toFixed(2);
+          markers.push(`<circle cx="${cx}" cy="${cy}" r="4.2" fill="${selected.color}" stroke="#fff" stroke-width="1.4"/>`);
+          markers.push(`<text x="${cx}" y="${(Number(cy) - 8).toFixed(2)}" text-anchor="middle" font-size="10" fill="${selected.color}" font-weight="800">#${rank}</text>`);
+        }
+      }
+
+      const selectedX = selPt ? xAt(selPt.ms) : null;
+      const hoverX = hovPt ? xAt(hovPt.ms) : null;
+      const cursor = Number.isFinite(selectedX)
+        ? `<line x1="${selectedX.toFixed(2)}" y1="${padT}" x2="${selectedX.toFixed(2)}" y2="${padT + ph}" stroke="rgba(15,23,42,0.55)" stroke-width="1.3" stroke-dasharray="4 3"/>`
+        : '';
+      const hoverCursor = Number.isFinite(hoverX)
+        ? `<line x1="${hoverX.toFixed(2)}" y1="${padT}" x2="${hoverX.toFixed(2)}" y2="${padT + ph}" stroke="rgba(15,118,110,0.35)" stroke-width="1.1" stroke-dasharray="2 3"/>`
+        : '';
+      const selectedDot = (selPt && Number.isFinite(selectedX))
+        ? `<circle cx="${selectedX.toFixed(2)}" cy="${yAt(selPt.value).toFixed(2)}" r="4.8" fill="${selected.color}" stroke="#ffffff" stroke-width="1.7"/>`
+        : '';
+
+      const yLabelX = padL - 8;
+      const yLabels = yTicks
+        .filter((y) => y >= yMin - (yStep * 0.1) && y <= yMax + (yStep * 0.1))
+        .map((y) => `<text x="${yLabelX.toFixed(2)}" y="${(yAt(y) + 3).toFixed(2)}" text-anchor="end" font-size="10" fill="#475569" font-weight="700">${_htmlEsc(fmt(y, 1))}</text>`)
+        .join('');
+
+      const betterArrowUp = !!selected.higherIsBetter;
+      const arrowCenterX = Math.max(10, yLabelX - 36);
+      const arrowTop = padT + (ph * 0.06);
+      const arrowBottom = padT + (ph * 0.94);
+      const arrowTotal = Math.max(24, arrowBottom - arrowTop);
+      const shaftWidth = 5;
+      const headLen = Math.max(8, Math.min(12, arrowTotal * 0.07));
+      const headWidth = shaftWidth * 2.2;
+      const halfShaft = shaftWidth * 0.5;
+      const halfHead = headWidth * 0.5;
+      const gradId = 'wmSlotBetterGrad';
+      const defs = betterArrowUp
+        ? `<defs><linearGradient id="${gradId}" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="#E53935"/><stop offset="50%" stop-color="#FBC02D"/><stop offset="100%" stop-color="#43A047"/></linearGradient></defs>`
+        : `<defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#E53935"/><stop offset="50%" stop-color="#FBC02D"/><stop offset="100%" stop-color="#43A047"/></linearGradient></defs>`;
+      const arrowPath = betterArrowUp
+        ? [
+          `M ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowBottom).toFixed(2)}`,
+          `L ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
+          `L ${(arrowCenterX - halfHead).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
+          `L ${(arrowCenterX).toFixed(2)} ${(arrowTop).toFixed(2)}`,
+          `L ${(arrowCenterX + halfHead).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
+          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
+          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowBottom).toFixed(2)}`,
+          'Z',
+        ].join(' ')
+        : [
+          `M ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowTop).toFixed(2)}`,
+          `L ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
+          `L ${(arrowCenterX - halfHead).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
+          `L ${(arrowCenterX).toFixed(2)} ${(arrowBottom).toFixed(2)}`,
+          `L ${(arrowCenterX + halfHead).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
+          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
+          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowTop).toFixed(2)}`,
+          'Z',
+        ].join(' ');
+      const greenZoneY = betterArrowUp ? (arrowTop + headLen + 8) : (arrowBottom - headLen - 8);
+      const betterTextX = arrowCenterX - (headWidth * 0.95);
+      const betterLabel = `<text x="${betterTextX.toFixed(2)}" y="${greenZoneY.toFixed(2)}" text-anchor="middle" font-size="10" fill="#2f5d3a" font-weight="800" transform="rotate(-90 ${betterTextX.toFixed(2)} ${greenZoneY.toFixed(2)})">better</text>`;
+
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.innerHTML = `
+        ${defs}
+        <rect x="0" y="0" width="${W}" height="${H}" fill="rgba(255,255,255,0.98)"/>
+        <rect x="0.5" y="0.5" width="${(W - 1).toFixed(2)}" height="${(H - 1).toFixed(2)}" fill="none" stroke="rgba(148,163,184,0.55)" stroke-width="1"/>
+        ${grid.join('')}
+        <line x1="${padL}" y1="${padT + ph}" x2="${W - padR}" y2="${padT + ph}" stroke="rgba(51,65,85,0.4)" stroke-width="1"/>
+        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + ph}" stroke="rgba(51,65,85,0.42)" stroke-width="1"/>
+        <path d="${arrowPath}" fill="url(#${gradId})" opacity="0.96"/>
+        ${betterLabel}
+        ${yLabels}
+        ${paths.join('')}
+        ${markers.join('')}
+        ${cursor}
+        ${hoverCursor}
+        ${selectedDot}
+        <text x="${(padL + pw * 0.5).toFixed(2)}" y="${(H - 8).toFixed(2)}" text-anchor="middle" font-size="12" fill="#334155" font-weight="800">${_htmlEsc(`Tour start date (${totalTourDays} days)`)}</text>
+      `;
+
+      svg.querySelectorAll('[data-curve-path]').forEach((path) => {
+        path.addEventListener('click', () => {
+          const id = String(path.getAttribute('data-curve-path') || '');
+          if (!id) return;
+          state.selectedCurveId = id;
+          renderLegend();
+          renderGraph();
+          renderReadout();
+        });
+      });
+
+      const onPointer = (ev) => {
+        const rect = svg.getBoundingClientRect();
+        const px = Math.max(padL, Math.min(W - padR, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W));
+        const t = (px - padL) / Math.max(1, pw);
+        const ms = viewMin + Math.max(0, Math.min(1, t)) * (viewMax - viewMin);
+        state.hoverDateMs = ms;
+        renderGraph();
+        renderReadout();
+      };
+
+      svg.onmousemove = (ev) => {
+        if (state.dragActive) {
+          const rect = svg.getBoundingClientRect();
+          const dxPx = ev.clientX - state.dragStartX;
+          const span = state.dragMaxMs - state.dragMinMs;
+          const dxMs = (dxPx / Math.max(1, rect.width)) * span;
+          let nextMin = state.dragMinMs - dxMs;
+          let nextMax = state.dragMaxMs - dxMs;
+          if (nextMin < minX) {
+            nextMax += (minX - nextMin);
+            nextMin = minX;
+          }
+          if (nextMax > maxX) {
+            nextMin -= (nextMax - maxX);
+            nextMax = maxX;
+          }
+          state.viewMinMs = Math.max(minX, nextMin);
+          state.viewMaxMs = Math.min(maxX, nextMax);
+          renderGraph();
+          renderReadout();
+          return;
+        }
+        onPointer(ev);
+      };
+
+      svg.onclick = (ev) => {
+        const rect = svg.getBoundingClientRect();
+        const px = Math.max(padL, Math.min(W - padR, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W));
+        const t = (px - padL) / Math.max(1, pw);
+        const ms = viewMin + Math.max(0, Math.min(1, t)) * (viewMax - viewMin);
+        const p = nearestPoint(currentCurve(), ms);
+        if (p) state.selectedDateMs = p.ms;
+        renderGraph();
+        renderReadout();
+      };
+
+      svg.onmousedown = (ev) => {
+        state.dragActive = true;
+        state.dragStartX = ev.clientX;
+        state.dragMinMs = state.viewMinMs;
+        state.dragMaxMs = state.viewMaxMs;
+        try { svg.style.cursor = 'grabbing'; } catch (_) {}
+      };
+
+      svg.onmouseup = () => {
+        state.dragActive = false;
+        try { svg.style.cursor = 'crosshair'; } catch (_) {}
+      };
+
+      svg.onwheel = (ev) => {
+        try { ev.preventDefault(); } catch (_) {}
+        const rect = svg.getBoundingClientRect();
+        const px = Math.max(padL, Math.min(W - padR, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W));
+        const t = (px - padL) / Math.max(1, pw);
+        const centerMs = viewMin + Math.max(0, Math.min(1, t)) * (viewMax - viewMin);
+        const span = Math.max(86400000, viewMax - viewMin);
+        const zoom = ev.deltaY < 0 ? 0.85 : 1.18;
+        const minVisibleSlots = slotStepDays <= 1 ? 7 : 4;
+        const minSpan = minVisibleSlots * slotStepDays * 86400000;
+        const maxSpan = fullSpan;
+        let nextSpan = Math.max(minSpan, Math.min(maxSpan, span * zoom));
+        let nextMin = centerMs - (centerMs - viewMin) * (nextSpan / span);
+        let nextMax = nextMin + nextSpan;
+        if (nextMin < minX) {
+          nextMax += (minX - nextMin);
+          nextMin = minX;
+        }
+        if (nextMax > maxX) {
+          nextMin -= (nextMax - maxX);
+          nextMax = maxX;
+        }
+        state.viewMinMs = Math.max(minX, nextMin);
+        state.viewMaxMs = Math.min(maxX, nextMax);
+        renderGraph();
+        renderReadout();
+      };
+
+      svg.onmouseleave = () => {
+        state.hoverDateMs = null;
+        state.dragActive = false;
+        try { svg.style.cursor = 'crosshair'; } catch (_) {}
+        renderGraph();
+        renderReadout();
+      };
+
+      svg.onmouseenter = () => {
+        try { svg.style.cursor = 'crosshair'; } catch (_) {}
+      };
+    };
+
+    resetBtn.addEventListener('click', () => {
+      state.viewMinMs = dates[0];
+      state.viewMaxMs = dates[dates.length - 1];
+      renderGraph();
+      renderReadout();
+    });
+
+    applyBtn.addEventListener('click', () => {
+      const curve = currentCurve();
+      const point = selectedPoint();
+      if (!curve || !point) return;
+      applySlot(point.iso, point.direction, curve.label);
+    });
+
+    renderLegend();
+    renderGraph();
+    renderReadout();
+  }
+
+  async function _pollTourSlotOptimizerResult() {
+    if (!TOUR_SLOT_OPTIMIZER_JOB_ID) return;
+    try {
+      const res = await fetch(`/api/tour_slot_optimizer/result/${encodeURIComponent(TOUR_SLOT_OPTIMIZER_JOB_ID)}`);
+      const payload = await res.json();
+      if (!res.ok) {
+        _setTourSlotStatus(`Optimizer failed: ${String(payload && payload.error || res.statusText || 'request error')}`);
+        if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
+        _clearTourSlotPoll();
+        return;
+      }
+      const status = String(payload && payload.status || 'running');
+      const progress = payload && payload.progress ? payload.progress : {};
+      const completed = Number(progress.completed || 0);
+      const total = Math.max(1, Number(progress.total || 1));
+      const pct = Math.max(0, Math.min(100, Math.round(100 * completed / total)));
+      _setOptimizerProgress(completed, total, 'Optimizer');
+      if (status === 'done') {
+        _setTourSlotStatus('Optimizer complete.');
+        _finishOptimizerProgress(true);
+        _renderTourSlotOptimizerResults(payload.result || null);
+        if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
+        _clearTourSlotPoll();
+        return;
+      }
+      if (status === 'error') {
+        const err = String(payload && payload.error || 'optimizer error');
+        _setTourSlotStatus(`Optimizer error: ${err}`);
+        _finishOptimizerProgress(false);
+        if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
+        _clearTourSlotPoll();
+        return;
+      }
+      _setTourSlotStatus('Optimizer running...');
+      _clearTourSlotPoll();
+      TOUR_SLOT_OPTIMIZER_TIMER = setTimeout(() => {
+        _pollTourSlotOptimizerResult();
+      }, 650);
+    } catch (e) {
+      _setTourSlotStatus(`Optimizer polling failed: ${String(e && e.message || e || 'network error')}`);
+      _finishOptimizerProgress(false);
+      if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
+      _clearTourSlotPoll();
+    }
+  }
+
+  async function _startTourSlotOptimizer() {
+    if (!tourSlotOptimizeBtn) return;
+    if (!_tourIsActive()) {
+      _setTourSlotStatus('Optimizer available in Tour Planning mode only.');
+      return;
+    }
+    try {
+      const payload = _collectTourSlotOptimizerPayload();
+      tourSlotOptimizeBtn.disabled = true;
+      if (tourSlotResults) tourSlotResults.innerHTML = '';
+      _setTourSlotStatus('Starting optimizer job...');
+      _setOptimizerProgress(0, 1, 'Optimizer');
+      const res = await fetch('/api/tour_slot_optimizer/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        _setTourSlotStatus(`Optimizer start failed: ${String(data && data.error || res.statusText || 'request error')}`);
+        _finishOptimizerProgress(false);
+        tourSlotOptimizeBtn.disabled = false;
+        return;
+      }
+      TOUR_SLOT_OPTIMIZER_JOB_ID = String(data.job_id || '');
+      if (!TOUR_SLOT_OPTIMIZER_JOB_ID) {
+        _setTourSlotStatus('Optimizer start failed: missing job id.');
+        _finishOptimizerProgress(false);
+        tourSlotOptimizeBtn.disabled = false;
+        return;
+      }
+      _setTourSlotStatus('Optimizer queued.');
+      _clearTourSlotPoll();
+      _pollTourSlotOptimizerResult();
+    } catch (e) {
+      _setTourSlotStatus(`Optimizer start failed: ${String(e && e.message || e || 'network error')}`);
+      _finishOptimizerProgress(false);
+      tourSlotOptimizeBtn.disabled = false;
+    }
   }
 
   function _tourDateRangeInfo() {
@@ -21539,6 +22358,11 @@
 
   if (weatherQualitySelect) {
     weatherQualitySelect.addEventListener('change', markDataStale);
+  }
+  if (tourSlotOptimizeBtn) {
+    tourSlotOptimizeBtn.addEventListener('click', () => {
+      _startTourSlotOptimizer();
+    });
   }
   if (tourWeatherModeClimateBtn) {
     tourWeatherModeClimateBtn.addEventListener('click', () => {
