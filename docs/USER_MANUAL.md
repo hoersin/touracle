@@ -78,6 +78,12 @@ Below the map, the profile canvas provides an “at-a-glance” strip of the sam
 	- `2026` (year)
 - Hovering the profile shows the same information as hovering the map.
 - Wind is typically visualized with direction indicators and a lane whose intensity reflects effective wind relative to route direction.
+- Profile horizontal navigation controls are available near the top-right of the profile area:
+	- `Zoom +` reduces the visible distance span (horizontal zoom in).
+	- `Zoom -` increases the visible distance span (horizontal zoom out).
+	- `Reset` restores full-route horizontal extent.
+	- Mouse wheel over the profile also zooms horizontally around the pointer location.
+	- Middle-button drag pans the current horizontal window left/right.
 
 ### 7) Tour summary band
 Between map and profile, the UI contains a persistent “summary band” that hosts:

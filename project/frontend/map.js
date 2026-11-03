@@ -267,7 +267,6 @@
   const arrivalDateInput = document.getElementById('arrivalDate');
   const tourWeatherModeSelect = document.getElementById('tourWeatherMode');
   const tourWeatherModeClimateBtn = document.getElementById('tourWeatherModeClimate');
-  const tourWeatherModeHybridBtn = document.getElementById('tourWeatherModeHybrid');
   const tourWeatherModeForecastBtn = document.getElementById('tourWeatherModeForecast');
   const tourWeatherModeHint = document.getElementById('tourWeatherModeHint');
   const tourDaysInput = document.getElementById('tourDays');
@@ -324,9 +323,11 @@
   const strategicStepBackBtn = document.getElementById('strategicStepBack');
   const strategicPlayBtn = document.getElementById('strategicPlay');
   const strategicStepForwardBtn = document.getElementById('strategicStepForward');
+  const strategicTodayBtn = document.getElementById('strategicToday');
   const strategicSpeed = document.getElementById('strategicSpeed'); // legacy (removed from UI)
   const strategicMonthTicks = document.getElementById('strategicMonthTicks');
   const strategicTimeline = document.getElementById('strategicTimeline');
+  const strategicRangeToday = document.getElementById('strategicRangeToday');
   const strategicLayerSelect = document.getElementById('strategicLayer');
   const strategicTimescaleSelect = document.getElementById('strategicTimescale');
   const strategicQuickLayerSelect = document.getElementById('strategicQuickLayerSelect');
@@ -352,6 +353,10 @@
   let profileCursorCtx = profileCursorCanvas ? profileCursorCanvas.getContext('2d') : null;
   const profileTooltip = document.getElementById('profileTooltip');
   const profilePanel = document.getElementById('profilePanel');
+  const profileZoomControls = document.getElementById('profileZoomControls');
+  const profileZoomOutBtn = document.getElementById('profileZoomOut');
+  const profileZoomInBtn = document.getElementById('profileZoomIn');
+  const profileZoomResetBtn = document.getElementById('profileZoomReset');
   const roadbookPanel = document.getElementById('roadbookPanel');
   const roadbookToggleBtn = document.getElementById('roadbookToggle');
   const roadbookResizeHandle = document.getElementById('roadbookResizeHandle');
@@ -1006,6 +1011,8 @@
   const TOUR_PROJECT_FORMAT_VERSION = 1;
   const TOUR_PROJECT_SCHEMA_VERSION = 1;
   const TOUR_PLAN_AUTOSAVE_DEBOUNCE_MS = 1800;
+  const TOUR_IMPORT_DEFAULT_START_DATE = '2026-06-01';
+  const TOUR_IMPORT_DEFAULT_DAYS = 7;
   let ACTIVE_TOUR_PLAN_ID = null;
   let ACTIVE_TOUR_PLAN_FILE_HANDLE = null;
   let ACTIVE_TOUR_PLAN_FILE_NAME = '';
@@ -1510,6 +1517,59 @@
     _queueTourPlanAutosave();
   }
 
+  function _applyTourImportDefaults() {
+    try {
+      if (startDateInput) startDateInput.value = TOUR_IMPORT_DEFAULT_START_DATE;
+    } catch (_) {}
+    try {
+      if (tourDaysInput) {
+        tourDaysInput.value = String(TOUR_IMPORT_DEFAULT_DAYS);
+        const field = tourDaysInput.closest('[data-slider-field="single"]');
+        _syncSingleSliderField(field);
+      }
+    } catch (_) {}
+    try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
+    try { _tourSyncTimelineFromInputs(); } catch (_) {}
+  }
+
+  function _resetTourPlanForImportedGpx() {
+    try {
+      const fresh = createTourPlan({
+        title: String(LAST_GPX_NAME || 'Tour plan'),
+        routeId: String(LAST_GPX_PATH || 'route-local'),
+        settings: {
+          startDate: TOUR_IMPORT_DEFAULT_START_DATE,
+        },
+      });
+      updateTourPlan(fresh);
+      ACTIVE_TOUR_PLAN_ID = String(fresh.id || _nextTourPlanId());
+      try { localStorage.setItem(TOUR_PLAN_ACTIVE_ID_KEY, ACTIVE_TOUR_PLAN_ID); } catch (_) {}
+      _roadbookResetState();
+      _tourPlanSetActiveFileContext(null, 'not saved');
+      try {
+        WEATHER_CONTEXT = {
+          ...WEATHER_CONTEXT,
+          mode: 'historical-median',
+          forecastStartDate: TOUR_IMPORT_DEFAULT_START_DATE,
+        };
+      } catch (_) {}
+      try { if (tourWeatherModeSelect) tourWeatherModeSelect.value = 'climatology'; } catch (_) {}
+      try { _applyTourWeatherModeUi(); } catch (_) {}
+      try { _saveCurrentTourPlan(); } catch (_) {}
+      _setTourPlanDirty(true);
+      try { _refreshProjectHeaderUi(); } catch (_) {}
+      try { _renderTourPlanManager(); } catch (_) {}
+    } catch (_) {}
+  }
+
+  function _refreshAfterGpxImport() {
+    try { _tourBookRefreshAll({ skipDirtyClear: true }); } catch (_) {}
+    try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
+    try { applyPrefsFromFormAndPersist(); } catch (_) {}
+    try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch (_) {}
+    try { loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true }); } catch (_) {}
+  }
+
   let PROJECT_DIRTY_WATCHERS_BOUND = false;
   function _bindProjectDirtyWatchers() {
     if (PROJECT_DIRTY_WATCHERS_BOUND) return;
@@ -1678,24 +1738,19 @@
       const targetRideCount = Math.max(1, Math.round(Number(nextRideCount) || 1));
       if (!_tourIsActive()) return { ok: false, applied: false, canceled: false };
 
-      const persistedDays = Array.isArray(TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.days)
-        ? TOUR_PLAN.roadbook.days
-        : [];
-      const persistedRideCount = persistedDays.length
-        ? Math.max(1, persistedDays.filter((day) => String(day && day.type || '') === 'ride').length)
+      const persistedBoundaryRideCount = Array.isArray(TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.boundariesKm)
+        ? Math.max(1, TOUR_PLAN.roadbook.boundariesKm.length + 1)
         : null;
       const boundariesRideCount = Array.isArray(TOUR_SEGMENTATION_STATE && TOUR_SEGMENTATION_STATE.boundariesKm)
         ? Math.max(1, TOUR_SEGMENTATION_STATE.boundariesKm.length + 1)
         : null;
-      const currentModel = _roadbookBuild(LAST_PROFILE || null);
       const preferredCurrentRideCount = Math.max(1, Math.round(Number(opts && opts.previousRideCount) || 0));
       const currentRideCount = Math.max(
         1,
         Math.round(Number(
-          preferredCurrentRideCount
-          || persistedRideCount
+          persistedBoundaryRideCount
           || boundariesRideCount
-          || (currentModel && currentModel.rideCount)
+          || preferredCurrentRideCount
           || 1,
         )),
       );
@@ -1703,6 +1758,7 @@
 
       let axisLen = _tourRouteAxisLen(LAST_PROFILE || null);
       if (!(axisLen > 0)) {
+        const currentModel = _roadbookBuild(LAST_PROFILE || null);
         axisLen = Math.max(
           0,
           ...((Array.isArray(currentModel && currentModel.days) ? currentModel.days : [])
@@ -1722,6 +1778,15 @@
 
       const selectedRideIdx = _tourBookSelectedRideIndex();
       _tourApplyBoundaries(nextBoundaries, Number.isInteger(selectedRideIdx) ? Math.max(0, Math.min(targetRideCount - 1, Number(selectedRideIdx))) : 0);
+      try {
+        const postModel = _roadbookBuild(LAST_PROFILE || null);
+        const postRideCount = Math.max(1, Math.round(Number(postModel && postModel.rideCount) || 1));
+        if (postRideCount !== targetRideCount) {
+          _tourBookSetRideCount(targetRideCount, {
+            selectedRideIdx: Number.isInteger(selectedRideIdx) ? Math.max(0, Math.min(targetRideCount - 1, Number(selectedRideIdx))) : 0,
+          });
+        }
+      } catch (_) {}
       return { ok: true, applied: true, canceled: false };
     } catch (_) {
       return { ok: false, applied: false, canceled: false };
@@ -1787,6 +1852,10 @@
     }));
     TOUR_SEGMENTATION_STATE.boundariesKm = nextBoundaries.slice();
     if (tourDaysInput) tourDaysInput.value = String(nextRideCount);
+    try {
+      const field = tourDaysInput ? tourDaysInput.closest('[data-slider-field="single"]') : null;
+      _syncSingleSliderField(field);
+    } catch (_) {}
     const rideIdx = Math.max(0, Math.min(nextRideCount - 1, Math.round(Number(selectedRideIdx) || 0)));
     const nextKey = `ride-${rideIdx}`;
     SELECTED_TOUR_DAY_KEY = nextKey;
@@ -2155,32 +2224,31 @@
 
   async function _tourPlanSaveAsFile() {
     try {
-      if (window.showSaveFilePicker) {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: `${String(_projectRouteDisplayName() || 'tour').replace(/\s+/g, '_')}.tour`,
-          types: [{
-            description: 'Touracle Tour Project',
-            accept: { 'application/json': ['.tour', '.json'] },
-          }],
-        });
-        if (!handle) return false;
-        const ok = await _tourPlanSaveToHandle(handle);
-        if (!ok) throw new Error('Could not write selected file');
-        return true;
+      if (!window.showSaveFilePicker) {
+        const origin = (() => {
+          try { return String(window.location && window.location.origin || 'unknown origin'); } catch (_) { return 'unknown origin'; }
+        })();
+        const secureHint = (() => {
+          try { return window.isSecureContext ? '' : '\n\nThis page is not in a secure context.'; } catch (_) { return ''; }
+        })();
+        alert(
+          `Save As destination dialog is unavailable in this browser context (${origin}).${secureHint}`
+          + '\n\nTo use the native file destination dialog, open Touracle from:'
+          + '\n- https://<host>:<port> (trusted HTTPS)'
+          + '\n- or localhost on the same machine.'
+        );
+        return false;
       }
-      const payload = await _tourProjectFilePayload();
-      const json = JSON.stringify(payload, null, 2);
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${String(_projectRouteDisplayName() || 'tour').replace(/\s+/g, '_')}.tour`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      _tourPlanSetActiveFileContext(null, a.download || 'tour.tour');
-      _setTourPlanDirty(false);
+      const handle = await window.showSaveFilePicker({
+        suggestedName: `${String(_projectRouteDisplayName() || 'tour').replace(/\s+/g, '_')}.tour`,
+        types: [{
+          description: 'Touracle Tour Project',
+          accept: { 'application/json': ['.tour', '.json'] },
+        }],
+      });
+      if (!handle) return false;
+      const ok = await _tourPlanSaveToHandle(handle);
+      if (!ok) throw new Error('Could not write selected file');
       return true;
     } catch (e) {
       alert(`Save As failed: ${e && e.message ? e.message : e}`);
@@ -2487,40 +2555,21 @@
         });
       }
 
-      if (tourProjectNewBtn) {
-        tourProjectNewBtn.addEventListener('click', () => {
-          if (TOUR_PLAN_IS_DIRTY && !confirm('Unsaved changes will be discarded. Create a new tour?')) return;
-          const fresh = createTourPlan({
-            title: 'New Tour',
-            routeId: 'route-local',
-            settings: {
-              startDate: startDateInput && startDateInput.value ? String(startDateInput.value) : '',
-            },
-          });
-          updateTourPlan(fresh);
-          ACTIVE_TOUR_PLAN_ID = String(fresh.id || _nextTourPlanId());
-          TourPlanStorageService.saveTourPlan(TOUR_PLAN, WEATHER_CONTEXT, { setActive: true });
-          _tourPlanSetActiveFileContext(null, 'not saved');
-          _setTourPlanDirty(true);
-          _roadbookResetState();
-          _renderRoadbookPanel();
-          _roadbookRefreshLinkedViews();
-          _renderTourPlanManager();
-          _refreshProjectHeaderUi();
-        });
-      }
       if (tourProjectOpenBtn) {
         tourProjectOpenBtn.addEventListener('click', () => {
           _tourPlanOpenFromFile().catch(() => {});
         });
       }
       if (tourProjectSaveBtn) {
-        tourProjectSaveBtn.addEventListener('click', () => {
+        tourProjectSaveBtn.addEventListener('click', async () => {
           _saveCurrentTourPlan();
           if (ACTIVE_TOUR_PLAN_FILE_HANDLE) {
-            _tourPlanSaveToHandle(ACTIVE_TOUR_PLAN_FILE_HANDLE).catch(() => {});
+            const ok = await _tourPlanSaveToHandle(ACTIVE_TOUR_PLAN_FILE_HANDLE);
+            if (!ok) {
+              await _tourPlanSaveAsFile();
+            }
           } else {
-            _tourPlanSaveAsFile().catch(() => {});
+            await _tourPlanSaveAsFile();
           }
         });
       }
@@ -2627,21 +2676,20 @@
   let PROFILE_POINTER_BOUND = false;
   let PROFILE_WINDOW_POINTER_BOUND = false;
 
-  /** @typedef {'forecast'|'hybrid'|'historical-year'|'historical-median'} WeatherMode */
+  /** @typedef {'forecast'|'historical-year'|'historical-median'} WeatherMode */
 
   function _normalizeWeatherMode(value) {
     const raw = String(value || '').trim().toLowerCase();
     if (raw === 'forecast') return 'forecast';
-    if (raw === 'hybrid') return 'hybrid';
     if (raw === 'historical-year' || raw === 'historical_year' || raw === 'year') return 'historical-year';
     if (raw === 'historical-median' || raw === 'historical_median' || raw === 'climatology') return 'historical-median';
+    if (raw === 'hybrid') return 'historical-median';
     return 'historical-median';
   }
 
   function _legacyWeatherModeFromContext(mode) {
     const normalized = _normalizeWeatherMode(mode);
     if (normalized === 'forecast') return 'forecast';
-    if (normalized === 'hybrid') return 'hybrid';
     return 'climatology';
   }
 
@@ -3104,6 +3152,12 @@
   let evtSource = null;
   let evtSourceProfile = null;
   let PROFILE_ZOOM_REFRESH_BOUND = false;
+  let PROFILE_VIEW_MIN_KM = 0;
+  let PROFILE_VIEW_MAX_KM = null;
+  let PROFILE_VIEW_DRAG_ACTIVE = false;
+  let PROFILE_VIEW_DRAG_START_X = 0;
+  let PROFILE_VIEW_DRAG_MIN_KM = 0;
+  let PROFILE_VIEW_DRAG_MAX_KM = 0;
   let PRIME_IN_PROGRESS = false;
   let MAIN_IN_PROGRESS = false;
   let ACTIVE_LOAD_SERIAL = 0;
@@ -3321,7 +3375,7 @@
       _syncWeatherContextFromUi();
       return _legacyWeatherModeFromContext(WEATHER_CONTEXT && WEATHER_CONTEXT.mode);
     } catch (_) {
-      return 'hybrid';
+      return 'climatology';
     }
   }
 
@@ -3338,13 +3392,104 @@
     return getTourWeatherMode() === 'forecast';
   }
 
-  function _tourUsingHybridMode() {
-    return getTourWeatherMode() === 'hybrid';
+  function _toLocalIsoDate(dateObj) {
+    try {
+      const d = dateObj instanceof Date ? dateObj : new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _tourTripFullyInsideForecastWindow() {
+    try {
+      const startIso = String(startDateInput && startDateInput.value || '').trim();
+      const days = Math.max(1, Math.round(Number(tourDaysInput && tourDaysInput.value) || 1));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startIso)) {
+        return { eligible: false, reason: 'invalid-start', startIso: '', endIso: '', days };
+      }
+      const start = new Date(`${startIso}T00:00:00Z`);
+      if (!Number.isFinite(start.getTime())) {
+        return { eligible: false, reason: 'invalid-start', startIso, endIso: '', days };
+      }
+      const end = new Date(start.getTime());
+      end.setUTCDate(end.getUTCDate() + Math.max(0, days - 1));
+      const today = new Date();
+      const todayIso = _toLocalIsoDate(today);
+      const max = new Date(today.getTime());
+      max.setDate(max.getDate() + 13);
+      const maxIso = _toLocalIsoDate(max);
+      const endIso = end.toISOString().slice(0, 10);
+      const eligible = startIso >= todayIso && endIso <= maxIso;
+      return { eligible, reason: eligible ? 'ok' : 'out-of-window', startIso, endIso, days, todayIso, maxIso };
+    } catch (_) {
+      return { eligible: false, reason: 'error', startIso: '', endIso: '', days: 1 };
+    }
+  }
+
+  function _enforceTourWeatherModePolicy(opts = {}) {
+    try {
+      if (!tourWeatherModeSelect) return;
+      const policy = _tourTripFullyInsideForecastWindow();
+      const currentMode = getTourWeatherMode();
+      if (!policy.eligible) {
+        if (currentMode === 'forecast') _setTourWeatherMode('climatology');
+      }
+    } catch (_) {}
+  }
+
+  function _todayDoy() {
+    try {
+      const now = new Date();
+      const y = now.getUTCFullYear();
+      const jan1 = Date.UTC(y, 0, 1);
+      const nowUtc = Date.UTC(y, now.getUTCMonth(), now.getUTCDate());
+      const doy = 1 + Math.floor((nowUtc - jan1) / 86400000);
+      return _clampDOYInt(doy);
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  function _todayIso() {
+    try {
+      return _toLocalIsoDate(new Date());
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _strategicMoveRangeToToday() {
+    try {
+      const { durationDays } = _strategicGetRangeDOY();
+      const start = _todayDoy();
+      const maxStart = Math.max(1, 365 - durationDays + 1);
+      const safeStart = Math.max(1, Math.min(maxStart, start));
+      const end = Math.max(safeStart, Math.min(365, safeStart + durationDays - 1));
+      const previousStartIso = (startDateInput && startDateInput.value)
+        ? String(startDateInput.value).slice(0, 10)
+        : '';
+      const previousRideCount = Math.max(1, Math.round(Number(tourDaysInput && tourDaysInput.value) || durationDays || 1));
+      _strategicSetRange(safeStart, end, {
+        skipFetch: false,
+        previousStartIso,
+        previousRideCount,
+      });
+      if (_tourIsActive() && startDateInput) {
+        startDateInput.value = _todayIso();
+        _tourSyncTimelineFromInputs();
+        _enforceTourWeatherModePolicy();
+        _applyTourWeatherModeUi();
+      }
+    } catch (_) {}
   }
 
   function _tourForecastTodayIso() {
     try {
-      return (new Date()).toISOString().slice(0, 10);
+      return _toLocalIsoDate(new Date());
     } catch (_) {
       return '';
     }
@@ -3770,28 +3915,36 @@
 
   function _applyTourWeatherModeUi() {
     try {
+      const policy = _tourTripFullyInsideForecastWindow();
+      const forecastEligible = !!(policy && policy.eligible);
       const forecastMode = _tourUsingForecastMode();
-      const hybridMode = _tourUsingHybridMode();
-      const climateMode = !forecastMode && !hybridMode;
+      const climateMode = !forecastMode;
       if (tourWeatherModeClimateBtn) {
         tourWeatherModeClimateBtn.classList.toggle('is-active', climateMode);
         tourWeatherModeClimateBtn.setAttribute('aria-pressed', climateMode ? 'true' : 'false');
       }
-      if (tourWeatherModeHybridBtn) {
-        tourWeatherModeHybridBtn.classList.toggle('is-active', hybridMode);
-        tourWeatherModeHybridBtn.setAttribute('aria-pressed', hybridMode ? 'true' : 'false');
-      }
       if (tourWeatherModeForecastBtn) {
         tourWeatherModeForecastBtn.classList.toggle('is-active', forecastMode);
         tourWeatherModeForecastBtn.setAttribute('aria-pressed', forecastMode ? 'true' : 'false');
+        tourWeatherModeForecastBtn.disabled = !forecastEligible;
+        tourWeatherModeForecastBtn.title = forecastEligible
+          ? 'Use live Open-Meteo forecast weather.'
+          : 'Forecast is available only when the full tour stays inside the next 14 days.';
+      }
+      try {
+        if (tourWeatherModeSelect && tourWeatherModeSelect.options && tourWeatherModeSelect.options.length >= 2) {
+          const forecastOption = tourWeatherModeSelect.options[1];
+          if (forecastOption) forecastOption.disabled = !forecastEligible;
+        }
+      } catch (_) {
       }
       if (tourWeatherModeHint) {
-        tourWeatherModeHint.dataset.mode = forecastMode ? 'forecast' : (hybridMode ? 'hybrid' : 'climatology');
+        tourWeatherModeHint.dataset.mode = forecastMode ? 'forecast' : 'climatology';
         tourWeatherModeHint.textContent = forecastMode
           ? 'Forecast mode uses live Open-Meteo data, clamps the ride-day control to 14 days, and ignores historical year selection.'
-          : (hybridMode
-            ? 'Hybrid mode uses forecast inside the 14-day horizon and historical climate for later ride days.'
-            : 'Climate mode uses the selected historical year blend for each ride day.');
+          : forecastEligible
+            ? `Forecast is available for this tour window (${policy.startIso} to ${policy.endIso}).`
+            : 'Historical mode uses the selected historical year blend. Forecast is available only when the full tour is inside the next 14 days.';
       }
       if (weatherQualitySelect) {
         weatherQualitySelect.disabled = forecastMode;
@@ -3834,10 +3987,6 @@
       if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return;
       if (_tourIsActive() && _tourUsingForecastMode()) {
         fetchWeatherBtn.textContent = 'Get Forecast Route Weather';
-        return;
-      }
-      if (_tourIsActive() && _tourUsingHybridMode()) {
-        fetchWeatherBtn.textContent = 'Get Hybrid Route Weather';
         return;
       }
       const mode = getWeatherQualityMode();
@@ -3927,14 +4076,18 @@
       const d = new Date(s);
       if (!Number.isFinite(Number(d && d.getTime && d.getTime()))) return '—';
       return d.toLocaleDateString('en-US', {
-        weekday: 'long',
+        weekday: 'short',
         day: 'numeric',
-        month: 'long',
-        year: 'numeric',
+        month: 'short',
         timeZone: 'UTC',
       });
     } catch (_) {}
     return '—';
+  }
+
+  function _fmtDayCountLabel(totalDays) {
+    const n = Math.max(1, Math.round(Number(totalDays) || 1));
+    return `${n} ${n === 1 ? 'day' : 'days'}`;
   }
 
   function _fmtPercent(numer, denom) {
@@ -4743,6 +4896,13 @@
 
   function _bindProfilePointerHandlers() {
     if (PROFILE_POINTER_BOUND || !profilePanel || !profileCanvas) return;
+    const handlePanEnd = () => {
+      PROFILE_VIEW_DRAG_ACTIVE = false;
+      if (profileCanvas && !TOUR_DRAG_STATE?.activeBoundaryId) {
+        profileCanvas.style.cursor = 'default';
+      }
+    };
+
     const handleDragMove = (e) => {
       try {
         if (!TOUR_DRAG_STATE || !TOUR_DRAG_STATE.activeBoundaryId || !LAST_PROFILE) return;
@@ -4795,6 +4955,26 @@
 
     const handleMove = (e) => {
       try {
+        if (PROFILE_VIEW_DRAG_ACTIVE && LAST_PROFILE && !_climateProfileIsActive()) {
+          const clientX = Number(e && e.clientX);
+          if (Number.isFinite(clientX)) {
+            const rect = profileCanvas.getBoundingClientRect();
+            const { padL, padR } = getPads();
+            const W = Math.max(1, Math.floor(rect.width));
+            const innerW = Math.max(1, W - padL - padR);
+            const dx = clientX - PROFILE_VIEW_DRAG_START_X;
+            const spanKm = Math.max(1e-6, PROFILE_VIEW_DRAG_MAX_KM - PROFILE_VIEW_DRAG_MIN_KM);
+            const shiftKm = -(dx / Math.max(1, innerW)) * spanKm;
+            _profileSetViewWindow(
+              PROFILE_VIEW_DRAG_MIN_KM + shiftKm,
+              PROFILE_VIEW_DRAG_MAX_KM + shiftKm,
+              LAST_PROFILE,
+            );
+            profileCanvas.style.cursor = 'grabbing';
+            if (typeof e.preventDefault === 'function') e.preventDefault();
+          }
+          return;
+        }
         const clientX = Number(e && e.clientX);
         const clientY = Number(e && e.clientY);
         
@@ -4869,6 +5049,18 @@
 
     const handleDown = (e) => {
       try {
+        if (Number.isFinite(Number(e && e.button)) && Number(e.button) === 1 && LAST_PROFILE && !_climateProfileIsActive()) {
+          const win = _profileGetViewWindow(LAST_PROFILE);
+          if (!win.isFull) {
+            PROFILE_VIEW_DRAG_ACTIVE = true;
+            PROFILE_VIEW_DRAG_START_X = Number(e && e.clientX) || 0;
+            PROFILE_VIEW_DRAG_MIN_KM = win.minKm;
+            PROFILE_VIEW_DRAG_MAX_KM = win.maxKm;
+            if (typeof e.preventDefault === 'function') e.preventDefault();
+            profileCanvas.style.cursor = 'grabbing';
+            return;
+          }
+        }
         if (Number.isFinite(Number(e && e.button)) && Number(e.button) !== 0) return;
         if (_climateProfileIsActive() || !LAST_PROFILE) return;
         const hit = _tourBoundaryMarkerHit(LAST_PROFILE, e && e.clientX, e && e.clientY);
@@ -4895,6 +5087,7 @@
 
     const handleLeave = () => {
       if (TOUR_DRAG_STATE && TOUR_DRAG_STATE.activeBoundaryId) return;
+      if (PROFILE_VIEW_DRAG_ACTIVE) return;
       TOUR_PIN_HOVER_ID = null;
       if (profileCanvas) {
         profileCanvas.style.cursor = 'default';
@@ -4912,10 +5105,22 @@
     const bindMoveAndLeave = (el) => {
       if (!el) return;
       el.addEventListener('pointerdown', handleDown);
+      el.addEventListener('mousedown', handleDown);
       el.addEventListener('mousemove', handleMove);
       el.addEventListener('pointermove', handleMove);
       el.addEventListener('mouseleave', handleLeave);
       el.addEventListener('pointerleave', handleLeave);
+      el.addEventListener('wheel', (e) => {
+        try {
+          if (_climateProfileIsActive() || !LAST_PROFILE) return;
+          const deltaY = Number(e && e.deltaY);
+          if (!Number.isFinite(deltaY) || Math.abs(deltaY) < 0.1) return;
+          const focusKm = profileClientXToRouteKm(Number(e && e.clientX));
+          const factor = deltaY > 0 ? 1.12 : 0.89;
+          _profileZoomHorizontally(factor, focusKm);
+          if (typeof e.preventDefault === 'function') e.preventDefault();
+        } catch (_) {}
+      }, { passive: false });
     };
 
     bindMoveAndLeave(profilePanel);
@@ -4924,10 +5129,14 @@
     window.addEventListener('pointermove', handleDragMove, { passive: false });
     window.addEventListener('pointerup', handleDragEnd);
     window.addEventListener('pointercancel', handleDragEnd);
+    window.addEventListener('mouseup', handlePanEnd);
+    window.addEventListener('pointerup', handlePanEnd);
+    window.addEventListener('pointercancel', handlePanEnd);
     try { _bindProfileWindowPointerHandlers(); } catch (_) {}
     PROFILE_POINTER_BOUND = true;
   }
 
+  try { _bindProfileZoomControls(); } catch (_) {}
   try { _bindProfilePointerHandlers(); } catch (_) {}
 
   function _drawClimateWindArrow(ctx, x, y, speed, dirFromDeg, maxWind) {
@@ -4965,6 +5174,7 @@
 
   function drawClimateProfile(profileData) {
     if (!profileCanvas || !profileCtx) return;
+    try { _refreshProfileZoomControls(null); } catch (_) {}
     const series = Array.isArray(profileData && profileData.series) ? profileData.series : [];
     LAST_CLIMATE_PROFILE = profileData || null;
     resizeProfileCanvas();
@@ -6394,12 +6604,9 @@
           LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
           _persistLastGpxSelection();
           updateDropZoneLabel();
-          try { _refreshProjectHeaderUi(); } catch (_) {}
-          try { _markTourPlanChanged(); } catch (_) {}
-          try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
-          try { applyPrefsFromFormAndPersist(); } catch (_) {}
-          try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
-          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
+          _applyTourImportDefaults();
+          _resetTourPlanForImportedGpx();
+          _refreshAfterGpxImport();
         } catch (err) {
           console.error('Upload error', err);
           alert('Upload error: ' + err);
@@ -6428,12 +6635,9 @@
           LAST_GPX_NAME = (j.original_name || f.name || j.name || null);
           _persistLastGpxSelection();
           updateDropZoneLabel();
-          try { _refreshProjectHeaderUi(); } catch (_) {}
-          try { _markTourPlanChanged(); } catch (_) {}
-          try { _resetTourRouteDisplay('Loading route + profile…'); } catch (_) {}
-          try { applyPrefsFromFormAndPersist(); } catch (_) {}
-          try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
-          loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true, gpxJustUploaded: true });
+          _applyTourImportDefaults();
+          _resetTourPlanForImportedGpx();
+          _refreshAfterGpxImport();
         } catch (err) {
           console.error('Upload error', err);
           alert('Upload error: ' + err);
@@ -6698,7 +6902,7 @@
       progressEl.classList.remove('loading');
       progressBar.style.width = `${pct}%`;
       if (progressPercentEl) {
-        const prefix = String(label || 'Optimizer');
+        const prefix = String(label || 'Simulation run');
         progressPercentEl.textContent = `${prefix}: ${pct}% (${c}/${t})`;
       }
     } catch (_) {}
@@ -6712,7 +6916,7 @@
       progressEl.classList.remove('loading');
       progressBar.style.width = ok ? '100%' : String(progressBar.style.width || '0%');
       if (progressPercentEl) {
-        progressPercentEl.textContent = ok ? 'Optimizer: 100% complete' : 'Optimizer: failed';
+        progressPercentEl.textContent = ok ? 'Simulation run: 100% complete' : 'Simulation run: failed';
       }
     } catch (_) {}
   }
@@ -6839,9 +7043,9 @@
       <div class="wm-slot-unified-host">
         <div class="wm-slot-curve-legend" id="wmSlotCurveLegend"></div>
         <div class="wm-slot-curve-readout" id="wmSlotCurveReadout">Move cursor over the graph to inspect slots.</div>
-        <div class="wm-slot-curve-title" id="wmSlotCurveTitle">Tour Slot Optimizer</div>
+        <div class="wm-slot-curve-title" id="wmSlotCurveTitle">Simulation Run</div>
         <div class="wm-slot-curve-scroll">
-          <svg class="wm-slot-curve-svg" id="wmSlotCurveSvg" role="img" aria-label="Full-year optimizer value curves"></svg>
+          <svg class="wm-slot-curve-svg" id="wmSlotCurveSvg" role="img" aria-label="Full-year simulation value curves"></svg>
         </div>
         <div class="wm-slot-curve-hint">Wheel: zoom, Drag: pan, Click: select slot.</div>
         <div class="wm-slot-curve-actions">
@@ -6994,7 +7198,7 @@
         return `<button type="button" class="wm-slot-curve-pill${active ? ' is-active' : ''}" data-curve-id="${_htmlEsc(c.id)}"><span class="wm-slot-curve-swatch" style="background:${_htmlEsc(c.color)}"></span>${_htmlEsc(c.label)}</button>`;
       }).join('');
       const selectedCurve = currentCurve();
-      titleHost.textContent = selectedCurve ? `${selectedCurve.label} (${selectedCurve.unit})` : 'Tour Slot Optimizer';
+      titleHost.textContent = selectedCurve ? `${selectedCurve.label} (${selectedCurve.unit})` : 'Simulation Run';
       legendHost.querySelectorAll('[data-curve-id]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const id = String(btn.getAttribute('data-curve-id') || '');
@@ -7403,7 +7607,7 @@
       const res = await fetch(`/api/tour_slot_optimizer/result/${encodeURIComponent(TOUR_SLOT_OPTIMIZER_JOB_ID)}`);
       const payload = await res.json();
       if (!res.ok) {
-        _setTourSlotStatus(`Optimizer failed: ${String(payload && payload.error || res.statusText || 'request error')}`);
+        _setTourSlotStatus(`Simulation run failed: ${String(payload && payload.error || res.statusText || 'request error')}`);
         if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
         _clearTourSlotPoll();
         return;
@@ -7413,9 +7617,9 @@
       const completed = Number(progress.completed || 0);
       const total = Math.max(1, Number(progress.total || 1));
       const pct = Math.max(0, Math.min(100, Math.round(100 * completed / total)));
-      _setOptimizerProgress(completed, total, 'Optimizer');
+      _setOptimizerProgress(completed, total, 'Simulation run');
       if (status === 'done') {
-        _setTourSlotStatus('Optimizer complete.');
+        _setTourSlotStatus('Simulation run complete.');
         _finishOptimizerProgress(true);
         _renderTourSlotOptimizerResults(payload.result || null);
         if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
@@ -7424,19 +7628,19 @@
       }
       if (status === 'error') {
         const err = String(payload && payload.error || 'optimizer error');
-        _setTourSlotStatus(`Optimizer error: ${err}`);
+        _setTourSlotStatus(`Simulation run error: ${err}`);
         _finishOptimizerProgress(false);
         if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
         _clearTourSlotPoll();
         return;
       }
-      _setTourSlotStatus('Optimizer running...');
+      _setTourSlotStatus('Simulation run in progress...');
       _clearTourSlotPoll();
       TOUR_SLOT_OPTIMIZER_TIMER = setTimeout(() => {
         _pollTourSlotOptimizerResult();
       }, 650);
     } catch (e) {
-      _setTourSlotStatus(`Optimizer polling failed: ${String(e && e.message || e || 'network error')}`);
+      _setTourSlotStatus(`Simulation run polling failed: ${String(e && e.message || e || 'network error')}`);
       _finishOptimizerProgress(false);
       if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
       _clearTourSlotPoll();
@@ -7446,15 +7650,15 @@
   async function _startTourSlotOptimizer() {
     if (!tourSlotOptimizeBtn) return;
     if (!_tourIsActive()) {
-      _setTourSlotStatus('Optimizer available in Tour Planning mode only.');
+      _setTourSlotStatus('Simulation run available in Tour Planning mode only.');
       return;
     }
     try {
       const payload = _collectTourSlotOptimizerPayload();
       tourSlotOptimizeBtn.disabled = true;
       if (tourSlotResults) tourSlotResults.innerHTML = '';
-      _setTourSlotStatus('Starting optimizer job...');
-      _setOptimizerProgress(0, 1, 'Optimizer');
+      _setTourSlotStatus('Starting simulation run...');
+      _setOptimizerProgress(0, 1, 'Simulation run');
       const res = await fetch('/api/tour_slot_optimizer/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -7462,23 +7666,23 @@
       });
       const data = await res.json();
       if (!res.ok) {
-        _setTourSlotStatus(`Optimizer start failed: ${String(data && data.error || res.statusText || 'request error')}`);
+        _setTourSlotStatus(`Simulation run start failed: ${String(data && data.error || res.statusText || 'request error')}`);
         _finishOptimizerProgress(false);
         tourSlotOptimizeBtn.disabled = false;
         return;
       }
       TOUR_SLOT_OPTIMIZER_JOB_ID = String(data.job_id || '');
       if (!TOUR_SLOT_OPTIMIZER_JOB_ID) {
-        _setTourSlotStatus('Optimizer start failed: missing job id.');
+        _setTourSlotStatus('Simulation run start failed: missing job id.');
         _finishOptimizerProgress(false);
         tourSlotOptimizeBtn.disabled = false;
         return;
       }
-      _setTourSlotStatus('Optimizer queued.');
+      _setTourSlotStatus('Simulation run queued.');
       _clearTourSlotPoll();
       _pollTourSlotOptimizerResult();
     } catch (e) {
-      _setTourSlotStatus(`Optimizer start failed: ${String(e && e.message || e || 'network error')}`);
+      _setTourSlotStatus(`Simulation run start failed: ${String(e && e.message || e || 'network error')}`);
       _finishOptimizerProgress(false);
       tourSlotOptimizeBtn.disabled = false;
     }
@@ -7652,6 +7856,8 @@
       SETTINGS.tourDays = durationDays;
     } catch (_) {}
     try { _tourSyncTimelineFromInputs(); } catch (_) {}
+    try { _enforceTourWeatherModePolicy(); } catch (_) {}
+    try { _applyTourWeatherModeUi(); } catch (_) {}
     if (options.skipRefresh) return;
     try {
       if (TOUR_TIMELINE_REFRESH_TIMER) {
@@ -9690,11 +9896,16 @@
       if (!roadbookPanel || !roadbookList || !roadbookMeta) return;
       const listScrollTopBefore = Number(roadbookList.scrollTop || 0);
       const draggingBoundary = !!(TOUR_DRAG_STATE && TOUR_DRAG_STATE.activeBoundaryId);
-      const available = _tourIsActive() && !!LAST_PROFILE;
-      _roadbookSyncPanelVisibility(available);
-      if (!available) {
+      const inTourMode = _tourIsActive();
+      _roadbookSyncPanelVisibility(inTourMode);
+      if (!inTourMode) {
         roadbookMeta.textContent = '';
         roadbookList.innerHTML = '';
+        return;
+      }
+      if (!LAST_PROFILE) {
+        roadbookMeta.textContent = 'No route profile loaded yet';
+        roadbookList.innerHTML = '<div class="wm-roadbook-empty">Load route weather to build the roadbook.</div>';
         return;
       }
       const model = _roadbookBuild(LAST_PROFILE);
@@ -9708,7 +9919,7 @@
       const weatherMode = (LAST_TOUR_SUMMARY && LAST_TOUR_SUMMARY.weather_mode) ? String(LAST_TOUR_SUMMARY.weather_mode) : getTourWeatherMode();
       const timelineLabel = weatherMode === 'forecast'
         ? 'forecast timeline'
-        : (weatherMode === 'hybrid' ? 'hybrid timeline' : 'climate timeline');
+        : 'climate timeline';
       roadbookMeta.textContent = `${days.length} TourDays • ${rideCount} ride days • ${restCount} rest days • ${timelineLabel} • temperatures shown as route-segment medians`;
       if (!days.length) {
         roadbookList.innerHTML = '<div class="wm-roadbook-empty">Load route weather to build the roadbook.</div>';
@@ -10050,7 +10261,7 @@
     return {
       // Tour setup
       startDate: todayIso,
-      tourWeatherMode: 'hybrid',
+      tourWeatherMode: 'climatology',
       tourDays: 7,
       reverse: false,
       weatherQuality: 'standard',
@@ -10128,10 +10339,8 @@
       const weatherQuality = (weatherQualityRaw === 'premium')
         ? 'premium'
         : 'standard';
-      const tourWeatherModeRaw = (typeof j.tourWeatherMode === 'string') ? String(j.tourWeatherMode) : String(defaults.tourWeatherMode || 'hybrid');
-      const tourWeatherMode = (tourWeatherModeRaw === 'forecast' || tourWeatherModeRaw === 'hybrid')
-        ? tourWeatherModeRaw
-        : 'climatology';
+      const tourWeatherModeRaw = (typeof j.tourWeatherMode === 'string') ? String(j.tourWeatherMode) : String(defaults.tourWeatherMode || 'climatology');
+      const tourWeatherMode = (tourWeatherModeRaw === 'forecast') ? 'forecast' : 'climatology';
       const basemapId = _normalizeBasemapId((typeof j.basemapId === 'string') ? j.basemapId : defaults.basemapId);
       return {
         ...defaults,
@@ -10742,7 +10951,9 @@
       input.addEventListener('input', () => {
         input.value = String(_clampSettingsValue(input, input.value));
         _syncSingleSliderField(field);
-        _scheduleLiveSettingsApply();
+        // Tour duration uses an explicit change workflow with a user decision dialog.
+        // Auto-applying on input would bypass that flow and can reset stage planning.
+        if (input !== tourDaysInput) _scheduleLiveSettingsApply();
       });
       if (badge && editor) {
         badge.addEventListener('click', () => {
@@ -15664,8 +15875,19 @@
     };
   }
 
+  function _ensureStrategicMiniScaleRendered() {
+    try {
+      if (!strategicMonthTicks) return;
+      const hasTicks = strategicMonthTicks.querySelector('.wm-tick');
+      const hasLabels = strategicMonthTicks.querySelector('.wm-month-label');
+      if (hasTicks && hasLabels) return;
+      _renderStrategicSliderTicks('daily');
+    } catch (_) {}
+  }
+
   function _strategicSyncRangeSelectedUI() {
     if (!strategicRangeWrap || !strategicRangeSelected) return;
+    _ensureStrategicMiniScaleRendered();
     const { startDoy, endDoy, durationDays } = _strategicGetRangeDOY();
     const leftPct = ((startDoy - 1) / 365) * 100;
     const widthPct = (durationDays / 365) * 100;
@@ -15675,6 +15897,18 @@
       if (strategicRangeTooltip) {
         const centerPct = Math.max(0, Math.min(100, leftPct + 0.5 * widthPct));
         strategicRangeTooltip.style.left = `${centerPct}%`;
+      }
+    } catch (_) {}
+
+    try {
+      if (strategicRangeToday) {
+        const todayPct = ((_todayDoy() - 1) / 365) * 100;
+        strategicRangeToday.style.left = `${Math.max(0, Math.min(100, todayPct))}%`;
+        const iso = _todayIso();
+        strategicRangeToday.setAttribute('title', iso ? `Today (${_fmtIsoDayMonthCompact(iso)})` : 'Today');
+        if (strategicMonthTicks) {
+          strategicMonthTicks.style.setProperty('--wm-timescale-today-pct', `${Math.max(0, Math.min(100, todayPct))}%`);
+        }
       }
     } catch (_) {}
 
@@ -15831,8 +16065,8 @@
   function _strategicSetLabels() {
     if (_tourIsActive()) {
       const info = _tourDateRangeInfo();
-      const shortTxt = `${_fmtIsoDayMonthCompact(info.startIso)}–${_fmtIsoDayMonthCompact(info.endIso)}`;
-      const monitorTxt = `${shortTxt} • ${Math.max(1, info.totalDays)}d`;
+      const shortTxt = `${_fmtIsoDayMonthCompact(info.startIso)} to ${_fmtIsoDayMonthCompact(info.endIso)}`;
+      const monitorTxt = `${shortTxt} | Duration: ${_fmtDayCountLabel(info.totalDays)}`;
       if (strategicDayLabel) strategicDayLabel.textContent = shortTxt;
       if (strategicTimelineLabel) strategicTimelineLabel.textContent = monitorTxt;
       _strategicSyncRangeSelectedUI();
@@ -18558,6 +18792,7 @@
       strategicStepBackBtn,
       strategicPlayBtn,
       strategicStepForwardBtn,
+      strategicTodayBtn,
       strategicDaySlider,
     ].forEach((el) => _bindStrategicCursorSuspendForControl(el));
   } catch (_) {}
@@ -18806,6 +19041,11 @@
   if (strategicStepForwardBtn) {
     strategicStepForwardBtn.addEventListener('click', () => _strategicStepOnce(+1));
   }
+  if (strategicTodayBtn) {
+    strategicTodayBtn.addEventListener('click', () => {
+      _strategicMoveRangeToToday();
+    });
+  }
   // Speed slider removed in Phase 1.
 
   map.on('moveend zoomend', () => {
@@ -18875,7 +19115,7 @@
     const base = prev ? { ...prev } : {};
     base.startDate = (startDateInput && startDateInput.value) ? String(startDateInput.value) : (new Date()).toISOString().slice(0, 10);
     base.basemapId = _normalizeBasemapId(setBasemap && setBasemap.value);
-    base.tourWeatherMode = (tourWeatherModeSelect && tourWeatherModeSelect.value) ? String(tourWeatherModeSelect.value) : 'hybrid';
+    base.tourWeatherMode = (tourWeatherModeSelect && tourWeatherModeSelect.value) ? String(tourWeatherModeSelect.value) : 'climatology';
     base.tourDays = Number(tourDaysInput && tourDaysInput.value) || 7;
     base.weatherQuality = (weatherQualitySelect && weatherQualitySelect.value) ? String(weatherQualitySelect.value) : 'standard';
     try {
@@ -19160,6 +19400,9 @@
       profileCtx.textBaseline = 'middle';
 
       const rbModel = _roadbookBuild(profile);
+      const viewWin = _profileGetViewWindow(profile);
+      const visibleMin = Number(viewWin.minKm) || 0;
+      const visibleMax = Number(viewWin.maxKm) || Number(axisLen) || 0;
       const rideToLogical = new Map();
       if (rbModel && Array.isArray(rbModel.days)) {
         for (const day of rbModel.days) {
@@ -19167,6 +19410,10 @@
         }
       }
       const mapDayEntries = _tourRouteDayCardEntries(profile);
+      const minCenter = boxW * 0.5 + 4;
+      const maxCenter = Math.max(minCenter, canvasWidth - (boxW * 0.5 + 4));
+      const minLabelGapPx = boxW + 6;
+      let lastLabelX = -Infinity;
 
       for (let dayIdx = 0; dayIdx < totalDays; dayIdx++) {
         try {
@@ -19175,6 +19422,7 @@
           const segment = _tourSegmentRange(profile, dayIdx);
           const startDist = segment.startDist;
           const endDist = segment.endDist;
+          if (endDist < visibleMin - 1e-6 || startDist > visibleMax + 1e-6) continue;
           const midDist = segment.midDist;
           const sample = _tourSampleAtDist(midDist);
           let dayPoints = routePoints.filter((point) => Number(point && point.tourDayIndex) === dayIdx);
@@ -19187,7 +19435,10 @@
           const daySummary = _tourSummarizeDayPoints(dayPoints);
           const rawX = xAt(midDist);
           if (!Number.isFinite(rawX)) continue;
-          const x = Math.max(boxW / 2, Math.min(canvasWidth - boxW / 2, rawX));
+          if (rawX < minCenter || rawX > maxCenter) continue;
+          if ((rawX - lastLabelX) < minLabelGapPx) continue;
+          const x = rawX;
+          lastLabelX = x;
           const entryTemp = _finiteOrNull(mapEntry && mapEntry.tempC);
           const entryRain = _finiteOrNull(mapEntry && mapEntry.rainMm);
           const tMed = forecastUnavailable
@@ -19444,6 +19695,170 @@
     }
   }
 
+  function _profileAxisLenKm(profile) {
+    try {
+      if (Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length >= 2) {
+        const rl = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0);
+        if (Number.isFinite(rl) && rl > 0) return rl;
+      }
+    } catch (_) {}
+    try {
+      const dist = Array.isArray(profile && profile.sampled_dist_km) ? profile.sampled_dist_km : [];
+      const last = Number(dist.length ? dist[dist.length - 1] : 0);
+      if (Number.isFinite(last) && last > 0) return last;
+    } catch (_) {}
+    return 1;
+  }
+
+  function _profileMinViewSpanKm(axisLen) {
+    const full = Math.max(1, Number(axisLen) || 1);
+    return Math.max(24, Math.min(full, full * 0.06));
+  }
+
+  function _profileGetViewWindow(profile) {
+    const axisLen = _profileAxisLenKm(profile);
+    const fullMin = 0;
+    const fullMax = axisLen;
+    const minSpan = _profileMinViewSpanKm(axisLen);
+    let minKm = Number(PROFILE_VIEW_MIN_KM);
+    let maxKm = Number(PROFILE_VIEW_MAX_KM);
+    if (!(Number.isFinite(minKm) && Number.isFinite(maxKm) && maxKm > minKm)) {
+      minKm = fullMin;
+      maxKm = fullMax;
+    }
+    let span = Math.max(minSpan, maxKm - minKm);
+    if (span >= axisLen - 1e-6) {
+      minKm = fullMin;
+      maxKm = fullMax;
+      span = axisLen;
+    } else {
+      minKm = Math.max(fullMin, Math.min(fullMax - span, minKm));
+      maxKm = minKm + span;
+      if (maxKm > fullMax) {
+        maxKm = fullMax;
+        minKm = Math.max(fullMin, maxKm - span);
+      }
+    }
+    return {
+      axisLen,
+      minKm,
+      maxKm,
+      spanKm: Math.max(1e-6, maxKm - minKm),
+      isFull: Math.abs(minKm - fullMin) < 1e-6 && Math.abs(maxKm - fullMax) < 1e-6,
+      minSpan,
+    };
+  }
+
+  function _profileSetViewWindow(minKm, maxKm, profile, opts = {}) {
+    const p = profile || LAST_PROFILE;
+    const axisLen = _profileAxisLenKm(p);
+    const fullMin = 0;
+    const fullMax = axisLen;
+    const minSpan = _profileMinViewSpanKm(axisLen);
+    let a = Number(minKm);
+    let b = Number(maxKm);
+    if (!(Number.isFinite(a) && Number.isFinite(b) && b > a)) {
+      a = fullMin;
+      b = fullMax;
+    }
+    let span = Math.max(minSpan, b - a);
+    if (span >= axisLen - 1e-6) {
+      a = fullMin;
+      b = fullMax;
+      span = axisLen;
+    } else {
+      a = Math.max(fullMin, Math.min(fullMax - span, a));
+      b = a + span;
+      if (b > fullMax) {
+        b = fullMax;
+        a = Math.max(fullMin, b - span);
+      }
+    }
+    PROFILE_VIEW_MIN_KM = a;
+    PROFILE_VIEW_MAX_KM = b;
+    _refreshProfileZoomControls(p);
+    if (opts && opts.redraw === false) return;
+    if (_climateProfileIsActive()) return;
+    if (LAST_PROFILE) drawProfile(LAST_PROFILE);
+  }
+
+  function _profileZoomHorizontally(factor, focusKm) {
+    const p = LAST_PROFILE;
+    if (!p || _climateProfileIsActive()) return;
+    const win = _profileGetViewWindow(p);
+    const full = win.axisLen;
+    const minSpan = win.minSpan;
+    const maxSpan = full;
+    const z = Number(factor);
+    if (!Number.isFinite(z) || z <= 0) return;
+    const currentSpan = win.spanKm;
+    let nextSpan = Math.max(minSpan, Math.min(maxSpan, currentSpan * z));
+    if (nextSpan >= full - 1e-6) {
+      _profileSetViewWindow(0, full, p);
+      return;
+    }
+    const center = Number.isFinite(Number(focusKm))
+      ? Math.max(0, Math.min(full, Number(focusKm)))
+      : (win.minKm + 0.5 * currentSpan);
+    const ratio = (center - win.minKm) / Math.max(1e-6, currentSpan);
+    let nextMin = center - ratio * nextSpan;
+    let nextMax = nextMin + nextSpan;
+    if (nextMin < 0) {
+      nextMax += (0 - nextMin);
+      nextMin = 0;
+    }
+    if (nextMax > full) {
+      nextMin -= (nextMax - full);
+      nextMax = full;
+    }
+    _profileSetViewWindow(nextMin, nextMax, p);
+  }
+
+  function _profileResetViewWindow() {
+    if (!LAST_PROFILE) return;
+    _profileSetViewWindow(0, _profileAxisLenKm(LAST_PROFILE), LAST_PROFILE);
+  }
+
+  function _refreshProfileZoomControls(profile) {
+    try {
+      if (!profileZoomControls || !profileZoomInBtn || !profileZoomOutBtn || !profileZoomResetBtn) return;
+      const p = profile || LAST_PROFILE;
+      const show = !!p && !_climateProfileIsActive();
+      profileZoomControls.style.display = show ? 'inline-flex' : 'none';
+      if (!show) return;
+      const win = _profileGetViewWindow(p);
+      profileZoomOutBtn.disabled = win.isFull;
+      profileZoomResetBtn.disabled = win.isFull;
+      profileZoomInBtn.disabled = (win.spanKm <= win.minSpan + 1e-6);
+      profileZoomInBtn.title = 'Zoom in horizontally (show shorter distance range)';
+      profileZoomOutBtn.title = 'Zoom out horizontally (show wider distance range)';
+      profileZoomResetBtn.title = 'Reset horizontal zoom to full route';
+    } catch (_) {}
+  }
+
+  function _bindProfileZoomControls() {
+    try {
+      if (!profileZoomControls || profileZoomControls.dataset.bound === '1') return;
+      if (profileZoomOutBtn) {
+        profileZoomOutBtn.addEventListener('click', () => {
+          _profileZoomHorizontally(1.25);
+        });
+      }
+      if (profileZoomInBtn) {
+        profileZoomInBtn.addEventListener('click', () => {
+          _profileZoomHorizontally(0.8);
+        });
+      }
+      if (profileZoomResetBtn) {
+        profileZoomResetBtn.addEventListener('click', () => {
+          _profileResetViewWindow();
+        });
+      }
+      profileZoomControls.dataset.bound = '1';
+      _refreshProfileZoomControls(LAST_PROFILE || null);
+    } catch (_) {}
+  }
+
   // Profile panel height management
   function setProfileHeight(h) {
     try {
@@ -19508,6 +19923,7 @@
   function drawProfile(profile) {
     if (!profileCanvas || !profileCtx || !profile || !profile.sampled_dist_km) return;
     LAST_PROFILE = profile;
+    try { _refreshProfileZoomControls(profile); } catch (_) {}
     try { _renderRoadbookPanel(); } catch (_) {}
     resizeProfileCanvas();
     const rect = profileCanvas.getBoundingClientRect();
@@ -19546,6 +19962,10 @@
         if (Number.isFinite(rl) && rl > 0) axisLen = rl;
       }
     } catch (_) {}
+    const viewWin = _profileGetViewWindow(profile);
+    const axisMin = Number(viewWin.minKm) || 0;
+    const axisMax = Number(viewWin.maxKm) || axisLen;
+    const axisSpan = Math.max(1e-6, axisMax - axisMin);
     const scale = axisLen / Math.max(1e-6, profLen);
     // Elevation min/max ignoring nulls
     let emin = Infinity, emax = -Infinity;
@@ -19555,9 +19975,9 @@
     const innerW = Math.max(1, W - padL - padR);
     const innerH = Math.max(1, H - padTop - padBot);
     const xAt = (d) => {
-      // Clamp to axis domain (full route length when available)
-      const dd = Math.max(0, Math.min(axisLen, Number(d) || 0));
-      const u = dd / Math.max(1e-6, axisLen);
+      // Clamp to current horizontal viewport in route-km domain
+      const dd = Math.max(axisMin, Math.min(axisMax, Number(d) || 0));
+      const u = (dd - axisMin) / Math.max(1e-6, axisSpan);
       // Keep profile x-scale normal even in reverse mode: 0 km at left, increasing to the right
       return padL + innerW * u;
     };
@@ -20265,8 +20685,8 @@
       return Math.pow(10, pow + 1);
     }
     const stepKm = Math.max(1, niceStep(desiredKm));
-    const startKm = 0;
-    const endKm = Math.floor(axisLen / stepKm) * stepKm;
+    const startKm = Math.ceil(axisMin / stepKm) * stepKm;
+    const endKm = Math.floor(axisMax / stepKm) * stepKm;
     const tickLen = 6;
     profileCtx.fillStyle = '#666';
     profileCtx.font = '10px system-ui, -apple-system, sans-serif';
@@ -20521,6 +20941,7 @@
     PROFILE_XS = dist.map(d => xAt(d * scale));
     CURSOR_X_SCALE = 1;
     try { _initializeTourCursorReadoutFromStart(); } catch (_) {}
+    try { _refreshProfileZoomControls(profile); } catch (_) {}
     
     })(); // End async IIFE
   }
@@ -20605,7 +21026,7 @@
   function profileClientXToRouteKm(clientX) {
     try {
       if (!profileCanvas) return NaN;
-      if (!Array.isArray(ROUTE_CUM_DISTS) || ROUTE_CUM_DISTS.length < 2) return NaN;
+      if (!LAST_PROFILE) return NaN;
       const rect = profileCanvas.getBoundingClientRect();
       const { padTop, padBot, padL, padR } = getPads();
       const W = Math.max(1, Math.floor(rect.width));
@@ -20613,8 +21034,8 @@
       const xClient = Number(clientX - rect.left);
       const xClamped = Math.max(padL, Math.min(padL + innerW, xClient));
       const u = (xClamped - padL) / Math.max(1, innerW);
-      const routeLen = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0);
-      return routeLen * Math.max(0, Math.min(1, u));
+      const win = _profileGetViewWindow(LAST_PROFILE);
+      return win.minKm + win.spanKm * Math.max(0, Math.min(1, u));
     } catch (_) {
       return NaN;
     }
@@ -20650,7 +21071,9 @@
       const { padL, padR } = getPads();
       const W = Math.max(1, Math.floor(rect.width));
       const innerW = Math.max(1, W - padL - padR);
-      const xDisplay = padL + innerW * (targetRouteKm / routeLen);
+      const win = _profileGetViewWindow(LAST_PROFILE);
+      const u = (targetRouteKm - win.minKm) / Math.max(1e-6, win.spanKm);
+      const xDisplay = padL + innerW * Math.max(0, Math.min(1, u));
       return { index, xDisplay };
     } catch (_) {
       return null;
@@ -20716,14 +21139,15 @@
     // Compute displayed km directly from VDL position mapped onto [padL, padL+innerW] → [0, routeLen]
     let dkm = 0;
     try {
-      const routeLen = Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length >= 2 ? Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0) : 0;
+      const win = _profileGetViewWindow(LAST_PROFILE);
       const xClamped = Math.max(padL, Math.min(padL + innerW, Number(xDisplay || snapX)));
       const u = (xClamped - padL) / Math.max(1, innerW);
       // Do not flip by REVERSED: distance increases left→right; map cursor moves Start→End
-      dkm = (Number.isFinite(routeLen) ? (routeLen * Math.max(0, Math.min(1, u))) : 0);
+      dkm = win.minKm + win.spanKm * Math.max(0, Math.min(1, u));
       if ((typeof window !== 'undefined' && window.DEBUG_CURSOR_LOG === true) || DEBUG_CURSOR_LOG) {
         try {
           const xDisp = (typeof xDisplay === 'number') ? Math.round(xDisplay) : Math.round(snapX);
+          const routeLen = Array.isArray(ROUTE_CUM_DISTS) && ROUTE_CUM_DISTS.length >= 2 ? Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1] || 0) : 0;
           console.log(`[MouseKM] x=${xDisp} px | profile_km=${dkm.toFixed(1)} | routeLen=${routeLen.toFixed(1)} | idx=${index}/${dist.length-1}`);
         } catch (_) {}
       }
@@ -20926,9 +21350,13 @@
         if (Number.isFinite(rl) && rl > 0) axisLen = rl;
       }
     } catch (_) {}
+    const viewWin = _profileGetViewWindow(profile);
+    const axisMin = Number(viewWin.minKm) || 0;
+    const axisMax = Number(viewWin.maxKm) || axisLen;
+    const axisSpan = Math.max(1e-6, axisMax - axisMin);
     const xAt = (d) => {
-      const dd = Math.max(0, Math.min(axisLen, Number(d) || 0));
-      return padL + (innerW * (dd / Math.max(1e-6, axisLen)));
+      const dd = Math.max(axisMin, Math.min(axisMax, Number(d) || 0));
+      return padL + (innerW * ((dd - axisMin) / Math.max(1e-6, axisSpan)));
     };
     // Prepare points sorted by distance
     const pts = (OVERLAY_POINTS || []).slice().filter(p => Number.isFinite(p.dist)).sort((a, b) => a.dist - b.dist);
@@ -21274,8 +21702,7 @@
     const routeMode = getWeatherQualityMode();
     const tourWeatherModeUi = getTourWeatherMode();
     const isForecastTourWeather = (tourWeatherModeUi === 'forecast');
-    const isHybridTourWeather = (tourWeatherModeUi === 'hybrid');
-    const allowOfflineFallbackByDefault = (isForecastTourWeather || isHybridTourWeather);
+    const allowOfflineFallbackByDefault = isForecastTourWeather;
     const loadOpts = {
       ...requestedLoadOpts,
       offlineOnly: (typeof requestedLoadOpts.offlineOnly === 'boolean')
@@ -21283,10 +21710,10 @@
         : (allowOfflineFallbackByDefault ? false : (routeMode !== 'premium')),
       forceOnline: (typeof requestedLoadOpts.forceOnline === 'boolean')
         ? requestedLoadOpts.forceOnline
-        : (isForecastTourWeather ? true : ((routeMode === 'premium') && !isHybridTourWeather)),
+        : (isForecastTourWeather ? true : (routeMode === 'premium')),
       reusePerDay: (typeof requestedLoadOpts.reusePerDay === 'boolean')
         ? requestedLoadOpts.reusePerDay
-        : ((isForecastTourWeather || isHybridTourWeather) ? true : (routeMode === 'premium')),
+        : (isForecastTourWeather ? true : (routeMode === 'premium')),
     };
     const loadSerial = ++ACTIVE_LOAD_SERIAL;
     const isActiveLoad = () => loadSerial === ACTIVE_LOAD_SERIAL;
@@ -21397,7 +21824,7 @@
       _diagUpdateStatus({ state: 'Loading' });
     }
 
-    const weatherSubsystem = (tourWeatherMode === 'forecast' || tourWeatherMode === 'hybrid' || loadOpts.forceOnline)
+    const weatherSubsystem = (tourWeatherMode === 'forecast' || loadOpts.forceOnline)
       ? 'Forecast Retrieval'
       : 'Offline Weather Sampling';
     if (CURRENT_LOAD_DIAG && !CURRENT_LOAD_DIAG.weatherToken) {
@@ -22212,7 +22639,7 @@
     if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return; // Stop button handles abort now
     OFFLINE_FALLBACK_ACTIVE = false;
     try { applyPrefsFromFormAndPersist(); } catch (_) {}
-    if (_tourUsingForecastMode() || _tourUsingHybridMode()) {
+    if (_tourUsingForecastMode()) {
       loadMap({ ...(LAST_LOAD_OPTS || {}), offlineOnly: false, forceOnline: true, reusePerDay: true, autoUpgradeIfSingleYear: false });
       return;
     }
@@ -22316,9 +22743,22 @@
     } catch (_) {}
     try { if (_tourIsActive()) _tourSyncTimelineFromInputs(); } catch (_) {}
     try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
+    try { _enforceTourWeatherModePolicy(); } catch (_) {}
   });
   tourDaysInput.addEventListener('change', () => {
-    const previousDays = Math.max(1, Math.round(Number(LAST_TOUR_DAYS_REQUESTED) || 1));
+    const previousDays = (() => {
+      try {
+        if (Array.isArray(TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.boundariesKm)) {
+          return Math.max(1, TOUR_PLAN.roadbook.boundariesKm.length + 1);
+        }
+      } catch (_) {}
+      try {
+        if (Array.isArray(TOUR_SEGMENTATION_STATE && TOUR_SEGMENTATION_STATE.boundariesKm)) {
+          return Math.max(1, TOUR_SEGMENTATION_STATE.boundariesKm.length + 1);
+        }
+      } catch (_) {}
+      return Math.max(1, Math.round(Number(LAST_TOUR_DAYS_REQUESTED) || 1));
+    })();
     const requestedDays = Math.max(1, Math.round(Number(tourDaysInput && tourDaysInput.value) || 1));
     const finalize = () => {
       try {
@@ -22329,6 +22769,7 @@
       try { _markTourPlanChanged(); } catch (_) {}
       try { if (_tourIsActive()) _tourSyncTimelineFromInputs(); } catch (_) {}
       try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
+      try { _enforceTourWeatherModePolicy(); } catch (_) {}
     };
     if (requestedDays === previousDays) {
       finalize();
@@ -22338,8 +22779,7 @@
       .then((result) => {
         if (!result || result.applied !== true) {
           try {
-            const model = _roadbookBuild(LAST_PROFILE || null);
-            const fallbackRideDays = Math.max(1, Math.round(Number(model && model.rideCount) || requestedDays));
+            const fallbackRideDays = Math.max(1, Math.round(Number(previousDays) || 1));
             tourDaysInput.value = String(fallbackRideDays);
             const field = tourDaysInput.closest('[data-slider-field="single"]');
             _syncSingleSliderField(field);
@@ -22369,11 +22809,6 @@
       _setTourWeatherMode('climatology');
     });
   }
-  if (tourWeatherModeHybridBtn) {
-    tourWeatherModeHybridBtn.addEventListener('click', () => {
-      _setTourWeatherMode('hybrid');
-    });
-  }
   if (tourWeatherModeForecastBtn) {
     tourWeatherModeForecastBtn.addEventListener('click', () => {
       _setTourWeatherMode('forecast');
@@ -22386,10 +22821,12 @@
         saveSettings(SETTINGS);
       } catch (_) {}
       try { _syncWeatherContextFromUi(); } catch (_) {}
+      try { _enforceTourWeatherModePolicy(); } catch (_) {}
       try { _applyTourWeatherModeUi(); } catch (_) {}
       markDataStale();
     });
   }
+  try { _enforceTourWeatherModePolicy({ resetPrompt: true }); } catch (_) {}
   if (roadbookToggleBtn) {
     roadbookToggleBtn.addEventListener('click', () => {
       const currentlyVisible = !(ROADBOOK_STATE && ROADBOOK_STATE.visible === false);
@@ -22403,6 +22840,8 @@
   try { _bootTourPlanPersistence(); } catch (_) {}
   try { _bindProjectDirtyWatchers(); } catch (_) {}
   try { _diagInitUi(); } catch (_) {}
+  try { _ensureStrategicMiniScaleRendered(); } catch (_) {}
+  try { _strategicSyncRangeSelectedUI(); } catch (_) {}
   updateFetchWeatherLabel();
 
   // Tour Summary: badges panel rendering
@@ -22829,7 +23268,6 @@
           const restoredTourWeatherMode = (() => {
             const raw = String(st.tour_weather_mode || '').trim().toLowerCase();
             if (raw === 'forecast') return 'forecast';
-            if (raw === 'hybrid') return 'hybrid';
             return 'climatology';
           })();
           tourWeatherModeSelect.value = restoredTourWeatherMode;

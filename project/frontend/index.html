@@ -800,6 +800,31 @@
       overflow: visible;
       pointer-events: none;
     }
+    .wm-range-today {
+      position: absolute;
+      top: 50%;
+      width: 2px;
+      height: 16px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(14, 165, 233, 0.96), rgba(2, 132, 199, 0.96));
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.82), 0 0 10px rgba(14, 165, 233, 0.45);
+      z-index: 1;
+      pointer-events: none;
+    }
+    .wm-range-today::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: -6px;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      transform: translate(-50%, 0);
+      background: #0ea5e9;
+      border: 1px solid rgba(255,255,255,0.9);
+      box-shadow: 0 1px 4px rgba(2, 132, 199, 0.35);
+    }
     .wm-range-selected {
       position: absolute;
       top: 0;
@@ -972,9 +997,35 @@
     }
     #strategicMonthTicks {
       position: relative;
-      height: 14px;
-      margin-top: 6px;
+      height: 20px;
+      margin-top: 8px;
       width: 100%;
+      --wm-timescale-today-pct: -10%;
+    }
+    #strategicMonthTicks::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 1px;
+      background: linear-gradient(90deg,
+        rgba(15, 23, 42, 0.08) 0%,
+        rgba(15, 23, 42, 0.16) 50%,
+        rgba(15, 23, 42, 0.08) 100%);
+    }
+    #strategicMonthTicks::after {
+      content: '';
+      position: absolute;
+      top: -2px;
+      left: var(--wm-timescale-today-pct);
+      width: 2px;
+      height: 8px;
+      transform: translateX(-50%);
+      border-radius: 999px;
+      background: rgba(14, 165, 233, 0.72);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.75);
+      pointer-events: none;
     }
     .wm-strategic-slidercol {
       flex: 1;
@@ -984,18 +1035,34 @@
     }
     .wm-tick {
       position: absolute;
-      bottom: 0;
+      top: 0;
       width: 1px;
-      height: 10px;
-      background: rgba(0,0,0,0.25);
+      height: 4px;
+      background: rgba(15, 23, 42, 0.25);
+      transform: translateX(-50%);
     }
-    .wm-tick.wm-major { height: 12px; background: rgba(0,0,0,0.35); }
+    .wm-tick.wm-major { height: 6px; background: rgba(15, 23, 42, 0.48); }
     .wm-month-label {
       position: absolute;
-      bottom: 12px;
+      top: 8px;
       transform: translateX(-50%);
-      font-size: 10px;
-      color: rgba(0,0,0,0.45);
+      font-size: 9px;
+      color: rgba(15, 23, 42, 0.48);
+      letter-spacing: 0.02em;
+      user-select: none;
+      pointer-events: none;
+    }
+    .wm-static-months {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 9px;
+      color: rgba(15, 23, 42, 0.46);
+      letter-spacing: 0.02em;
       user-select: none;
       pointer-events: none;
     }
@@ -1018,6 +1085,38 @@
       height: calc(100vh - var(--wm-strategic-timeline-h, 0px));
     }
     #profilePanel { position: relative; height: 220px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
+    #profileZoomControls {
+      position: absolute;
+      right: 12px;
+      top: calc(-58px + 7.5mm);
+      z-index: 1750;
+      display: none;
+      gap: 6px;
+      align-items: center;
+      padding: 4px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      background: rgba(255, 255, 255, 0.88);
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+      backdrop-filter: blur(4px);
+    }
+    #profileZoomControls button {
+      min-width: 26px;
+      height: 22px;
+      border: 1px solid rgba(148, 163, 184, 0.55);
+      background: #ffffff;
+      color: #0f172a;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0 6px;
+    }
+    #profileZoomControls button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
     #tourSummary { font-family: system-ui, -apple-system, sans-serif; }
     #tourSummary button,
     #tourSummary input,
@@ -3013,14 +3112,19 @@
       background: linear-gradient(135deg, rgba(15, 118, 110, 0.96), rgba(14, 165, 233, 0.94));
       box-shadow: 0 8px 18px rgba(14, 165, 233, 0.22);
     }
-    .wm-pref-segmented-btn[data-mode="hybrid"].is-active,
-    .wm-pref-segmented-btn[data-mode="hybrid"][aria-pressed="true"] {
-      background: linear-gradient(135deg, rgba(22, 101, 52, 0.96), rgba(8, 145, 178, 0.94));
-      box-shadow: 0 8px 18px rgba(8, 145, 178, 0.22);
-    }
     .wm-pref-segmented-btn:focus-visible {
       outline: 2px solid rgba(14,165,233,0.30);
       outline-offset: 2px;
+    }
+    .wm-pref-segmented-btn[disabled] {
+      cursor: not-allowed;
+      opacity: 0.48;
+      transform: none;
+      box-shadow: none;
+    }
+    .wm-pref-segmented-btn[disabled]:hover {
+      transform: none;
+      color: #475569;
     }
     .wm-pref-hint {
       font-size: 11px;
@@ -3035,11 +3139,6 @@
       background: linear-gradient(135deg, rgba(240, 253, 250, 0.98), rgba(224, 242, 254, 0.98));
       border-color: rgba(14, 165, 233, 0.22);
       color: #0f766e;
-    }
-    .wm-pref-hint[data-mode="hybrid"] {
-      background: linear-gradient(135deg, rgba(240, 253, 244, 0.98), rgba(236, 254, 255, 0.98));
-      border-color: rgba(8, 145, 178, 0.22);
-      color: #166534;
     }
     .wm-pref-advanced summary {
       list-style: none;
@@ -3339,7 +3438,6 @@
               <div id="tourProjectTitle" style="font-size:13px; font-weight:700; color:#1f2937; margin-bottom:4px;">Untitled Tour</div>
               <div id="tourProjectStatus" style="font-size:12px; color:#0f766e; margin-bottom:8px;">● Saved</div>
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
-                <button id="tourProjectNewBtn" type="button" class="wm-pref-action-btn">New Tour...</button>
                 <button id="tourProjectOpenBtn" type="button" class="wm-pref-action-btn">Open Tour...</button>
                 <button id="tourProjectSaveBtn" type="button" class="wm-pref-action-btn">Save Tour</button>
                 <button id="tourProjectSaveAsBtn" type="button" class="wm-pref-action-btn">Save Tour As...</button>
@@ -3357,7 +3455,7 @@
               <div class="wm-slot-panel">
                 <div class="wm-slot-toolbar">
                   <div class="wm-slot-row">
-                    <button id="tourSlotOptimizeBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Find Best Tour Time Slot</button>
+                    <button id="tourSlotOptimizeBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Start Simulation Run</button>
                     <label for="tourSlotGranularity" class="wm-slot-label">Steps</label>
                     <select id="tourSlotGranularity" class="wm-slot-select">
                     <option value="day" selected>Daily (finer)</option>
@@ -3376,7 +3474,7 @@
                   </select>
                   </div>
                 </div>
-                <div id="tourSlotStatus" class="wm-slot-status">Optimizer idle.</div>
+                <div id="tourSlotStatus" class="wm-slot-status">Simulation run idle.</div>
                 <div id="tourSlotResults" class="wm-slot-results"></div>
               </div>
               <div class="wm-progress-row">
@@ -3486,20 +3584,18 @@
                       <div class="wm-pref-row">
                         <label class="wm-pref-label" for="tourWeatherMode">
                           <span class="wm-pref-name">Weather source</span>
-                          <span class="wm-pref-sub">Choose historical climate, short-range forecast, or a hybrid day-by-day blend.</span>
+                          <span class="wm-pref-sub">Historical weather is the default. Forecast is offered only when the full tour is inside the next 14 days.</span>
                         </label>
                         <div class="wm-pref-control wm-pref-stack">
                           <div class="wm-pref-segmented" role="group" aria-label="Tour weather source">
-                            <button id="tourWeatherModeClimate" class="wm-pref-segmented-btn" type="button" data-mode="climatology" aria-pressed="false">Climate</button>
-                            <button id="tourWeatherModeHybrid" class="wm-pref-segmented-btn is-active" type="button" data-mode="hybrid" aria-pressed="true">Hybrid</button>
+                            <button id="tourWeatherModeClimate" class="wm-pref-segmented-btn is-active" type="button" data-mode="climatology" aria-pressed="true">Historical</button>
                             <button id="tourWeatherModeForecast" class="wm-pref-segmented-btn" type="button" data-mode="forecast" aria-pressed="false">Forecast</button>
                           </div>
-                          <select id="tourWeatherMode" class="wm-pref-select wm-visually-hidden" aria-label="Tour weather source" title="Choose historical climatology, forecast weather, or a hybrid tour mode">
-                            <option value="climatology">Climatology: typical weather from selected years</option>
-                            <option value="hybrid" selected>Hybrid: forecast when available, otherwise climatology</option>
+                          <select id="tourWeatherMode" class="wm-pref-select wm-visually-hidden" aria-label="Tour weather source" title="Choose historical climatology or forecast weather">
+                            <option value="climatology" selected>Climatology: typical weather from selected years</option>
                             <option value="forecast">Forecast: near-term Open-Meteo forecast</option>
                           </select>
-                          <div id="tourWeatherModeHint" class="wm-pref-hint" data-mode="hybrid">Hybrid mode uses forecast for ride days inside the forecast horizon and falls back to historical climate for later stages.</div>
+                          <div id="tourWeatherModeHint" class="wm-pref-hint" data-mode="climatology">Historical mode uses the selected year blend. Forecast can be enabled only when the full tour fits inside the 14-day forecast horizon.</div>
                         </div>
                       </div>
 
@@ -4091,11 +4187,13 @@
       <button id="strategicStepBack" type="button" class="wm-step-btn" aria-label="Previous step" title="Previous step">◀</button>
       <button id="strategicPlay" type="button">▶ Play Season</button>
       <button id="strategicStepForward" type="button" class="wm-step-btn" aria-label="Next step" title="Next step">▶</button>
+      <button id="strategicToday" type="button" aria-label="Jump to today" title="Jump timeline to today">Today</button>
       <div class="wm-strategic-slidercol">
         <div class="label" id="strategicTimelineLabel">—</div>
         <div style="display:flex; align-items:center; gap:8px;">
           <div class="wm-range-wrap" id="strategicRangeWrap" aria-label="Strategic date range">
             <div class="wm-range-track" aria-hidden="true">
+                <div class="wm-range-today" id="strategicRangeToday" aria-hidden="true" title="Today"></div>
                 <div class="wm-range-selected" id="strategicRangeSelected">
                   <div class="wm-range-thumb" id="strategicRangeThumbStart" aria-label="Start date" title="Start"></div>
                   <div class="wm-range-handle" id="strategicRangeHandle" aria-label="Drag to move time window" title="Drag to move window"></div>
@@ -4107,7 +4205,11 @@
             <input id="strategicRangeEnd" class="wm-range-input" type="range" min="1" max="365" step="1" value="14" />
           </div>
         </div>
-        <div id="strategicMonthTicks" aria-hidden="true"></div>
+        <div id="strategicMonthTicks" aria-hidden="true">
+          <div class="wm-static-months" aria-hidden="true">
+            <span>Jan</span><span>Feb</span><span>Mar</span><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>Sep</span><span>Oct</span><span>Nov</span><span>Dec</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -4176,6 +4278,11 @@
     </div>
     <!-- Drag handle on the upper edge to resize the profile panel height -->
     <div id="profileResizeHandle" style="position:absolute; top:0; left:0; right:0; height:5px; z-index:1700; background:transparent;"></div>
+    <div id="profileZoomControls" aria-label="Profile zoom controls">
+      <button id="profileZoomOut" type="button" aria-label="Zoom out profile" title="Zoom out horizontally" disabled>Zoom -</button>
+      <button id="profileZoomIn" type="button" aria-label="Zoom in profile" title="Zoom in horizontally" disabled>Zoom +</button>
+      <button id="profileZoomReset" type="button" aria-label="Reset profile zoom" title="Reset profile zoom" disabled>Reset</button>
+    </div>
     <canvas id="profileCanvas"></canvas>
     <canvas id="profileCursorCanvas" style="position:absolute; inset:0; pointer-events:none"></canvas>
       </div>
@@ -4585,7 +4692,7 @@
       }
 
       async function bootMap(){
-          const mapSrc = '/map.js?v=175';
+          const mapSrc = '/map.js?v=176';
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();
