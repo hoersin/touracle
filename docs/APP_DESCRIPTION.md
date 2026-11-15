@@ -1,65 +1,142 @@
 # Touracle / WeatherMap — App Description
 
+*Last updated: 2026-11-15*
+
 ## Purpose
-Touracle (a.k.a. “WeatherMap” in this repository) is a local-first web application for planning cycling and bikepacking routes with weather awareness.
 
-Sprint 5.3 introduces a native Tour project format (`.tour`) so work is saved/restored as a full planning project (route + plans + project preferences), not as isolated GPX or TourBook fragments.
+Touracle (repository name: WeatherMap) is a local-first web application for planning cycling and bikepacking tours with weather awareness.
 
-Sprint 5.4 unifies weather tile layout and date presentation across map markers and the route profile so date context stays readable without duplicating date strings in every tile.
+It combines three integrated workflows:
 
-It combines:
-- A **Tour Planning** view: you upload a GPX route and the app samples points along the route, then visualizes weather statistics along the route and across days.
-- A **Climatic Map** view: you explore climatology (temperature / rain / wind / comfort) as a map layer for a chosen calendar day.
+| Mode | What it does |
+|---|---|
+| **Tour Planning** | Upload a GPX route; visualise weather statistics along the route per day; plan the roadbook (stages, rest days); export a TourBook |
+| **Simulation Run** | Evaluate all candidate departure windows across a year and rank them by comfort/rain/wind score |
+| **Climatic Map** | Explore long-term climatology (temperature / rain / wind / comfort) as a map layer for any calendar day |
 
-The core design intent is to make route/date decisions easier by showing *spatially-resolved* weather signals (not just a single city forecast) and by keeping map + profile visuals consistent.
+The core design intent is to make route/date decisions easier by showing *spatially-resolved* weather signals (not just a single city forecast) and by keeping map and profile visuals consistent.
 
-## What the app shows
-The app focuses on weather that strongly affects cycling:
-- **Temperature** (typical/median and historical spread)
-- **Rain** (probability, typical amount, and historical percentiles)
-- **Wind** (speed and direction; in Tour mode also “effective wind” vs route heading)
+---
 
-The UI uses weather symbols/overlays on the map and a route profile strip to present the same underlying statistics from two angles.
-In Tour Planning, each tour day also gets a **day card** — a compact label placed perpendicular to the route on the map and drawn at the top of the profile strip. Each card shows: temperature, a weather icon, rain total, and the calendar date.
+## Main Feature Areas
 
-Date presentation consistency (Sprint 5.4):
-- Route start/finish endpoint markers and map weather station cards now use weekday-only labels (for example: `Wed`).
-- Profile weather cards keep weather details in the tile itself (temperature, icon, rain), while date metadata is rendered as a centered 3-line calendar block below each tile (`Day N`, `Wed Jul 12`, `2026`).
-- TourBook full-date rendering remains unchanged.
+### 1 — Tour Planning
 
-The map colour legend labels include units (e.g. `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`) so the scale is always self-explanatory.
+#### Route and weather
+- Upload a GPX file or use the built-in demo route (Milano → Rome).
+- The backend samples the route at a configurable step (km) and fetches historical weather per point.
+- Every tour day gets a **day card** placed perpendicular to the route on the map and at the top of the profile strip. Each card shows: temperature (°C), weather icon (sun / cloud / rain), rain (mm), lucky-day dot (green = comfortable), and weekday name.
+- The route profile canvas shows elevation, weather overlay (temperature band / rain bars / effective wind lane), and day boundary markers.
+- Hover anywhere on the map for a reverse-geocoded location tooltip. Click within ~1 mm of the route to snap the profile cursor to that position.
+- Legend labels include units: `Temperature (°C)`, `Rain (mm)`, `Wind (m/s)`, `Head/Tail-Wind (m/s)`.
 
-Location naming and route context:
-- Route cursor labels and TourBook stage endpoint labels are reverse-geocoded from sampled route coordinates.
-- The backend favors local nearby place names over broader city-level labels when both are available, reducing misleading endpoint naming on mountain/rural segments.
-- TourBook labels are rendered as endpoint pairs (`Start -> End`) so stage context remains explicit even when weather summaries are similar across adjacent days.
-## Data sources and modes
+#### Roadbook / stage planning
+- An editable **roadbook panel** lists all ride days and rest days as cards.
+- Rest stops can be inserted at any position between ride-day cards via dedicated insert zones.
+- Stage boundaries (day split positions in km) are draggable on the profile strip.
+- Each ride day shows: stage name, start/end location, distance (km), ascent (m), date, and weather summary.
+- Day-type model: `type = 'ride' | 'rest'`; rest days have `startKm === endKm` and `distanceKm = 0`.
+
+#### Tour Plan management
+- Multiple named **TourPlans** can be saved inside the app (browser localStorage via `TourPlanStorageService`).
+- Operations: save, load, duplicate, rename, delete (with confirmation guard).
+- Autosave fires 1800 ms after any change; a dirty-state indicator (`tourPlanDirty`) is visible in the sidebar.
+- Switching plans restores boundaries, start date, rest-day layout, and weather context.
+
+#### Tour Project file (open / save / save-as)
+- The entire tour — GPX content (embedded), all TourPlans, and the active plan ID — can be saved to a single **`.tour` file** (JSON, schema version 1).
+- Sidebar panel exposes: **Open**, **Save**, **Save As**, **Import GPX** buttons.
+- The file picker accepts `.tour` and `.json`; a legacy bridge reads older single-plan snapshots.
+- Backend endpoints `/api/gpx_content` (GET) and `/api/upload_gpx_text` (POST) support embedded GPX round-trips.
+
+#### Import / export clarity
+- **Import GPX**: both upload paths (file picker and drag-and-drop) apply the same defaults — start date `2026-06-01`, tour days 7 — then reset the plan and re-trigger the weather pipeline. This ensures a clean, predictable state every time a new GPX is loaded.
+- **Export — Excel TourBook**: styled `.xlsx` (via xlsx-js-style 1.2.0) with freeze panes, autofilter, alternating row styles, rest-day highlighting (orange tint), and column widths set. Labels centralised in `TOUR_EXPORT_STRINGS`.
+- **Export — PDF TourBook**: jsPDF + autoTable with dynamic landscape/portrait selection, rest-day row highlighting, page numbering, and “Generated by Touracle” footer.
+
+---
+
+### 2 — Simulation Run (Tour Slot Optimizer)
+
+A wizard that recommends the best departure window for a prepared TourBook (ride days, rest days, and stage boundaries already set).
+
+**Workflow:**
+1. Configure direction mode (`forward` / `reverse` / `auto_compare`), slot granularity, and climatology horizon (1 / 3 / 5 years).
+2. Click **Start Simulation Run**.
+3. Backend sweeps week-aligned candidate start dates, scores each with a composite penalty (temperature outside comfort range, rain probability, headwind — each with configurable weights), and optionally evaluates both route directions.
+4. Results panel shows ranked slots with penalty-curve SVGs, score breakdown, years-actually-used provenance, and an **Apply Selected Slot** button.
+5. Applying a slot updates the start date, direction flag, and immediately refreshes the weather map.
+
+**Score model:** lower = better. Dominant weight: rain probability (3.5×). Tailwind reduces the score (bonus).
+
+---
+
+### 3 — Climatic Map
+
+- Shows long-term climatology for any calendar day from the offline SQLite tile store.
+- Layer options: Temperature (Ride), Rain (Ride), Wind, Comfort.
+- Year range selector; timescale slider (daily → weekly → monthly → quarterly → yearly).
+- Climate cursor: click any map point to see aggregated per-tile stats.
+- Basemap switches to Carto Light (neutral) in this mode.
+
+---
+
+## Data Sources and Storage
+
+| Data | Location | Note |
+|---|---|---|
+| Uploaded GPX files | `project/data/uploaded_*.gpx` | Kept across server restarts |
+| Session state | `project/data/session_state.json` | Per-browser JSON; last GPX, tour settings, weather context |
+| Stats cache (online) | `project/cache/stats/` | Keyed by lat/lon + date |
+| Offline tile DBs | `project/cache/offline_weather_YYYY.sqlite` | Git LFS; one per year; default bbox lat 34–72, lon −28–33 (Iceland included) |
+| Browser preferences | `localStorage['touracle_settings']` | Thresholds, visualization mode, grid options |
+| TourPlans | `localStorage['touracle_tour_plans_*']` | Multiple named plans per session |
+
 ### Online mode
-When running online, the backend fetches data from provider APIs (e.g. Open‑Meteo archive API; Meteostat is also in dependencies).
+Backend fetches from Open-Meteo archive API (primary) and Meteostat (fallback). A circuit breaker (60 s lockout on HTTP 429) and in-flight de-duplication prevent runaway API usage.
 
 ### Offline mode (tile store)
-For fast and reproducible results, the app can optionally read from a prebuilt offline SQLite tile store (one DB per year is common in this repo, e.g. `project/cache/offline_weather_2025.sqlite`).
+Prebuilt SQLite DBs are checked before any online call. The builder is restart-safe, supports chunking (`--chunk-count / --chunk-index`), coastal ocean filtering, and auto-pacing (`--pace-until-berlin-7am`).
 
-Offline mode is used primarily by the Climatic Map (“strategic”) view, and can also be used to reduce network calls.
+---
 
-## Privacy and locality
-- The app is intended to run on your own machine.
-- GPX uploads and cached data are stored locally inside the repository’s `project/` subtree.
+## Architecture Summary
 
-## Non-goals (current scope)
-This repository is a prototype-style app. It does **not** currently aim to provide:
+| Layer | Stack |
+|---|---|
+| Backend | Python 3.11+, Flask, pandas, gpxpy, numpy, sqlite3 |
+| Frontend | Vanilla JS + Leaflet 1.9.4, Canvas 2D (profile / glyphs) |
+| Export | xlsx-js-style 1.2.0 (Excel), jsPDF + jsPDF-autoTable (PDF) |
+| Testing | pytest; 40+ snapshot + SSE + integration tests |
+| Packaging | PyInstaller Windows EXE via GitHub Actions |
+
+Key architectural decisions:
+- **Offline-first weather**: SQLite tile DB checked before any API call.
+- **SSE streaming**: Route, profile, weather glyphs, and day segments emitted incrementally.
+- **Weather-free TourPlan**: The serialised plan stores only roadbook geometry and settings — never cached weather values. Weather is derived at render time.
+- **Session scoping**: Each browser session gets an independent server-side state file.
+
+---
+
+## Privacy and Locality
+
+The app runs on your own machine. GPX uploads, cached weather, and all session state stay inside the `project/` subtree. The only external calls are anonymous lat/lon queries to Open-Meteo / Meteostat.
+
+---
+
+## Current Version Markers
+
+- Frontend JS cache-buster: `map.js?v=151`
+- Tour project schema: version 1
+- Repository / display name: `WeatherMap` / `Touracle`
+
+---
+
+## Non-Goals (current scope)
+
+This is a prototype-style app. It does **not** currently provide:
 - user accounts / authentication
 - a hosted SaaS deployment
-- a long-term data retention policy beyond local files
+- real-time forecast beyond Open-Meteo archive data
 - perfect meteorological correctness in all edge cases
-
-## Repository naming
-- The top-level folder name may be `WeatherMap`.
-- The app name in the README and UI is “Touracle / Bikepacking Weather Map”.
-
-## Native project architecture
-- Primary object: Tour Project
-- Route GPX is one component of the project
-- A single project can contain multiple independent Tour Plans for planning variants
-- TourBook is planning/visualization and export; persistence is managed at project level
-
+- worldwide offline tile coverage (current bbox: Europe + Iceland)
