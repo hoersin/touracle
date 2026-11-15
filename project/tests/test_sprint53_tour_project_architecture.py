@@ -42,13 +42,10 @@ def test_legacy_tourplan_loader_bridge_exists():
 def test_sidebar_has_project_centric_commands():
     html = _html()
     assert 'id="tourProjectPanel"' in html
-    assert 'id="tourProjectNewBtn"' in html
     assert 'id="tourProjectOpenBtn"' in html
     assert 'id="tourProjectSaveBtn"' in html
     assert 'id="tourProjectSaveAsBtn"' in html
     assert 'id="tourProjectImportGpxBtn"' in html
-    assert 'id="tourProjectReplaceGpxBtn"' in html
-    assert 'id="tourProjectExportGpxBtn"' in html
 
 
 def test_open_picker_accepts_tour_extension():

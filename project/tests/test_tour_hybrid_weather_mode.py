@@ -17,40 +17,37 @@ from app import (  # type: ignore
 )
 
 
-def test_hybrid_weather_mode_normalization_accepts_new_mode():
-    assert _normalize_tour_weather_mode('hybrid') == 'hybrid'
+def test_weather_mode_normalization_defaults_to_climatology():
+    assert _normalize_tour_weather_mode('hybrid') == 'climatology'
     assert _normalize_tour_weather_mode('forecast') == 'forecast'
     assert _normalize_tour_weather_mode('climatology') == 'climatology'
+    assert _normalize_tour_weather_mode('unknown') == 'climatology'
 
 
-def test_hybrid_mode_uses_forecast_only_inside_horizon():
+def test_forecast_mode_uses_forecast_only_inside_horizon():
     today = dt.date.today()
-    assert _effective_tour_weather_mode('hybrid', today) == 'forecast'
-    assert _effective_tour_weather_mode('hybrid', today + dt.timedelta(days=13)) == 'forecast'
-    assert _effective_tour_weather_mode('hybrid', today + dt.timedelta(days=14)) == 'climatology'
+    assert _effective_tour_weather_mode('forecast', today) == 'forecast'
+    assert _effective_tour_weather_mode('forecast', today + dt.timedelta(days=13)) == 'forecast'
+    assert _effective_tour_weather_mode('forecast', today + dt.timedelta(days=14)) == 'climatology'
 
 
-def test_hybrid_mode_uses_current_year_history_for_past_and_today():
+def test_non_forecast_modes_stay_climatology():
     today = dt.date.today()
-    spec_today = _hybrid_current_year_historical_spec('hybrid', today)
-    spec_past = _hybrid_current_year_historical_spec('hybrid', today - dt.timedelta(days=10))
-    spec_future = _hybrid_current_year_historical_spec('hybrid', today + dt.timedelta(days=1))
-    assert spec_today is not None
-    assert spec_today['start_year'] == today.year
-    assert spec_today['end_year'] == today.year
-    assert spec_today['include_current_year'] is True
-    assert spec_today['weather_source'] == 'historical-current-year'
-    assert spec_past is not None
-    assert spec_future is None
+    assert _effective_tour_weather_mode('climatology', today) == 'climatology'
+    assert _effective_tour_weather_mode('historical-median', today) == 'climatology'
+    assert _effective_tour_weather_mode('hybrid', today) == 'climatology'
 
 
-def test_hybrid_mode_keeps_forecast_online_but_historical_hybrid_offline_first_server_side():
+def test_hybrid_specific_server_side_branch_removed():
     source = (BACKEND_DIR / 'app.py').read_text(encoding='utf-8')
     assert "if tour_weather_mode == 'forecast':" in source
-    assert "elif tour_weather_mode == 'hybrid':" in source
-    assert 'offline_only = False' in source
     assert 'force_online = True' in source
-    assert 'Hybrid policy: prefer offline historical climatology' in source
+
+
+def test_hybrid_current_year_spec_disabled():
+    today = dt.date.today()
+    assert _hybrid_current_year_historical_spec('hybrid', today) is None
+    assert _hybrid_current_year_historical_spec('forecast', today) is None
 
 
 def test_location_scoring_prefers_recognizable_places_over_hamlets():

@@ -20,7 +20,7 @@ def test_req35_central_tour_plan_object_exists():
 
 def test_req36_weather_mode_union_documented():
     source = _source()
-    assert "@typedef {'forecast'|'hybrid'|'historical-year'|'historical-median'} WeatherMode" in source
+    assert "@typedef {'forecast'|'historical-year'|'historical-median'} WeatherMode" in source
     assert "function _normalizeWeatherMode(value)" in source
 
 

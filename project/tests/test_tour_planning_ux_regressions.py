@@ -32,11 +32,13 @@ def test_tour_schedule_exposes_departure_duration_and_arrival_inputs():
     assert 'id="arrivalDate"' in html
 
 
-def test_hybrid_weather_mode_ui_is_present():
+def test_weather_source_ui_is_historical_forecast_only():
     html = _html()
-    assert 'id="tourWeatherModeHybrid"' in html
-    assert 'value="hybrid"' in html
-    assert 'Hybrid: forecast when available, otherwise climatology' in html
+    assert 'id="tourWeatherModeHybrid"' not in html
+    assert 'value="hybrid"' not in html
+    assert 'id="tourWeatherModeClimate"' in html
+    assert 'id="tourWeatherModeForecast"' in html
+    assert 'Historical weather is the default.' in html
 
 
 def test_arrival_date_sync_uses_shared_tour_model_helpers():
@@ -90,16 +92,17 @@ def test_fit_entire_tour_action_exists_in_route_summary():
     assert '_fitEntireTour();' in source
 
 
-def test_hybrid_weather_mode_is_wired_into_frontend_state_and_controls():
+def test_forecast_policy_is_wired_into_frontend_state_and_controls():
     source = _source()
-    assert "if (raw === 'hybrid') return 'hybrid';" in source
-    assert "if (normalized === 'hybrid') return 'hybrid';" in source
-    assert "_setTourWeatherMode('hybrid');" in source
-    assert 'const hybridMode = _tourUsingHybridMode();' in source
-    assert "const forceOnlineTourWeather = (tourWeatherModeUi === 'forecast' || tourWeatherModeUi === 'hybrid');" in source
-    assert ": (forceOnlineTourWeather ? false : (routeMode !== 'premium'))," in source
-    assert ": (forceOnlineTourWeather ? true : (routeMode === 'premium'))," in source
-    assert "if (_tourUsingForecastMode() || _tourUsingHybridMode()) {" in source
+    assert "if (raw === 'hybrid') return 'historical-median';" in source
+    assert "function _tourTripFullyInsideForecastWindow()" in source
+    assert "function _enforceTourWeatherModePolicy(opts = {})" in source
+    assert "if (!policy.eligible) {" in source
+    assert "tourWeatherModeForecastBtn.disabled = !forecastEligible;" in source
+    assert "if (forecastOption) forecastOption.disabled = !forecastEligible;" in source
+    assert "Use live forecast weather?" not in source
+    assert "const allowOfflineFallbackByDefault = isForecastTourWeather;" in source
+    assert "if (_tourUsingForecastMode()) {" in source
 
 
 def test_route_and_reverse_changes_reset_location_label_cache():

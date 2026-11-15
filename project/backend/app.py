@@ -1,12 +1,9 @@
-from flask import Flask, jsonify, send_from_directory, request, Response, g, has_request_context
+from flask import Flask, jsonify, send_from_directory, request, Response
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 import os
 import time
 import threading
-import uuid
-import json
-import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as _dt
 import math
@@ -45,24 +42,14 @@ def _json_default(obj: Any):
 
 # Import sibling modules when running as a script
 import logging
-from route_sampling import (
-    sample_route,
-    sample_route_data,
-    load_gpx_route,
-    haversine_km,
-    load_gpx,
-    compute_elevation_stats_from_route_data,
-    compute_elevation_stats_from_series,
-    compare_elevation_stats,
-    compute_segment_ascent_sum,
-)
+from route_sampling import sample_route, haversine_km
 try:
     from stations import StationIndex
 except Exception:  # pragma: no cover
     StationIndex = None  # type: ignore
 from weather import compute_weather_statistics
 from glyph_geometry import generate_glyph_v2
-from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_daily_weather_window, fetch_forecast_weather_window, fetch_hourly_weather_same_day, fetch_hourly_forecast_weather_window, reset_api_disable, set_force_online
+from weather_openmeteo import fetch_daily_weather, fetch_daily_weather_same_day, fetch_daily_weather_window, fetch_hourly_weather_same_day, reset_api_disable, set_force_online
 from weather_service import WeatherService, reset_api_disable as reset_service_api_disable
 from weather import compute_daytime_temperature_statistics
 
@@ -83,19 +70,6 @@ try:
     from offline_weather_store import OfflineWeatherStore
 except Exception:  # pragma: no cover
     OfflineWeatherStore = None  # type: ignore
-
-try:
-    from stage_naming import compute_stage_name, build_stage_names
-except Exception:  # pragma: no cover
-    def compute_stage_name(*args, **kwargs):  # type: ignore
-        return "Stage"
-    def build_stage_names(*args, **kwargs):  # type: ignore
-        return []
-
-try:
-    from tour_slot_optimizer import optimize_tour_slots
-except Exception:  # pragma: no cover
-    optimize_tour_slots = None  # type: ignore
 
 app = Flask(__name__, static_folder=str(Path(__file__).resolve().parents[1] / 'frontend'))
 # Development: disable static file caching to ensure fresh frontend assets
@@ -163,8 +137,8 @@ def _ensure_temperature_summary_fields(stats: Any) -> Any:
                 stats['temp_hist_median'] = stats.get('temperature_c')
             elif stats.get('temp_day_median') is not None:
                 stats['temp_hist_median'] = stats.get('temp_day_median')
-            if 'temp_hist_min' not in stats and stats.get('temp_day_p25') is not None:
-                stats['temp_hist_min'] = stats.get('temp_day_p25')
+        if 'temp_hist_min' not in stats and stats.get('temp_p25') is not None:
+            stats['temp_hist_min'] = stats.get('temp_p25')
         if 'temp_hist_max' not in stats and stats.get('temp_p75') is not None:
             stats['temp_hist_max'] = stats.get('temp_p75')
         if 'temp_day_typical_min' not in stats and stats.get('temp_day_p25') is not None:
@@ -177,210 +151,16 @@ def _ensure_temperature_summary_fields(stats: Any) -> Any:
 UPLOAD_DIR = BASE_DIR / 'data'
 UPLOAD_DIR.mkdir(exist_ok=True)
 SESSION_FILE = DATA_DIR / 'session_state.json'
-SESSION_COOKIE_NAME = 'touracle_session_id'
-SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30
-
-
-def _normalize_tour_weather_mode(value: Any, default: str = 'hybrid') -> str:
-    try:
-        raw = str(value or '').strip().lower()
-    except Exception:
-        raw = ''
-    if raw == 'forecast':
-        return 'forecast'
-    if raw == 'hybrid':
-        return 'hybrid'
-    if raw in ('climatology', 'climate', 'historical', 'historical-median', 'historical_median'):
-        return 'climatology'
-    return str(default or 'hybrid')
-
-
-SESSION_STATE_DEFAULTS: Dict[str, Any] = {
+SESSION_STATE: Dict[str, Any] = {
     "last_gpx_path": "",
     "last_gpx_name": "",
     "start_date": "",
-    "tour_weather_mode": "hybrid",
     "tour_days": 7,
     "glyph_spacing_km": 60,
     "first_year": 2016,
     "num_years": 10,
     "reverse": False,
 }
-SESSION_STORE: Dict[str, Dict[str, Any]] = {}
-SESSION_STORE_LOCK = threading.Lock()
-SESSION_STORE_LOADED = False
-
-
-def _new_session_state() -> Dict[str, Any]:
-    return dict(SESSION_STATE_DEFAULTS)
-
-
-def _is_valid_session_id(value: Any) -> bool:
-    try:
-        text = str(value or '').strip()
-        if len(text) < 16 or len(text) > 64:
-            return False
-        return all(ch.isalnum() or ch in ('-', '_') for ch in text)
-    except Exception:
-        return False
-
-
-def _new_session_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _normalize_session_state(state: Dict[str, Any] | None) -> Dict[str, Any]:
-    normalized = _new_session_state()
-    if isinstance(state, dict):
-        for key, value in state.items():
-            if value is not None:
-                normalized[key] = value
-    if 'tour_days' in normalized:
-        try:
-            normalized['tour_days'] = int(normalized['tour_days'])
-        except Exception:
-            normalized['tour_days'] = SESSION_STATE_DEFAULTS['tour_days']
-    if 'glyph_spacing_km' in normalized:
-        try:
-            normalized['glyph_spacing_km'] = float(normalized['glyph_spacing_km'])
-        except Exception:
-            normalized['glyph_spacing_km'] = SESSION_STATE_DEFAULTS['glyph_spacing_km']
-    if 'first_year' in normalized:
-        try:
-            normalized['first_year'] = int(normalized['first_year'])
-        except Exception:
-            normalized['first_year'] = SESSION_STATE_DEFAULTS['first_year']
-    if 'num_years' in normalized:
-        try:
-            normalized['num_years'] = int(normalized['num_years'])
-        except Exception:
-            normalized['num_years'] = SESSION_STATE_DEFAULTS['num_years']
-    normalized['tour_weather_mode'] = _normalize_tour_weather_mode(
-        normalized.get('tour_weather_mode'),
-        default=SESSION_STATE_DEFAULTS['tour_weather_mode'],
-    )
-    normalized['reverse'] = bool(normalized.get('reverse'))
-    try:
-        normalized['_updated_at'] = float(normalized.get('_updated_at') or time.time())
-    except Exception:
-        normalized['_updated_at'] = time.time()
-    return normalized
-
-
-def _write_session_store_locked() -> None:
-    import json
-
-    payload = {
-        'sessions': {sid: _normalize_session_state(state) for sid, state in SESSION_STORE.items() if _is_valid_session_id(sid)}
-    }
-    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = SESSION_FILE.with_name(f'{SESSION_FILE.name}.tmp')
-    with open(tmp_path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, SESSION_FILE)
-
-
-def _load_session_store_locked() -> None:
-    import json
-
-    global SESSION_STORE_LOADED, SESSION_STORE
-    if SESSION_STORE_LOADED:
-        return
-    SESSION_STORE = {}
-    try:
-        if SESSION_FILE.exists():
-            with open(SESSION_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict) and isinstance(data.get('sessions'), dict):
-                for session_id, state in data['sessions'].items():
-                    if _is_valid_session_id(session_id) and isinstance(state, dict):
-                        SESSION_STORE[session_id] = _normalize_session_state(state)
-            elif isinstance(data, dict):
-                # Backward-compatible migration from the previous single-session file.
-                SESSION_STORE['legacy_session'] = _normalize_session_state(data)
-        SESSION_STORE_LOADED = True
-    except Exception:
-        logging.getLogger('pipeline').warning('[SESSION] Corrupted session JSON; starting fresh')
-        SESSION_STORE = {}
-        SESSION_STORE_LOADED = True
-
-
-def _select_restore_session_id_locked() -> Optional[str]:
-    if not SESSION_STORE:
-        return None
-    try:
-        return max(
-            SESSION_STORE.items(),
-            key=lambda item: float(item[1].get('_updated_at') or 0.0),
-        )[0]
-    except Exception:
-        try:
-            return next(iter(SESSION_STORE.keys()))
-        except Exception:
-            return None
-
-
-def _resolve_request_session_id(create: bool = True) -> Optional[str]:
-    if not has_request_context():
-        return None
-    current = getattr(g, 'touracle_session_id', None)
-    if _is_valid_session_id(current):
-        return str(current)
-    cookie_sid = request.cookies.get(SESSION_COOKIE_NAME)
-    if _is_valid_session_id(cookie_sid):
-        g.touracle_session_id = str(cookie_sid)
-        g.touracle_session_cookie_needs_set = False
-        return str(cookie_sid)
-    if not create:
-        return None
-    session_id = _new_session_id()
-    g.touracle_session_id = session_id
-    g.touracle_session_cookie_needs_set = True
-    return session_id
-
-
-@app.after_request
-def _attach_session_cookie(response: Response) -> Response:
-    try:
-        if has_request_context() and getattr(g, 'touracle_session_cookie_needs_set', False):
-            session_id = getattr(g, 'touracle_session_id', None)
-            if _is_valid_session_id(session_id):
-                response.set_cookie(
-                    SESSION_COOKIE_NAME,
-                    str(session_id),
-                    max_age=SESSION_COOKIE_MAX_AGE,
-                    httponly=True,
-                    samesite='Lax',
-                )
-    except Exception:
-        pass
-    return response
-
-
-def _session_upload_dir(session_id: str) -> Path:
-    path = DATA_DIR / 'sessions' / session_id / 'uploads'
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _resolve_session_gpx(preferred: str | Path | None = None, session_id: Optional[str] = None) -> Path:
-    try:
-        if preferred:
-            preferred_path = Path(preferred)
-            if preferred_path.exists() and preferred_path.suffix.lower() == '.gpx':
-                return preferred_path
-    except Exception:
-        pass
-    try:
-        st = load_session_state(session_id=session_id)
-        session_path = st.get('last_gpx_path')
-        if session_path:
-            path = Path(str(session_path))
-            if path.exists() and path.suffix.lower() == '.gpx':
-                return path
-    except Exception:
-        pass
-    return GPX_FILE
 
 
 def _latest_available_gpx() -> Optional[Path]:
@@ -407,25 +187,11 @@ def _resolve_default_gpx(preferred: str | Path | None = None) -> Path:
         return latest
     return GPX_FILE
 
-
-def _gpx_path_is_usable(path_value: str | Path | None) -> bool:
-    try:
-        if not path_value:
-            return False
-        path = Path(path_value)
-        if not path.exists() or path.suffix.lower() != '.gpx':
-            return False
-        ET.parse(path)
-        return True
-    except Exception:
-        return False
-
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger('pipeline')
 
 _OFFLINE_STORE: Optional[Any] = None
 _OFFLINE_STORE_TRIED = False
-_OFFLINE_STORE_LOCK = threading.Lock()
 _OFFLINE_STORES_BY_YEAR: Dict[int, Any] = {}
 _OFFLINE_STORES_BY_YEAR_LOCK = threading.Lock()
 _OFFLINE_STORES_BY_PATH: Dict[str, Any] = {}
@@ -448,33 +214,27 @@ def _get_offline_store() -> Optional[Any]:
     global _OFFLINE_STORE, _OFFLINE_STORE_TRIED
     if _OFFLINE_STORE_TRIED:
         return _OFFLINE_STORE
-    with _OFFLINE_STORE_LOCK:
-        if _OFFLINE_STORE_TRIED:
-            return _OFFLINE_STORE
+    _OFFLINE_STORE_TRIED = True
 
-        if OfflineWeatherStore is None:
-            _OFFLINE_STORE = None
-            _OFFLINE_STORE_TRIED = True
-            return None
+    if OfflineWeatherStore is None:
+        _OFFLINE_STORE = None
+        return None
 
+    try:
+        _OFFLINE_STORE = OfflineWeatherStore.default_from_env()
+    except Exception:
+        _OFFLINE_STORE = None
+
+    if _OFFLINE_STORE is not None:
         try:
-            store = OfflineWeatherStore.default_from_env()
+            log.info('[OFFLINE] enabled db=%s tile_km=%.1f', _OFFLINE_STORE.cfg.db_path, float(_OFFLINE_STORE.cfg.tile_km))
         except Exception:
-            store = None
-
-        _OFFLINE_STORE = store
-        _OFFLINE_STORE_TRIED = True
-
-        if _OFFLINE_STORE is not None:
-            try:
-                log.info('[OFFLINE] enabled db=%s tile_km=%.1f', _OFFLINE_STORE.cfg.db_path, float(_OFFLINE_STORE.cfg.tile_km))
-            except Exception:
-                log.info('[OFFLINE] enabled')
-        else:
-            # Only warn if user explicitly asked for offline.
-            if os.environ.get('OFFLINE_WEATHER_DB') or _offline_strict_enabled():
-                log.warning('[OFFLINE] requested but unavailable (db missing/invalid)')
-        return _OFFLINE_STORE
+            log.info('[OFFLINE] enabled')
+    else:
+        # Only warn if user explicitly asked for offline.
+        if os.environ.get('OFFLINE_WEATHER_DB') or _offline_strict_enabled():
+            log.warning('[OFFLINE] requested but unavailable (db missing/invalid)')
+    return _OFFLINE_STORE
 
 
 def _get_offline_store_for_year(year: int | None) -> Optional[Any]:
@@ -771,66 +531,11 @@ def _parse_years_csv(raw: str | None) -> list[int]:
     return uniq
 
 
-def _normalize_requested_years(
-    *,
-    years_selected: list[int] | None = None,
-    start_year: int | None = None,
-    end_year: int | None = None,
-) -> list[int]:
-    out: list[int] = []
-    seen: set[int] = set()
-
-    for value in years_selected or []:
-        try:
-            year = int(value)
-        except Exception:
-            continue
-        if year in seen:
-            continue
-        seen.add(year)
-        out.append(year)
-
-    if out:
-        return out
-
-    try:
-        if start_year is not None and end_year is not None:
-            ys = int(min(start_year, end_year))
-            ye = int(max(start_year, end_year))
-            for year in range(ys, ye + 1):
-                out.append(int(year))
-    except Exception:
-        return []
-    return out
-
-
 def _normalize_climate_mode(raw: str | None) -> str:
     mode_raw = str(raw or 'active').strip().lower()
     if mode_raw in ('24h', 'full', 'full-day', 'full_day', 'day'):
         return 'full_day'
     return 'active'
-
-
-def _parse_active_hours(raw: Any) -> tuple[int, int]:
-    txt = str(raw or '').strip()
-    try:
-        if '-' in txt:
-            lhs, rhs = txt.split('-', 1)
-            start_hour = int(lhs.strip())
-            end_hour = int(rhs.strip())
-        else:
-            start_hour = 10
-            end_hour = 18
-    except Exception:
-        start_hour = 10
-        end_hour = 18
-    start_hour = max(0, min(23, int(start_hour)))
-    end_hour = max(0, min(23, int(end_hour)))
-    if end_hour < start_hour:
-        start_hour, end_hour = end_hour, start_hour
-    if end_hour <= start_hour:
-        end_hour = min(23, start_hour + 1)
-    return start_hour, end_hour
 
 
 def _opt_float_arg(name: str) -> float | None:
@@ -929,206 +634,45 @@ def _normalize_location_country(code: Any) -> str | None:
         return None
 
 
-def _location_admin_importance(kind: str | None) -> int:
-    key = str(kind or '').strip().lower()
-    return {
-        'city': 6,
-        'town': 5,
-        'municipality': 4,
-        'locality': 4,
-        'village': 3,
-        'suburb': 2,
-        'city_district': 2,
-        'hamlet': 0,
-        'county': 1,
-        'state_district': 1,
-    }.get(key, 1)
-
-
-def _location_candidate_score(distance_km: float, population: int, admin_importance: int) -> float:
-    pop = max(0, int(population or 0))
-    dist = max(0.0, float(distance_km or 0.0))
-    pop_weight = min(18.0, math.log10(max(1, pop)) * 3.2)
-    distance_weight = max(0.0, 20.0 - min(80.0, dist) * 0.55)
-    admin_weight = float(admin_importance or 0) * 5.0
-    if dist <= 5.0:
-        distance_bias = 8.0
-    elif dist <= 12.0:
-        distance_bias = 4.0
-    elif dist <= 20.0:
-        distance_bias = 1.0
-    elif dist <= 35.0:
-        distance_bias = 0.0
-    elif dist <= 50.0:
-        distance_bias = -4.0
-    else:
-        distance_bias = -12.0
-    return pop_weight + distance_weight + admin_weight + distance_bias
-
-
-def _should_prefer_offline_city(online_choice: dict[str, Any] | None, offline_city: dict[str, Any] | None) -> bool:
-    if offline_city is None:
-        return False
-    if online_choice is None:
-        return True
-    try:
-        online_admin = int(online_choice.get('admin_importance') or 0)
-        online_score = float(online_choice.get('score') or 0.0)
-        offline_score = float(offline_city.get('score') or 0.0)
-        offline_dist = float(offline_city.get('distance_km') or 999.0)
-    except Exception:
-        return False
-    if offline_dist > 15.0:
-        return False
-    if online_admin >= 3:
-        return False
-    return offline_score >= (online_score + 6.0)
-
-
-def _should_prefer_offline_local_name(online_choice: dict[str, Any] | None, offline_local: dict[str, str] | None) -> bool:
-    if online_choice is None or offline_local is None:
-        return False
-    try:
-        online_name = str(online_choice.get('name') or '').strip().lower()
-        online_kind = str(online_choice.get('source_kind') or '').strip().lower()
-        local_name = str(offline_local.get('name') or '').strip().lower()
-        local_dist = float(offline_local.get('distance_km') or 999.0)
-    except Exception:
-        return False
-    if not local_name or local_name == online_name:
-        return False
-    if local_dist > 12.0:
-        return False
-    online_source = str(online_choice.get('source') or '').strip().lower()
-    # Allow override of broad online or offline-city candidates when a closer local match exists.
-    if online_source == 'offline-city':
-        chosen_dist = float(online_choice.get('distance_km') or 999.0)
-        return local_dist < chosen_dist - 0.5
-    # Allow reverse_geocoder to override a broad online city label when it is meaningfully closer.
-    if online_source == 'online-reverse' and online_kind == 'city':
-        return local_dist <= 5.0
-    return online_kind in ('county', 'state_district', 'display_name', 'geonamescache', 'offline-nearby-city-override')
-
-
-def _should_prefer_nearby_city_over_online(online_choice: dict[str, Any] | None, nearby_city: dict[str, Any] | None) -> bool:
-    if online_choice is None or nearby_city is None:
-        return False
-    try:
-        online_name = str(online_choice.get('name') or '').strip().lower()
-        online_kind = str(online_choice.get('source_kind') or '').strip().lower()
-        city_name = str(nearby_city.get('name') or '').strip().lower()
-        city_dist = float(nearby_city.get('distance_km') or 999.0)
-        city_pop = int(nearby_city.get('population') or 0)
-    except Exception:
-        return False
-    if online_kind != 'city':
-        return False
-    if not city_name or city_name == online_name:
-        return False
-    if city_dist > 8.0:
-        return False
-    return city_pop >= 3000
-
-
-def _reverse_candidate_effective_score(candidate: dict[str, Any] | None) -> float:
-    if not isinstance(candidate, dict):
-        return -1e9
-    try:
-        score = float(candidate.get('score') or 0.0)
-    except Exception:
-        score = 0.0
-    try:
-        zoom = int(candidate.get('zoom') or 0)
-    except Exception:
-        zoom = 0
-    kind = str(candidate.get('source_kind') or '').strip().lower()
-    zoom_bonus = max(0.0, float(zoom - 10) * 1.8)
-    if kind in ('city', 'county', 'state_district') and zoom <= 13:
-        zoom_bonus -= 6.0
-    return score + zoom_bonus
-
-
-def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
+def _pick_reverse_geocode_name(payload: Any) -> tuple[str | None, str | None]:
     try:
         if not isinstance(payload, dict):
-            return None
+            return (None, None)
         address = payload.get('address') if isinstance(payload.get('address'), dict) else {}
-        # Prefer local administrative/place names before broad city labels.
         primary_keys = (
-            'municipality',
+            'city',
             'town',
             'village',
+            'hamlet',
+            'municipality',
             'locality',
             'suburb',
             'city_district',
-            'hamlet',
-            'city',
         )
         fallback_keys = (
             'county',
             'state_district',
         )
-        try:
-            payload_zoom = int(payload.get('_wm_zoom') or 0)
-        except Exception:
-            payload_zoom = 0
-        best: dict[str, Any] | None = None
         for key in primary_keys:
             raw = address.get(key)
             if raw:
                 name = str(raw).strip()
                 if name:
-                    candidate = {
-                        'name': name,
-                        'country': _normalize_location_country(address.get('country_code')),
-                        'admin_importance': _location_admin_importance(key),
-                        'population': 0,
-                        'distance_km': 0.0,
-                        'source': 'online-reverse',
-                        'source_kind': key,
-                        'zoom': payload_zoom,
-                        'score': _location_candidate_score(0.0, 0, _location_admin_importance(key)),
-                    }
-                    if best is None:
-                        best = candidate
+                    return (name, _normalize_location_country(address.get('country_code')))
         for key in fallback_keys:
             raw = address.get(key)
             if raw:
                 name = str(raw).strip()
                 if name:
-                    candidate = {
-                        'name': name,
-                        'country': _normalize_location_country(address.get('country_code')),
-                        'admin_importance': _location_admin_importance(key),
-                        'population': 0,
-                        'distance_km': 0.0,
-                        'source': 'online-reverse',
-                        'source_kind': key,
-                        'zoom': payload_zoom,
-                        'score': _location_candidate_score(0.0, 0, _location_admin_importance(key)),
-                    }
-                    if best is None or float(candidate['score']) > float(best['score']):
-                        best = candidate
+                    return (name, _normalize_location_country(address.get('country_code')))
         display_name = str(payload.get('name') or payload.get('display_name') or '').strip()
         if display_name:
             first = display_name.split(',')[0].strip()
             if first:
-                candidate = {
-                    'name': first,
-                    'country': _normalize_location_country(address.get('country_code')),
-                    'admin_importance': 1,
-                    'population': 0,
-                    'distance_km': 0.0,
-                    'source': 'online-reverse',
-                    'source_kind': 'display_name',
-                    'zoom': payload_zoom,
-                    'score': _location_candidate_score(0.0, 0, 1),
-                }
-                if best is None or float(candidate['score']) > float(best['score']):
-                    best = candidate
-        return best
+                return (first, _normalize_location_country(address.get('country_code')))
+        return (None, _normalize_location_country(address.get('country_code')))
     except Exception:
-        return None
+        return (None, None)
 
 
 def _reverse_station_fallback(lat: float, lon: float) -> dict[str, str] | None:
@@ -1172,12 +716,10 @@ def _reverse_station_fallback(lat: float, lon: float) -> dict[str, str] | None:
         'name': name,
         'country': '',
         'label': name,
-        'source': 'offline-station',
-        'distance_km': f'{float(dist_km):.3f}',
     }
 
 
-def _reverse_offline_city_candidate(lat: float, lon: float, *, prefer_nearest: bool = False) -> dict[str, Any] | None:
+def _reverse_offline_city_fallback(lat: float, lon: float) -> dict[str, str] | None:
     global _REVERSE_OFFLINE_CITY_CANDIDATES
     try:
         lat_f = float(lat)
@@ -1194,7 +736,7 @@ def _reverse_offline_city_candidate(lat: float, lon: float, *, prefer_nearest: b
                 for city in raw.values():
                     try:
                         population = int(city.get('population') or 0)
-                        if population < 5000:
+                        if population < 15000:
                             continue
                         candidates.append((
                             float(city['latitude']),
@@ -1209,60 +751,25 @@ def _reverse_offline_city_candidate(lat: float, lon: float, *, prefer_nearest: b
             except Exception:
                 _REVERSE_OFFLINE_CITY_CANDIDATES = []
         candidates = list(_REVERSE_OFFLINE_CITY_CANDIDATES or [])
-    best: dict[str, Any] | None = None
+    best: tuple[float, int, str, str] | None = None
     for city_lat, city_lon, population, city_name, country_code in candidates:
         if not city_name:
             continue
-        if abs(city_lat - lat_f) > 1.5 or abs(city_lon - lon_f) > 1.5:
+        if abs(city_lat - lat_f) > 1.2 or abs(city_lon - lon_f) > 1.2:
             continue
         dist_km = haversine_km(lat_f, lon_f, city_lat, city_lon)
         if dist_km > 35.0:
             continue
-        candidate = {
-            'name': city_name,
-            'country': country_code,
-            'distance_km': dist_km,
-            'population': population,
-            'admin_importance': 6 if population >= 100000 else (5 if population >= 25000 else 4),
-            'source': 'offline-city',
-            'source_kind': 'geonamescache',
-        }
-        candidate['score'] = _location_candidate_score(
-            candidate['distance_km'],
-            candidate['population'],
-            candidate['admin_importance'],
-        )
-        if best is None:
-            best = candidate
-            continue
-        if prefer_nearest:
-            best_dist = float(best.get('distance_km') or 999.0)
-            cand_dist = float(candidate.get('distance_km') or 999.0)
-            if cand_dist < best_dist - 0.1:
-                best = candidate
-                continue
-            if abs(cand_dist - best_dist) <= 0.1 and int(candidate.get('population') or 0) > int(best.get('population') or 0):
-                best = candidate
-                continue
-        if float(candidate['score']) > float(best['score']):
-            best = candidate
+        score = (dist_km, -population, city_name, country_code)
+        if best is None or score < best:
+            best = score
     if best is None:
         return None
-    return best
-
-
-def _reverse_offline_city_fallback(lat: float, lon: float) -> dict[str, str] | None:
-    candidate = _reverse_offline_city_candidate(lat, lon)
-    if candidate is None:
-        return None
-    city_name = str(candidate.get('name') or '').strip()
-    country_code = str(candidate.get('country') or '').strip()
+    _, _, city_name, country_code = best
     return {
         'name': city_name,
         'country': country_code,
         'label': f'{city_name} ({country_code})' if country_code else city_name,
-        'source': 'offline-city',
-        'distance_km': f'{float(candidate.get("distance_km") or 0.0):.3f}',
     }
 
 
@@ -1290,32 +797,24 @@ def _reverse_offline_nearest_place_fallback(lat: float, lon: float) -> dict[str,
         match_lon = float(match.get('lon'))
     except Exception:
         return None
-    dist_km = haversine_km(lat_f, lon_f, match_lat, match_lon)
-    if not name or dist_km > 20.0:
+    if not name or haversine_km(lat_f, lon_f, match_lat, match_lon) > 20.0:
         return None
     return {
         'name': name,
         'country': country_code,
         'label': f'{name} ({country_code})' if country_code else name,
-        'source': 'offline-nearest-place',
-        'distance_km': f'{dist_km:.3f}',
     }
 
 
 def _reverse_offline_fallback(lat: float, lon: float) -> dict[str, str] | None:
     return (
-        _reverse_offline_nearest_place_fallback(lat, lon)
-        or _reverse_offline_city_fallback(lat, lon)
+        _reverse_offline_city_fallback(lat, lon)
+        or _reverse_offline_nearest_place_fallback(lat, lon)
         or _reverse_station_fallback(lat, lon)
     )
 
 
-def _reverse_geocode_cache_key(lat: float, lon: float) -> tuple[float, float]:
-    """Cache reverse-geocode results at neighborhood scale, not city scale."""
-    return (round(float(lat), 3), round(float(lon), 3))
-
-
-def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_online: bool = True) -> dict[str, str] | None:
+def _reverse_geocode_location(lat: float | None, lon: float | None) -> dict[str, str] | None:
     global _REVERSE_GEOCODE_COOLDOWN_UNTIL
     try:
         if lat is None or lon is None:
@@ -1325,25 +824,11 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
     except Exception:
         return None
 
-    cache_key = _reverse_geocode_cache_key(lat_f, lon_f)
+    cache_key = (round(lat_f, 2), round(lon_f, 2))
     with _REVERSE_GEOCODE_CACHE_LOCK:
         cached = _REVERSE_GEOCODE_CACHE.get(cache_key)
         if cached is not None:
             return dict(cached)
-
-    if not allow_online:
-        fallback = _reverse_offline_fallback(lat_f, lon_f)
-        if fallback:
-            with _REVERSE_GEOCODE_CACHE_LOCK:
-                if len(_REVERSE_GEOCODE_CACHE) >= 512:
-                    try:
-                        first_key = next(iter(_REVERSE_GEOCODE_CACHE.keys()))
-                        del _REVERSE_GEOCODE_CACHE[first_key]
-                    except Exception:
-                        pass
-                _REVERSE_GEOCODE_CACHE[cache_key] = dict(fallback)
-            return dict(fallback)
-        return None
 
     try:
         with _REVERSE_GEOCODE_COOLDOWN_LOCK:
@@ -1364,7 +849,7 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
         }
         payloads: list[dict[str, Any]] = []
         hit_rate_limit = False
-        for zoom in ('18', '17', '16', '15', '14', '13', '12', '10'):
+        for zoom in ('14', '13', '12', '10'):
             resp = requests.get(
                 'https://nominatim.openstreetmap.org/reverse',
                 params={
@@ -1384,52 +869,22 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
                 continue
             payload = resp.json()
             if isinstance(payload, dict):
-                payload['_wm_zoom'] = int(zoom)
                 payloads.append(payload)
 
-        chosen: dict[str, Any] | None = None
+        chosen_name: str | None = None
+        chosen_country: str | None = None
         for payload in payloads:
-            candidate = _pick_reverse_geocode_name(payload)
-            if candidate and (chosen is None or _reverse_candidate_effective_score(candidate) > _reverse_candidate_effective_score(chosen)):
-                chosen = candidate
-        offline_city = _reverse_offline_city_candidate(lat_f, lon_f)
-        if _should_prefer_offline_city(chosen, offline_city):
-            chosen = offline_city
-        nearby_city = _reverse_offline_city_candidate(lat_f, lon_f, prefer_nearest=True)
-        if _should_prefer_nearby_city_over_online(chosen, nearby_city):
-            chosen = {
-                **nearby_city,
-                'source': 'offline-city',
-                'source_kind': 'offline-nearby-city-override',
-            }
-        offline_local = _reverse_offline_nearest_place_fallback(lat_f, lon_f)
-        if _should_prefer_offline_local_name(chosen, offline_local):
-            chosen = {
-                'name': str(offline_local.get('name') or '').strip(),
-                'country': str(offline_local.get('country') or '').strip(),
-                'distance_km': float(offline_local.get('distance_km') or 0.0),
-                'population': 0,
-                'admin_importance': 3,
-                'source': 'offline-nearest-place',
-                'source_kind': 'offline-nearest-place-override',
-                'score': _location_candidate_score(float(offline_local.get('distance_km') or 0.0), 0, 3),
-            }
-        if chosen and chosen.get('name'):
-            chosen_name = str(chosen.get('name') or '').strip()
-            chosen_country = str(chosen.get('country') or '').strip()
-            chosen_source = str(chosen.get('source') or 'online-reverse').strip()
-            chosen_distance = chosen.get('distance_km')
+            name, country = _pick_reverse_geocode_name(payload)
+            if name:
+                chosen_name = name
+                chosen_country = country
+                break
+        if chosen_name:
             out = {
                 'name': str(chosen_name),
                 'country': str(chosen_country or ''),
                 'label': f'{chosen_name} ({chosen_country})' if chosen_country else str(chosen_name),
-                'source': chosen_source,
             }
-            if chosen_distance is not None:
-                try:
-                    out['distance_km'] = f'{float(chosen_distance):.3f}'
-                except Exception:
-                    pass
             with _REVERSE_GEOCODE_CACHE_LOCK:
                 if len(_REVERSE_GEOCODE_CACHE) >= 512:
                     try:
@@ -1472,60 +927,6 @@ def _is_lucky_profile_day(temp_c: float | None, rain_mm: float | None, wind_ms: 
     )
 
 
-def _forecast_horizon_bounds() -> tuple[_dt.date, _dt.date]:
-    today = _dt.date.today()
-    return today, today + _dt.timedelta(days=13)
-
-
-def _forecast_available_for_date(day_value: Any) -> bool:
-    try:
-        if isinstance(day_value, _dt.datetime):
-            day_obj = day_value.date()
-        elif isinstance(day_value, _dt.date):
-            day_obj = day_value
-        else:
-            return False
-        start_day, end_day = _forecast_horizon_bounds()
-        return start_day <= day_obj <= end_day
-    except Exception:
-        return False
-
-
-def _effective_tour_weather_mode(selected_mode: str, assigned_date: Any = None) -> str:
-    mode = _normalize_tour_weather_mode(selected_mode, default='hybrid')
-    if mode != 'hybrid':
-        return mode
-    return 'forecast' if _forecast_available_for_date(assigned_date) else 'climatology'
-
-
-def _hybrid_current_year_historical_spec(selected_mode: str, assigned_date: Any = None) -> dict[str, Any] | None:
-    mode = _normalize_tour_weather_mode(selected_mode, default='hybrid')
-    if mode != 'hybrid':
-        return None
-    try:
-        if isinstance(assigned_date, _dt.datetime):
-            day_obj = assigned_date.date()
-        elif isinstance(assigned_date, _dt.date):
-            day_obj = assigned_date
-        else:
-            return None
-        today = _dt.date.today()
-        if day_obj.year != today.year:
-            return None
-        if day_obj > today:
-            return None
-        return {
-            'start_year': int(today.year),
-            'end_year': int(today.year),
-            'years_window': 1,
-            'span_tag': f'hybridcur{int(today.year)}',
-            'include_current_year': True,
-            'weather_source': 'historical-current-year',
-        }
-    except Exception:
-        return None
-
-
 @app.route('/api/location_label')
 def api_location_label():
     try:
@@ -1550,109 +951,7 @@ def api_location_label():
         'location': str(resolved.get('label') or ''),
         'location_name': str(resolved.get('name') or ''),
         'location_country': str(resolved.get('country') or ''),
-        'location_source': str(resolved.get('source') or ''),
-        'location_distance_km': str(resolved.get('distance_km') or ''),
     })
-
-
-@app.route('/api/stage_names')
-def api_stage_names():
-    """
-    Compute meaningful stage names using the Stage Naming Engine.
-    
-    Query params:
-        - stages: JSON array of [start_lat, start_lon, end_lat, end_lon] tuples
-        - previous_end_name: optional name from previous stage's endpoint (for continuity)
-    
-    Returns:
-        JSON with computed stage names and stage descriptions.
-    """
-    try:
-        import json
-        stages_json = request.args.get('stages', '[]')
-        stages = json.loads(stages_json)
-        if not isinstance(stages, list) or not stages:
-            return jsonify({'error': 'Invalid stages parameter'}), 400
-        
-        stage_names = []
-        previous_end_name = request.args.get('previous_end_name', '')
-
-        def _geo_to_stage_candidate(lat: float, lon: float) -> list[dict[str, Any]] | None:
-            """Offline-geocode a stage endpoint and return it as a compute_stage_name candidate."""
-            try:
-                geo = _reverse_geocode_location(lat, lon, allow_online=False)
-                if not geo:
-                    return None
-                name = str(geo.get('name') or '').strip()
-                country = str(geo.get('country') or '').strip()
-                if not name:
-                    return None
-                full_label = f'{name} ({country})' if country else name
-                try:
-                    dist_km = float(geo.get('distance_km') or 0.0)
-                except Exception:
-                    dist_km = 0.0
-                return [{
-                    'name': full_label,
-                    'population': 10000,
-                    'admin_type': 'town',
-                    'lat': lat,
-                    'lon': lon,
-                    'distance_km': dist_km,
-                }]
-            except Exception:
-                return None
-
-        def _geo_stage_label(lat: float, lon: float) -> str:
-            """Return a formatted 'Name (CC)' label for a stage endpoint, or empty string."""
-            cands = _geo_to_stage_candidate(lat, lon)
-            if cands and cands[0].get('name'):
-                return str(cands[0]['name'])
-            return ''
-
-        for stage in stages:
-            if not isinstance(stage, (list, tuple)) or len(stage) < 4:
-                stage_names.append('Stage')
-                continue
-
-            try:
-                start_lat = float(stage[0])
-                start_lon = float(stage[1])
-                end_lat = float(stage[2])
-                end_lon = float(stage[3])
-
-                start_label = _geo_stage_label(start_lat, start_lon)
-                end_label = _geo_stage_label(end_lat, end_lon)
-
-                if start_label and end_label:
-                    name = f'{start_label} → {end_label}'
-                elif start_label:
-                    name = start_label
-                elif end_label:
-                    name = end_label
-                else:
-                    # Fallback: scenic region / coordinate approach via compute_stage_name
-                    name = compute_stage_name(
-                        start_lat, start_lon, end_lat, end_lon,
-                        previous_stage_end_name=previous_end_name if previous_end_name else None
-                    )
-                stage_names.append(name)
-
-                # Extract end name for continuity
-                if ' → ' in name:
-                    previous_end_name = name.split(' → ')[-1].strip()
-                else:
-                    previous_end_name = name
-            except Exception:
-                stage_names.append('Stage')
-        
-        return jsonify({
-            'stage_names': stage_names,
-            'status': 'ok',
-        })
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/strategic_grid')
@@ -2038,11 +1337,6 @@ def api_weather_profile():
     if OfflineWeatherStore is None:
         return jsonify({"error": "Offline store unavailable"}), 400
 
-    session_id = _resolve_request_session_id(create=True)
-    job_id = str(request.args.get('job_id') or '').strip()
-    progress_session_id = str(session_id) if session_id else None
-    progress_active = False
-
     try:
         lat = float(request.args.get('lat', ''))
         lon = float(request.args.get('lon', ''))
@@ -2114,9 +1408,6 @@ def api_weather_profile():
         return jsonify({"error": "Selected point is outside offline weather coverage"}), 400
 
     total_days = (end_date - start_date).days + 1
-    if job_id:
-        progress_init(job_id, total_days * len(stores_by_year), session_id=progress_session_id)
-        progress_active = True
     series: list[dict[str, Any]] = []
     summary_temps: list[float] = []
     summary_rains: list[float] = []
@@ -2128,154 +1419,155 @@ def api_weather_profile():
     rain_days = 0
     calm_days = 0
 
-    try:
-        for idx in range(total_days):
-            d = start_date + _dt.timedelta(days=idx)
-            day_temp_vals: list[float] = []
-            day_temp_low_vals: list[float] = []
-            day_temp_high_vals: list[float] = []
-            day_rain_vals: list[float] = []
-            day_wind_vals: list[float] = []
-            day_dir_vals: list[float] = []
-            for _year, store, tile_id in stores_by_year:
-                try:
-                    stats = store.get_stats_for_tile(tile_id, int(d.month), int(d.day))
-                except Exception:
-                    stats = None
-                if progress_active:
-                    progress_tick(job_id, 1, session_id=progress_session_id)
-                if not stats:
-                    continue
+    for idx in range(total_days):
+        d = start_date + _dt.timedelta(days=idx)
+        day_temp_vals: list[float] = []
+        day_temp_low_vals: list[float] = []
+        day_temp_high_vals: list[float] = []
+        day_rain_vals: list[float] = []
+        day_wind_vals: list[float] = []
+        day_dir_vals: list[float] = []
+        day_lucky_votes = 0
+        day_samples = 0
 
-                if mode == 'full_day':
-                    temp_val = _finite_float(stats.get('temperature_c'))
+        for _year, store, tile_id in stores_by_year:
+            try:
+                stats = store.get_stats_for_tile(tile_id, int(d.month), int(d.day))
+            except Exception:
+                stats = None
+            if not stats:
+                continue
+
+            if mode == 'full_day':
+                temp_val = _finite_float(stats.get('temperature_c'))
+                temp_low = _finite_float(stats.get('temp_hist_p25'))
+                temp_high = _finite_float(stats.get('temp_hist_p75'))
+            else:
+                temp_val = _finite_float(stats.get('temp_day_median'))
+                temp_low = _finite_float(stats.get('temp_day_p25'))
+                temp_high = _finite_float(stats.get('temp_day_p75'))
+                if temp_low is None:
                     temp_low = _finite_float(stats.get('temp_hist_p25'))
+                if temp_high is None:
                     temp_high = _finite_float(stats.get('temp_hist_p75'))
-                else:
-                    temp_val = _finite_float(stats.get('temp_day_median'))
-                    temp_low = _finite_float(stats.get('temp_day_p25'))
-                    temp_high = _finite_float(stats.get('temp_day_p75'))
-                    if temp_low is None:
-                        temp_low = _finite_float(stats.get('temp_hist_p25'))
-                    if temp_high is None:
-                        temp_high = _finite_float(stats.get('temp_hist_p75'))
-                if temp_val is None and temp_low is not None and temp_high is not None:
-                    temp_val = 0.5 * (temp_low + temp_high)
+            if temp_val is None and temp_low is not None and temp_high is not None:
+                temp_val = 0.5 * (temp_low + temp_high)
 
-                rain_val = _finite_float(stats.get('precipitation_mm'))
-                if rain_val is None:
-                    rain_val = _finite_float(stats.get('rain_typical_mm'))
-                wind_speed = _finite_float(stats.get('wind_speed_ms'))
-                wind_dir = _finite_float(stats.get('wind_dir_deg'))
+            rain_val = _finite_float(stats.get('precipitation_mm'))
+            if rain_val is None:
+                rain_val = _finite_float(stats.get('rain_typical_mm'))
+            wind_speed = _finite_float(stats.get('wind_speed_ms'))
+            wind_dir = _finite_float(stats.get('wind_dir_deg'))
 
-                if temp_val is not None:
-                    day_temp_vals.append(temp_val)
-                if temp_low is not None:
-                    day_temp_low_vals.append(temp_low)
-                if temp_high is not None:
-                    day_temp_high_vals.append(temp_high)
-                if rain_val is not None:
-                    day_rain_vals.append(max(0.0, rain_val))
-                if wind_speed is not None:
-                    day_wind_vals.append(max(0.0, wind_speed))
-                if wind_dir is not None:
-                    day_dir_vals.append(wind_dir)
+            if temp_val is not None:
+                day_temp_vals.append(temp_val)
+            if temp_low is not None:
+                day_temp_low_vals.append(temp_low)
+            if temp_high is not None:
+                day_temp_high_vals.append(temp_high)
+            if rain_val is not None:
+                day_rain_vals.append(max(0.0, rain_val))
+            if wind_speed is not None:
+                day_wind_vals.append(max(0.0, wind_speed))
+            if wind_dir is not None:
+                day_dir_vals.append(wind_dir)
 
-            temp_series = _median_value(day_temp_vals)
-            temp_p25 = _percentile(day_temp_vals, 25.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_low_vals)
-            temp_p75 = _percentile(day_temp_vals, 75.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_high_vals)
-            rain_series = _mean_value(day_rain_vals)
-            wind_speed_series = _mean_value(day_wind_vals)
-            wind_dir_series = _circular_mean_deg(day_dir_vals)
-            lucky = _is_lucky_profile_day(
-                temp_series,
-                rain_series,
-                wind_speed_series,
+            if _is_lucky_profile_day(
+                temp_val,
+                rain_val,
+                wind_speed,
                 temp_cold=float(temp_cold),
                 temp_hot=float(temp_hot),
                 rain_max=float(rain_max),
                 wind_max=float(wind_max),
-            )
+            ):
+                day_lucky_votes += 1
+            day_samples += 1
 
-            if temp_series is not None:
-                summary_temps.append(temp_series)
-            if rain_series is not None:
-                summary_rains.append(rain_series)
-                if rain_series >= 1.0:
-                    rain_days += 1
-            if wind_speed_series is not None:
-                summary_winds.append(wind_speed_series)
-                if wind_speed_series <= 2.0:
-                    calm_days += 1
-            if wind_dir_series is not None:
-                summary_dirs.append(wind_dir_series)
-            if temp_p25 is not None:
-                summary_temp_p25s.append(temp_p25)
-            if temp_p75 is not None:
-                summary_temp_p75s.append(temp_p75)
-            if lucky:
-                lucky_days += 1
+        temp_series = _median_value(day_temp_vals)
+        temp_p25 = _percentile(day_temp_vals, 25.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_low_vals)
+        temp_p75 = _percentile(day_temp_vals, 75.0) if len(day_temp_vals) >= 2 else _mean_value(day_temp_high_vals)
+        rain_series = _mean_value(day_rain_vals)
+        wind_speed_series = _mean_value(day_wind_vals)
+        wind_dir_series = _circular_mean_deg(day_dir_vals)
+        lucky = bool(day_samples > 0 and day_lucky_votes >= max(1, math.ceil(day_samples / 2.0)))
 
-            series.append(
-                {
-                    "day_index": int(idx + 1),
-                    "date": d.isoformat(),
-                    "temp": temp_series,
-                    "temp_p25": temp_p25,
-                    "temp_p75": temp_p75,
-                    "rain": rain_series,
-                    "wind_speed": wind_speed_series,
-                    "wind_dir": wind_dir_series,
-                    "lucky": lucky,
-                }
-            )
+        if temp_series is not None:
+            summary_temps.append(temp_series)
+        if rain_series is not None:
+            summary_rains.append(rain_series)
+            if rain_series >= 1.0:
+                rain_days += 1
+        if wind_speed_series is not None:
+            summary_winds.append(wind_speed_series)
+            if wind_speed_series <= 2.0:
+                calm_days += 1
+        if wind_dir_series is not None:
+            summary_dirs.append(wind_dir_series)
+        if temp_p25 is not None:
+            summary_temp_p25s.append(temp_p25)
+        if temp_p75 is not None:
+            summary_temp_p75s.append(temp_p75)
+        if lucky:
+            lucky_days += 1
 
-        if not series:
-            return jsonify({"error": "No profile data available for selected point"}), 404
-
-        resolved_location = _reverse_geocode_location(float(lat), float(lon), allow_online=False)
-        resolved_label = resolved_location.get('label') if isinstance(resolved_location, dict) else None
-
-        summary = {
-            "temp_mean": _mean_value(summary_temps),
-            "temp_min": min(summary_temps) if summary_temps else None,
-            "temp_max": max(summary_temps) if summary_temps else None,
-            "rain_mean": _mean_value(summary_rains),
-            "rain_sum": float(sum(summary_rains)) if summary_rains else 0.0,
-            "rain_days": int(rain_days),
-            "wind_speed": _mean_value(summary_winds),
-            "wind_dir": _circular_mean_deg(summary_dirs),
-            "calm_days": int(calm_days),
-            "lucky_days": int(lucky_days),
-            "total_days": int(total_days),
-            "typical_temp_min": _mean_value(summary_temp_p25s),
-            "typical_temp_max": _mean_value(summary_temp_p75s),
-            "typical_rain": _median_value(summary_rains),
-        }
-
-        return jsonify(
+        series.append(
             {
-                "meta": {
-                    "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
-                    "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
-                    "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
-                    "point": {"lat": float(lat), "lon": float(lon)},
-                    "tile_center": {
-                        "lat": tile_center_lat,
-                        "lon": tile_center_lon,
-                    },
-                    "years": [int(y) for (y, _store, _tile) in stores_by_year],
-                    "mode": str(mode),
-                    "start": start_date.isoformat(),
-                    "end": end_date.isoformat(),
-                },
-                "summary": summary,
-                "series": series,
+                "day_index": int(idx + 1),
+                "date": d.isoformat(),
+                "temp": temp_series,
+                "temp_p25": temp_p25,
+                "temp_p75": temp_p75,
+                "rain": rain_series,
+                "wind_speed": wind_speed_series,
+                "wind_dir": wind_dir_series,
+                "lucky": lucky,
             }
         )
-    finally:
-        if progress_active:
-            progress_done(job_id, session_id=progress_session_id)
+
+    if not series:
+        return jsonify({"error": "No profile data available for selected point"}), 404
+
+    resolved_location = _reverse_geocode_location(float(lat), float(lon))
+    resolved_label = resolved_location.get('label') if isinstance(resolved_location, dict) else None
+
+    summary = {
+        "temp_mean": _mean_value(summary_temps),
+        "temp_min": min(summary_temps) if summary_temps else None,
+        "temp_max": max(summary_temps) if summary_temps else None,
+        "rain_mean": _mean_value(summary_rains),
+        "rain_sum": float(sum(summary_rains)) if summary_rains else 0.0,
+        "rain_days": int(rain_days),
+        "wind_speed": _mean_value(summary_winds),
+        "wind_dir": _circular_mean_deg(summary_dirs),
+        "calm_days": int(calm_days),
+        "lucky_days": int(lucky_days),
+        "total_days": int(total_days),
+        "typical_temp_min": _mean_value(summary_temp_p25s),
+        "typical_temp_max": _mean_value(summary_temp_p75s),
+        "typical_rain": _median_value(summary_rains),
+    }
+
+    return jsonify(
+        {
+            "meta": {
+                "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
+                "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
+                "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
+                "point": {"lat": float(lat), "lon": float(lon)},
+                "tile_center": {
+                    "lat": tile_center_lat,
+                    "lon": tile_center_lon,
+                },
+                "years": [int(y) for (y, _store, _tile) in stores_by_year],
+                "mode": str(mode),
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat(),
+            },
+            "summary": summary,
+            "series": series,
+        }
+    )
 
 
 @app.route('/api/strategy_map')
@@ -2284,560 +1576,109 @@ def api_strategy_map():
     return api_strategic_grid()
 
 
-def _get_offline_stats(
-    lat: float,
-    lon: float,
-    month: int,
-    day: int,
-    *,
-    start_year: int | None = None,
-    end_year: int | None = None,
-    years_selected: list[int] | None = None,
-    allow_span_mismatch: bool = False,
-) -> Optional[Dict[str, Any]]:
-    requested_years = _normalize_requested_years(
-        years_selected=years_selected,
-        start_year=start_year,
-        end_year=end_year,
-    )
-
-    def _annotate_years(stats: Dict[str, Any], years: list[int]) -> Dict[str, Any]:
-        used_years = []
-        seen_years: set[int] = set()
-        for year in years:
-            try:
-                y = int(year)
-            except Exception:
-                continue
-            if y in seen_years:
-                continue
-            seen_years.add(y)
-            used_years.append(y)
-        out = dict(stats)
-        if used_years:
-            out['_years_start'] = int(min(used_years))
-            out['_years_end'] = int(max(used_years))
-            out['_years_used'] = [int(year) for year in used_years]
-        return out
-
-    def _weighted_mean(values: list[tuple[float, float]]) -> float | None:
-        total_weight = 0.0
-        total_value = 0.0
-        for value, weight in values:
-            if not math.isfinite(value):
-                continue
-            w = float(weight)
-            if not math.isfinite(w) or w <= 0:
-                continue
-            total_weight += w
-            total_value += value * w
-        if total_weight <= 0:
+def _get_offline_stats(lat: float, lon: float, month: int, day: int) -> Optional[Dict[str, Any]]:
+    store = _get_offline_store()
+    if store is None:
+        return None
+    try:
+        st = store.get_stats(float(lat), float(lon), int(month), int(day))
+        if st is None:
             return None
-        return float(total_value / total_weight)
-
-    def _aggregate_partial_year_stats(stats_by_year: list[tuple[int, Dict[str, Any]]]) -> Dict[str, Any] | None:
-        if not stats_by_year:
-            return None
-        if len(stats_by_year) == 1:
-            year, stats = stats_by_year[0]
-            return _annotate_years(stats, [year])
-
-        years = [int(year) for year, _stats in stats_by_year]
-        first = dict(stats_by_year[0][1])
-
-        temp_vals: list[float] = []
-        temp_p25_vals: list[float] = []
-        temp_p75_vals: list[float] = []
-        temp_std_vals: list[float] = []
-        precip_vals: list[float] = []
-        rain_prob_vals: list[tuple[float, float]] = []
-        rain_typical_vals: list[float] = []
-        rain_p25_vals: list[float] = []
-        rain_p75_vals: list[float] = []
-        rain_p90_vals: list[float] = []
-        wind_speed_vals: list[float] = []
-        wind_dir_vals: list[float] = []
-        wind_var_vals: list[float] = []
-        temp_hist_p25_vals: list[float] = []
-        temp_hist_p75_vals: list[float] = []
-        temp_day_vals: list[float] = []
-        temp_day_p25_vals: list[float] = []
-        temp_day_p75_vals: list[float] = []
-        match_days_total = 0
-        samples_daily_total = 0
-        samples_day_means_total = 0
-        samples_day_hours_total = 0
-        samples_rain_total = 0
-        samples_wind_total = 0
-
-        for _year, stats in stats_by_year:
-            temp = _finite_float(stats.get('temperature_c'))
-            if temp is not None:
-                temp_vals.append(temp)
-            temp_p25 = _finite_float(stats.get('temp_p25'))
-            if temp_p25 is not None:
-                temp_p25_vals.append(temp_p25)
-            temp_p75 = _finite_float(stats.get('temp_p75'))
-            if temp_p75 is not None:
-                temp_p75_vals.append(temp_p75)
-            temp_std = _finite_float(stats.get('temp_std'))
-            if temp_std is not None:
-                temp_std_vals.append(temp_std)
-
-            precip = _finite_float(stats.get('precipitation_mm'))
-            if precip is not None:
-                precip_vals.append(max(0.0, precip))
-            rain_prob = _finite_float(stats.get('rain_probability'))
-            if rain_prob is not None:
-                rain_weight = _finite_float(stats.get('_samples_rain'))
-                if rain_weight is None:
-                    rain_weight = _finite_float(stats.get('_match_days'))
-                rain_prob_vals.append((max(0.0, min(1.0, rain_prob)), rain_weight if rain_weight is not None else 1.0))
-            rain_typical = _finite_float(stats.get('rain_typical_mm'))
-            if rain_typical is not None:
-                rain_typical_vals.append(max(0.0, rain_typical))
-            rain_p25 = _finite_float(stats.get('rain_hist_p25_mm'))
-            if rain_p25 is not None:
-                rain_p25_vals.append(max(0.0, rain_p25))
-            rain_p75 = _finite_float(stats.get('rain_hist_p75_mm'))
-            if rain_p75 is not None:
-                rain_p75_vals.append(max(0.0, rain_p75))
-            rain_p90 = _finite_float(stats.get('rain_hist_p90_mm'))
-            if rain_p90 is not None:
-                rain_p90_vals.append(max(0.0, rain_p90))
-
-            wind_speed = _finite_float(stats.get('wind_speed_ms'))
-            if wind_speed is not None:
-                wind_speed_vals.append(max(0.0, wind_speed))
-            wind_dir = _finite_float(stats.get('wind_dir_deg'))
-            if wind_dir is not None:
-                wind_dir_vals.append(wind_dir)
-            wind_var = _finite_float(stats.get('wind_var_deg'))
-            if wind_var is not None:
-                wind_var_vals.append(max(0.0, wind_var))
-
-            temp_hist_p25 = _finite_float(stats.get('temp_hist_p25'))
-            if temp_hist_p25 is not None:
-                temp_hist_p25_vals.append(temp_hist_p25)
-            temp_hist_p75 = _finite_float(stats.get('temp_hist_p75'))
-            if temp_hist_p75 is not None:
-                temp_hist_p75_vals.append(temp_hist_p75)
-            temp_day = _finite_float(stats.get('temp_day_median'))
-            if temp_day is not None:
-                temp_day_vals.append(temp_day)
-            temp_day_p25 = _finite_float(stats.get('temp_day_p25'))
-            if temp_day_p25 is not None:
-                temp_day_p25_vals.append(temp_day_p25)
-            temp_day_p75 = _finite_float(stats.get('temp_day_p75'))
-            if temp_day_p75 is not None:
-                temp_day_p75_vals.append(temp_day_p75)
-
-            match_days_total += int(_finite_float(stats.get('_match_days')) or 0)
-            samples_daily_total += int(_finite_float(stats.get('_samples_daily')) or 0)
-            samples_day_means_total += int(_finite_float(stats.get('_samples_day_means')) or 0)
-            samples_day_hours_total += int(_finite_float(stats.get('_samples_day_hours')) or 0)
-            samples_rain_total += int(_finite_float(stats.get('_samples_rain')) or 0)
-            samples_wind_total += int(_finite_float(stats.get('_samples_wind')) or 0)
-
-        aggregated: Dict[str, Any] = {
-            '_offline': True,
-            '_provider': first.get('_provider', 'open-meteo'),
-            '_temp_source': first.get('_temp_source', 'offline_tile'),
-            '_tile_id': first.get('_tile_id'),
-            'temperature_c': _median_value(temp_vals),
-            'temp_p25': (_percentile(temp_vals, 25.0) if len(temp_vals) >= 2 else _mean_value(temp_p25_vals)),
-            'temp_p75': (_percentile(temp_vals, 75.0) if len(temp_vals) >= 2 else _mean_value(temp_p75_vals)),
-            'temp_std': _mean_value(temp_std_vals),
-            'precipitation_mm': _mean_value(precip_vals),
-            'rain_probability': _weighted_mean(rain_prob_vals),
-            'rain_typical_mm': _mean_value(rain_typical_vals),
-            'rain_hist_p25_mm': _mean_value(rain_p25_vals),
-            'rain_hist_p75_mm': _mean_value(rain_p75_vals),
-            'rain_hist_p90_mm': _mean_value(rain_p90_vals),
-            'wind_speed_ms': _mean_value(wind_speed_vals),
-            'wind_dir_deg': _circular_mean_deg(wind_dir_vals),
-            'wind_var_deg': _mean_value(wind_var_vals),
-            'temp_hist_p25': _mean_value(temp_hist_p25_vals),
-            'temp_hist_p75': _mean_value(temp_hist_p75_vals),
-            'temp_day_median': _median_value(temp_day_vals),
-            'temp_day_p25': (_percentile(temp_day_vals, 25.0) if len(temp_day_vals) >= 2 else _mean_value(temp_day_p25_vals)),
-            'temp_day_p75': (_percentile(temp_day_vals, 75.0) if len(temp_day_vals) >= 2 else _mean_value(temp_day_p75_vals)),
-            '_match_days': int(match_days_total),
-            '_samples_daily': int(samples_daily_total),
-            '_samples_day_means': int(samples_day_means_total),
-            '_samples_day_hours': int(samples_day_hours_total),
-            '_samples_rain': int(samples_rain_total),
-            '_samples_wind': int(samples_wind_total),
-        }
-        return _annotate_years(aggregated, years)
-
-    candidate_stores: list[Any] = []
-    seen: set[int] = set()
-
-    def _add_candidate(store: Any) -> None:
-        if store is None:
-            return
         try:
-            key = id(store)
-        except Exception:
-            key = 0
-        if key in seen:
-            return
-        if not _store_covers_point(store, float(lat), float(lon)):
-            return
-        seen.add(key)
-        candidate_stores.append(store)
-
-    if requested_years:
-        # Explicit year requests must prefer exact-year stores. A global/default
-        # offline DB is only a last-resort fallback after the requested spans are
-        # exhausted; otherwise a newer single-year DB (for example 2026) can
-        # incorrectly satisfy a historical request for 2024/2025.
-        probe_years: list[int] = [requested_years[0], requested_years[-1], *reversed(requested_years)]
-        for probe_year in probe_years:
-            store = _resolve_offline_store_for_year(int(probe_year), point=(float(lat), float(lon)))
-            if store is None:
-                continue
-            if all(_store_supports_year(store, int(year)) for year in requested_years):
-                _add_candidate(store)
-
-    for store in candidate_stores:
-        try:
-            st = store.get_stats(float(lat), float(lon), int(month), int(day))
-            if st is None:
-                continue
-            try:
-                if getattr(store, 'cfg', None) is not None and getattr(store.cfg, 'years', None):
-                    ys, ye = store.cfg.years  # type: ignore[misc]
-                    st = _annotate_years(dict(st), [int(ys), int(ye)])
-            except Exception:
-                pass
-            return st
-        except Exception:
-            continue
-
-    if allow_span_mismatch and requested_years:
-        partial_stats_by_year: list[tuple[int, Dict[str, Any]]] = []
-        for probe_year in requested_years:
-            try:
-                year_int = int(probe_year)
-            except Exception:
-                continue
-            try:
-                store = _resolve_offline_store_for_year(year_int, point=(float(lat), float(lon)))
-            except Exception:
-                store = None
-            if store is None or not _store_supports_year(store, year_int) or not _store_covers_point(store, float(lat), float(lon)):
-                continue
-            try:
-                st = store.get_stats(float(lat), float(lon), int(month), int(day))
-            except Exception:
-                st = None
-            if st is None:
-                continue
-            partial_stats_by_year.append((year_int, _annotate_years(dict(st), [year_int])))
-
-        if partial_stats_by_year:
-            aggregated = _aggregate_partial_year_stats(partial_stats_by_year)
-            if aggregated is not None:
-                return aggregated
-            return partial_stats_by_year[0][1]
-
-        try:
-            current_default_year = int(_dt.date.today().year) - 1
-        except Exception:
-            current_default_year = 2025
-        search_start = max([current_default_year, *[int(year) for year in requested_years]])
-        search_floor = 2000
-        try:
-            fallback_cfg = getattr(_get_offline_store(), 'cfg', None)
-            fallback_years = getattr(fallback_cfg, 'years', None) if fallback_cfg is not None else None
-            if fallback_years:
-                search_start = max(search_start, int(fallback_years[1]))
-                search_floor = min(search_floor, int(fallback_years[0]))
+            if getattr(store, 'cfg', None) is not None and getattr(store.cfg, 'years', None):
+                ys, ye = store.cfg.years  # type: ignore[misc]
+                st = dict(st)
+                st['_years_start'] = int(ys)
+                st['_years_end'] = int(ye)
         except Exception:
             pass
-
-        requested_set = {int(year) for year in requested_years}
-        for probe_year in range(int(search_start), int(search_floor) - 1, -1):
-            if probe_year in requested_set:
-                continue
-            try:
-                store = _resolve_offline_store_for_year(probe_year, point=(float(lat), float(lon)))
-            except Exception:
-                store = None
-            if store is None or not _store_supports_year(store, probe_year) or not _store_covers_point(store, float(lat), float(lon)):
-                continue
-            try:
-                st = store.get_stats(float(lat), float(lon), int(month), int(day))
-            except Exception:
-                st = None
-            if st is None:
-                continue
-            return _annotate_years(dict(st), [probe_year])
-
-    fallback_store = _get_offline_store()
-    if fallback_store is not None and _store_covers_point(fallback_store, float(lat), float(lon)):
-        try:
-            st = fallback_store.get_stats(float(lat), float(lon), int(month), int(day))
-            if st is not None:
-                try:
-                    if getattr(fallback_store, 'cfg', None) is not None and getattr(fallback_store.cfg, 'years', None):
-                        ys, ye = fallback_store.cfg.years  # type: ignore[misc]
-                        st = _annotate_years(dict(st), [int(ys), int(ye)])
-                except Exception:
-                    pass
-                return st
-        except Exception:
-            pass
-    return None
+        return st
+    except Exception:
+        return None
 
 # In-memory progress tracking for SSE
 PROGRESS: Dict[str, Dict[str, Any]] = {}
 PROGRESS_LOCK = threading.Lock()
 
-TOUR_SLOT_JOBS: Dict[str, Dict[str, Any]] = {}
-TOUR_SLOT_JOBS_LOCK = threading.Lock()
-
-# Session-scoped SSE stream control to prevent parallel heavy streams
+# Global SSE stream control to prevent parallel heavy streams
 STREAM_LOCK = threading.Lock()
-STREAM_TOKENS_BY_SESSION: Dict[str, int] = {}
+STREAM_TOKEN = 0
 
-def _progress_key(job_id: str, session_id: Optional[str]) -> str:
-    sid = str(session_id) if _is_valid_session_id(session_id) else 'global'
-    return f'{sid}:{job_id}'
-
-
-def _empty_progress() -> Dict[str, Any]:
-    return {"total": 0, "completed": 0, "done": False, "known": False}
-
-
-def _issue_stream_token(session_id: Optional[str], is_dry_run: bool) -> int:
-    if is_dry_run:
-        return 0
-    sid = str(session_id) if _is_valid_session_id(session_id) else 'global'
-    with STREAM_LOCK:
-        token = int(STREAM_TOKENS_BY_SESSION.get(sid, 0)) + 1
-        STREAM_TOKENS_BY_SESSION[sid] = token
-        return token
-
-
-def _is_stream_token_current(session_id: Optional[str], token: int, is_dry_run: bool) -> bool:
-    if is_dry_run:
-        return True
-    sid = str(session_id) if _is_valid_session_id(session_id) else 'global'
-    with STREAM_LOCK:
-        return int(STREAM_TOKENS_BY_SESSION.get(sid, 0)) == int(token)
-
-
-def progress_init(job_id: str, total: int, session_id: Optional[str] = None) -> None:
+def progress_init(job_id: str, total: int) -> None:
     with PROGRESS_LOCK:
-        PROGRESS[_progress_key(job_id, session_id)] = {
-            "total": int(total),
-            "completed": 0,
-            "done": False,
-            "known": True,
-            "session_id": str(session_id) if _is_valid_session_id(session_id) else '',
-        }
+        PROGRESS[job_id] = {"total": int(total), "completed": 0, "done": False}
 
-def progress_tick(job_id: str, inc: int = 1, session_id: Optional[str] = None) -> None:
+def progress_tick(job_id: str, inc: int = 1) -> None:
     with PROGRESS_LOCK:
-        st = PROGRESS.get(_progress_key(job_id, session_id))
+        st = PROGRESS.get(job_id)
         if st:
             st["completed"] = min(st["completed"] + inc, st["total"])
 
-def progress_done(job_id: str, session_id: Optional[str] = None) -> None:
+def progress_done(job_id: str) -> None:
     with PROGRESS_LOCK:
-        st = PROGRESS.get(_progress_key(job_id, session_id))
+        st = PROGRESS.get(job_id)
         if st:
             st["completed"] = st.get("total", st.get("completed", 0))
             st["done"] = True
 
-def _get_progress(job_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+def _get_progress(job_id: str) -> Dict[str, Any]:
     with PROGRESS_LOCK:
-        st = PROGRESS.get(_progress_key(job_id, session_id))
-        if not st:
-            return _empty_progress()
-        out = dict(st)
-        out['known'] = True
-        return out
-
-
-def _tour_slot_job_key(job_id: str, session_id: Optional[str]) -> str:
-    return _progress_key(job_id, session_id)
-
-
-def _set_tour_slot_job(job_id: str, session_id: Optional[str], payload: Dict[str, Any]) -> None:
-    with TOUR_SLOT_JOBS_LOCK:
-        TOUR_SLOT_JOBS[_tour_slot_job_key(job_id, session_id)] = dict(payload)
-
-
-def _get_tour_slot_job(job_id: str, session_id: Optional[str]) -> Dict[str, Any] | None:
-    with TOUR_SLOT_JOBS_LOCK:
-        item = TOUR_SLOT_JOBS.get(_tour_slot_job_key(job_id, session_id))
-        return dict(item) if isinstance(item, dict) else None
-
-
-def _merge_tour_slot_job(job_id: str, session_id: Optional[str], updates: Dict[str, Any]) -> None:
-    with TOUR_SLOT_JOBS_LOCK:
-        key = _tour_slot_job_key(job_id, session_id)
-        cur = dict(TOUR_SLOT_JOBS.get(key) or {})
-        cur.update(dict(updates or {}))
-        TOUR_SLOT_JOBS[key] = cur
-
-
-def _slot_start_count(anchor_year: int, step_days: int) -> int:
-    try:
-        step_i = max(1, int(step_days))
-        d = _dt.date(int(anchor_year), 1, 1)
-        end = _dt.date(int(anchor_year), 12, 31)
-        count = 0
-        while d <= end:
-            count += 1
-            d += _dt.timedelta(days=step_i)
-        return max(1, count)
-    except Exception:
-        return 53 if int(step_days or 7) >= 7 else 366
-
-
-def _run_tour_slot_optimizer_job(
-    *,
-    job_id: str,
-    session_id: Optional[str],
-    route_data: Dict[str, Any],
-    total_days: int,
-    rest_day_indexes: list[int],
-    boundaries_km: list[float],
-    years_selected: list[int],
-    anchor_year: int,
-    direction_mode: str,
-    objective_mode: str,
-    slot_step_days: int,
-    lucky_thresholds: Dict[str, float],
-    top_n: int,
-) -> None:
-    try:
-        _merge_tour_slot_job(job_id, session_id, {
-            'status': 'running',
-            'started_at': time.time(),
-            'error': None,
-        })
-
-        def _weather_lookup(lat: float, lon: float, month: int, day: int, years: list[int]) -> Dict[str, Any] | None:
-            try:
-                stats = _get_offline_stats(
-                    float(lat),
-                    float(lon),
-                    int(month),
-                    int(day),
-                    years_selected=[int(y) for y in years],
-                    allow_span_mismatch=True,
-                )
-                return dict(stats) if isinstance(stats, dict) else None
-            except Exception:
-                return None
-
-        result = optimize_tour_slots(  # type: ignore[misc]
-            route_data=route_data,
-            total_days=int(total_days),
-            rest_day_indexes=list(rest_day_indexes or []),
-            boundaries_km=list(boundaries_km or []),
-            years_selected=[int(y) for y in years_selected],
-            anchor_year=int(anchor_year),
-            direction_mode=str(direction_mode or 'auto_compare'),
-            objective_mode=str(objective_mode or 'most_lucky_days'),
-            slot_step_days=int(slot_step_days),
-            lucky_thresholds=dict(lucky_thresholds or {}),
-            top_n=int(top_n),
-            weather_lookup=_weather_lookup,
-            progress_cb=lambda: progress_tick(job_id, 1, session_id=session_id),
-        )
-        progress_done(job_id, session_id=session_id)
-        _merge_tour_slot_job(job_id, session_id, {
-            'status': 'done',
-            'finished_at': time.time(),
-            'result': result,
-            'error': None,
-        })
-    except Exception as exc:
-        progress_done(job_id, session_id=session_id)
-        _merge_tour_slot_job(job_id, session_id, {
-            'status': 'error',
-            'finished_at': time.time(),
-            'error': str(exc),
-        })
+        return dict(PROGRESS.get(job_id, {"total": 0, "completed": 0, "done": False}))
 
 
 # -------------------- Session persistence --------------------
-def _read_gpx_track_name(path_like: Any) -> str:
+def load_session_state() -> Dict[str, Any]:
+    import json
+    global SESSION_STATE
     try:
-        path = Path(str(path_like or ''))
-        if not path.exists() or not path.is_file():
-            return ''
-        root = ET.parse(str(path)).getroot()
-        for xpath in ('.//{*}trk/{*}name', './/{*}rte/{*}name', './/{*}name'):
-            node = root.find(xpath)
-            text = str(getattr(node, 'text', '') or '').strip()
-            if text:
-                return text.replace('/', ' - ').replace('\\', ' - ').strip()
+        if SESSION_FILE.exists():
+            with open(SESSION_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    SESSION_STATE.update(data)
+                    logging.getLogger('pipeline').info('[SESSION] Restored state')
+        else:
+            # Create with defaults
+            try:
+                with open(SESSION_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(SESSION_STATE, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
     except Exception:
-        return ''
-    return ''
+        logging.getLogger('pipeline').warning('[SESSION] Corrupted session JSON; starting fresh')
+    return dict(SESSION_STATE)
 
 
-def _display_gpx_name_for_path(path_like: Any, preferred_name: Any = None) -> str:
-    try:
-        path = Path(str(path_like or ''))
-        preferred = str(preferred_name or '').strip()
-        if preferred:
-            return preferred
-        if path.name.startswith('uploaded_'):
-            track_name = _read_gpx_track_name(path)
-            if track_name:
-                return f'{track_name}.gpx'
-        if path.name:
-            return path.name
-    except Exception:
-        pass
-    return str(preferred_name or '').strip() or 'Loaded route.gpx'
-
-
-def load_session_state(session_id: Optional[str] = None) -> Dict[str, Any]:
-    if session_id is None:
-        session_id = _resolve_request_session_id(create=True)
-    with SESSION_STORE_LOCK:
-        _load_session_store_locked()
-        selected_session_id = session_id
-        if not _is_valid_session_id(selected_session_id):
-            selected_session_id = _select_restore_session_id_locked()
-        if not _is_valid_session_id(selected_session_id):
-            selected_session_id = _new_session_id()
-        state = SESSION_STORE.get(str(selected_session_id))
-        if state is None:
-            state = _normalize_session_state(None)
-            SESSION_STORE[str(selected_session_id)] = state
-            _write_session_store_locked()
-        return dict(state)
-
-
-def save_session_state(updates: Dict[str, Any], session_id: Optional[str] = None) -> None:
+def save_session_state(updates: Dict[str, Any]) -> None:
+    import json
+    global SESSION_STATE
     try:
         log.info('[SESSION] Saving state')
-        if session_id is None:
-            session_id = _resolve_request_session_id(create=True)
-        with SESSION_STORE_LOCK:
-            _load_session_store_locked()
-            if not _is_valid_session_id(session_id):
-                session_id = _select_restore_session_id_locked() or _new_session_id()
-            state = dict(SESSION_STORE.get(str(session_id)) or _normalize_session_state(None))
-            state.update({
-                key: value
-                for key, value in updates.items()
-                if value is not None
-            })
-            state['_updated_at'] = time.time()
-            SESSION_STORE[str(session_id)] = _normalize_session_state(state)
-            _write_session_store_locked()
+        # Merge updates into current state and normalize types
+        st = dict(SESSION_STATE)
+        st.update({
+            k: (v if not isinstance(v, str) else v)
+            for k, v in updates.items()
+            if v is not None
+        })
+        # Normalize booleans/ints for known keys
+        if 'tour_days' in st:
+            try: st['tour_days'] = int(st['tour_days'])
+            except Exception: pass
+        if 'glyph_spacing_km' in st:
+            try: st['glyph_spacing_km'] = float(st['glyph_spacing_km'])
+            except Exception: pass
+        if 'first_year' in st:
+            try: st['first_year'] = int(st['first_year'])
+            except Exception: pass
+        if 'num_years' in st:
+            try: st['num_years'] = int(st['num_years'])
+            except Exception: pass
+        if 'reverse' in st:
+            st['reverse'] = bool(st['reverse'])
+        SESSION_STATE.update(st)
+        with open(SESSION_FILE, 'w', encoding='utf-8') as f:
+            json.dump(SESSION_STATE, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning('[SESSION] Save failed: %s', e)
 
@@ -2962,7 +1803,6 @@ def ne_10m_land_europe_geojson():
 @app.route('/api/upload_gpx', methods=['POST'])
 def upload_gpx():
     try:
-        session_id = _resolve_request_session_id(create=True)
         f = request.files.get('file')
         if not f:
             return jsonify({"error": "No file uploaded"}), 400
@@ -2974,87 +1814,16 @@ def upload_gpx():
         if not name.lower().endswith('.gpx'):
             return jsonify({"error": "Only .gpx files allowed"}), 400
         ts = int(time.time())
-        upload_dir = _session_upload_dir(str(session_id))
-        safe_name = f"uploaded_{ts}_{uuid.uuid4().hex[:12]}.gpx"
-        out_path = upload_dir / safe_name
+        safe_name = f"uploaded_{ts}.gpx"
+        out_path = UPLOAD_DIR / safe_name
         f.save(str(out_path))
         log.info('[UPLOAD] Saved %s', out_path)
         # Persist session update
         try:
-            save_session_state({
-                "last_gpx_path": str(out_path),
-                "last_gpx_name": _display_gpx_name_for_path(out_path, original_name),
-            }, session_id=str(session_id))
+            save_session_state({"last_gpx_path": str(out_path), "last_gpx_name": str(original_name)})
         except Exception:
             pass
         return jsonify({"path": str(out_path), "name": safe_name, "original_name": str(original_name)})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/upload_gpx_text', methods=['POST'])
-def upload_gpx_text():
-    """Import embedded GPX XML text (used by Tour project files)."""
-    try:
-        session_id = _resolve_request_session_id(create=True)
-        data = request.get_json(silent=True) or {}
-        content = str(data.get('content') or '')
-        name = str(data.get('name') or 'route.gpx').strip() or 'route.gpx'
-        original_name = Path(name).name
-        if not original_name.lower().endswith('.gpx'):
-            original_name = f"{original_name}.gpx"
-        if not content.strip():
-            return jsonify({"error": "No GPX content provided"}), 400
-        if '<gpx' not in content.lower():
-            return jsonify({"error": "Invalid GPX content"}), 400
-
-        ts = int(time.time())
-        upload_dir = _session_upload_dir(str(session_id))
-        safe_name = f"uploaded_{ts}_{uuid.uuid4().hex[:12]}.gpx"
-        out_path = upload_dir / safe_name
-        out_path.write_text(content, encoding='utf-8')
-
-        # Quick structural validation before activating as current route.
-        try:
-            ET.parse(out_path)
-        except Exception:
-            try:
-                out_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            return jsonify({"error": "Uploaded GPX content is not parseable"}), 400
-
-        save_session_state({
-            "last_gpx_path": str(out_path),
-            "last_gpx_name": _display_gpx_name_for_path(out_path, original_name),
-        }, session_id=str(session_id))
-
-        log.info('[UPLOAD] Saved embedded GPX %s', out_path)
-        return jsonify({
-            "path": str(out_path),
-            "name": safe_name,
-            "original_name": str(original_name),
-            "session_id": str(session_id),
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/gpx_content', methods=['GET'])
-def api_gpx_content():
-    """Return the active GPX as raw XML text for .tour project serialization."""
-    try:
-        session_id = _resolve_request_session_id(create=True)
-        path = _resolve_session_gpx(None, session_id=str(session_id) if session_id else None)
-        if not path.exists() or path.suffix.lower() != '.gpx':
-            return jsonify({"error": "No active GPX route"}), 404
-        text = path.read_text(encoding='utf-8', errors='replace')
-        name = _display_gpx_name_for_path(path, str(path.name))
-        return jsonify({
-            "path": str(path),
-            "name": str(name),
-            "content": text,
-        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -3065,7 +1834,6 @@ def api_map():
     gpx_override = request.args.get('gpx_path')
     tour_planning_param = request.args.get('tour_planning', '1')  # default ON
     job_id = request.args.get('job_id')
-    session_id = _resolve_request_session_id(create=True)
     if not date or len(date) != 5 or '-' not in date:
         return jsonify({"error": "Provide date as MM-DD"}), 400
     try:
@@ -3074,15 +1842,15 @@ def api_map():
         return jsonify({"error": "Invalid date format"}), 400
 
     try:
-        gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
+        gpx_path = GPX_FILE
+        if gpx_override and gpx_override.endswith('.gpx') and Path(gpx_override).exists():
+            gpx_path = Path(gpx_override)
         log.info('[STEP] Loading GPX track: %s', gpx_path)
         # Optional sampling controls
         step_km_param = request.args.get('step_km')
         max_points_param = request.args.get('max_points')
         grid_deg_param = request.args.get('grid_deg')
         fetch_mode = request.args.get('mode', 'single_day')  # default to 'single_day'
-        active_hours_param = request.args.get('active_hours') or request.args.get('ride_hours')
-        active_hour_start, active_hour_end = _parse_active_hours(active_hours_param)
         try:
             step_km = float(step_km_param) if step_km_param else 25.0
         except Exception:
@@ -3103,7 +1871,7 @@ def api_map():
             grid_deg = 0.25
         log.info('[STEP] Sampling route points: %d points sampled; first=%s', len(sampled_points), sampled_points[0])
         if job_id:
-            progress_init(job_id, len(sampled_points), session_id=str(session_id) if session_id else None)
+            progress_init(job_id, len(sampled_points))
     except Exception as e:
         return jsonify({"error": f"Route error: {e}"}), 500
 
@@ -3182,13 +1950,7 @@ def api_map():
                 # Compute daytime temperature from hourly data and override temp fields
                 try:
                     dfh = fetch_hourly_weather_same_day(rep_lat, rep_lon, month, day)
-                    dt_stats, dt_points = compute_daytime_temperature_statistics(
-                        dfh,
-                        month,
-                        day,
-                        start_hour=active_hour_start,
-                        end_hour=active_hour_end,
-                    )
+                    dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
                     stats.update(dt_stats)
                     stats['_temp_source'] = 'hourly_daytime'
                 except Exception as e:
@@ -3299,13 +2061,7 @@ def api_map():
                         # Compute daytime temperature from hourly data and override temp (online only).
                         try:
                             dfh = fetch_hourly_weather_same_day(qlat, qlon, month, day)
-                            dt_stats, dt_points = compute_daytime_temperature_statistics(
-                                dfh,
-                                month,
-                                day,
-                                start_hour=active_hour_start,
-                                end_hour=active_hour_end,
-                            )
+                            dt_stats, dt_points = compute_daytime_temperature_statistics(dfh, month, day)
                             stats.update(dt_stats)
                             stats['_temp_source'] = 'hourly_daytime'
                         except Exception as e:
@@ -3353,7 +2109,7 @@ def api_map():
                         "stats_preview": feature["properties"],
                     })
                 if job_id:
-                    progress_tick(job_id, 1, session_id=str(session_id) if session_id else None)
+                    progress_tick(job_id, 1)
                 # Write per-point debug artifacts
                 try:
                     (DEBUG_DIR / f'weather_raw_point_{i}.csv').write_text(df.to_csv(index=False))
@@ -3363,7 +2119,7 @@ def api_map():
             except Exception as e:
                 log.warning('Point %d: weather/stats error: %s', i, e)
                 if job_id:
-                    progress_tick(job_id, 1, session_id=str(session_id) if session_id else None)
+                    progress_tick(job_id, 1)
                 continue
 
     stations_collection = {"type": "FeatureCollection", "features": stations_features}
@@ -3388,7 +2144,7 @@ def api_map():
         pass
 
     if job_id:
-        progress_done(job_id, session_id=str(session_id) if session_id else None)
+        progress_done(job_id)
     return jsonify({
         "route": route_feature,
         "stations": stations_collection,
@@ -3404,17 +2160,15 @@ def debug_files(filename: str):
 
 @app.route('/api/progress/<job_id>')
 def api_progress(job_id: str):
-    session_id = _resolve_request_session_id(create=True)
-
     def event_stream():
         # Emit progress until done
         while True:
-            st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
+            st = _get_progress(job_id)
             msg = __import__('json').dumps(st)
             yield f"data: {msg}\n\n"
-            if st.get('known') and st.get('done'):
+            if st.get('done'):
                 break
-            time.sleep(0.1)
+            time.sleep(0.5)
     headers = {
         'Cache-Control': 'no-cache',
         'Content-Type': 'text/event-stream',
@@ -3428,247 +2182,13 @@ def api_session():
     """Return persisted session state. Includes a convenience flag if GPX exists."""
     import json
     try:
-        session_id = _resolve_request_session_id(create=True)
-        st = load_session_state(session_id=str(session_id) if session_id else None)
+        st = load_session_state()
         p = st.get('last_gpx_path')
-        exists = _gpx_path_is_usable(p)
-        if exists:
-            current_name = str(st.get('last_gpx_name') or '').strip()
-            repaired_name = _display_gpx_name_for_path(p, current_name)
-            if repaired_name and not current_name:
-                save_session_state({'last_gpx_name': repaired_name}, session_id=str(session_id) if session_id else None)
-                st['last_gpx_name'] = repaired_name
-        elif p:
-            log.warning('[SESSION] Clearing unusable GPX from session: %s', p)
-            save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
-            st['last_gpx_path'] = ''
-            st['last_gpx_name'] = ''
-        st_out = {**st, 'gpx_exists': exists, 'session_id': session_id}
+        exists = bool(p) and Path(p).exists()
+        st_out = {**st, 'gpx_exists': exists}
         return Response(json.dumps(st_out), mimetype='application/json')
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/tour_slot_optimizer/start', methods=['POST'])
-def api_tour_slot_optimizer_start():
-    if optimize_tour_slots is None:
-        return jsonify({'error': 'tour slot optimizer unavailable'}), 501
-
-    try:
-        session_id = _resolve_request_session_id(create=True)
-        payload = request.get_json(silent=True) or {}
-        state = load_session_state(session_id=str(session_id) if session_id else None)
-
-        gpx_override = payload.get('gpx_path')
-        gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
-        route_data = load_gpx_route(str(gpx_path))
-
-        total_days_raw = payload.get('totalDays', state.get('tour_days', 7))
-        try:
-            total_days = max(1, int(total_days_raw))
-        except Exception:
-            total_days = 7
-
-        rest_day_indexes_raw = payload.get('restDayIndexes')
-        if not isinstance(rest_day_indexes_raw, list):
-            rest_day_indexes_raw = []
-        rest_day_indexes: list[int] = []
-        for item in rest_day_indexes_raw:
-            try:
-                rest_day_indexes.append(int(item))
-            except Exception:
-                continue
-
-        boundaries_raw = payload.get('boundariesKm')
-        if not isinstance(boundaries_raw, list):
-            boundaries_raw = []
-        boundaries_km: list[float] = []
-        for item in boundaries_raw:
-            try:
-                boundaries_km.append(float(item))
-            except Exception:
-                continue
-
-        direction_mode = str(payload.get('directionMode') or 'auto_compare').strip().lower()
-        if direction_mode not in ('forward', 'reverse', 'auto_compare'):
-            direction_mode = 'auto_compare'
-
-        objective_mode = str(payload.get('objectiveMode') or 'most_lucky_days').strip().lower()
-        if objective_mode not in (
-            'most_lucky_days',
-            'highest_avg_temperature',
-            'lowest_precip_sum',
-            'lowest_headwind_sum',
-            'balanced_penalty',
-        ):
-            objective_mode = 'most_lucky_days'
-
-        slot_granularity = str(payload.get('slotGranularity') or 'week').strip().lower()
-        if slot_granularity not in ('day', 'week'):
-            slot_granularity = 'week'
-        slot_step_days = 1 if slot_granularity == 'day' else 7
-
-        lucky_thresholds_raw = payload.get('luckyThresholds')
-        lucky_thresholds: Dict[str, float] = {}
-        if isinstance(lucky_thresholds_raw, dict):
-            for src_key, dst_key, default_value in (
-                ('tempCold', 'temp_cold', 5.0),
-                ('tempHot', 'temp_hot', 30.0),
-                ('rainHigh', 'rain_high', 10.0),
-                ('windHeadComfort', 'wind_head_comfort', 4.0),
-                ('windTailComfort', 'wind_tail_comfort', 10.0),
-            ):
-                try:
-                    v = float(lucky_thresholds_raw.get(src_key, default_value))
-                except Exception:
-                    v = float(default_value)
-                if not math.isfinite(v):
-                    v = float(default_value)
-                lucky_thresholds[dst_key] = float(v)
-        if not lucky_thresholds:
-            lucky_thresholds = {
-                'temp_cold': 5.0,
-                'temp_hot': 30.0,
-                'rain_high': 10.0,
-                'wind_head_comfort': 4.0,
-                'wind_tail_comfort': 10.0,
-            }
-
-        top_n_raw = payload.get('topN', 5)
-        try:
-            top_n = max(1, min(20, int(top_n_raw)))
-        except Exception:
-            top_n = 5
-
-        anchor_year = None
-        try:
-            anchor_year = int(payload.get('anchorYear'))
-        except Exception:
-            anchor_year = None
-        if anchor_year is None:
-            try:
-                start_date_raw = str(payload.get('startDate') or state.get('start_date') or '').strip()
-                if start_date_raw:
-                    anchor_year = int(_dt.date.fromisoformat(start_date_raw).year)
-            except Exception:
-                anchor_year = None
-        if anchor_year is None:
-            anchor_year = int(_dt.date.today().year)
-
-        years_selected_raw = payload.get('yearsSelected')
-        years_selected: list[int] = []
-        if isinstance(years_selected_raw, list):
-            for item in years_selected_raw:
-                try:
-                    y = int(item)
-                    if 1900 <= y <= 2200:
-                        years_selected.append(y)
-                except Exception:
-                    continue
-        if not years_selected:
-            horizon_raw = payload.get('horizonYears', 3)
-            try:
-                horizon = int(horizon_raw)
-            except Exception:
-                horizon = 3
-            if horizon not in (1, 3, 5):
-                horizon = 3
-            end_year = int(_dt.date.today().year) - 1
-            start_year = end_year - int(horizon) + 1
-            years_selected = list(range(start_year, end_year + 1))
-
-        dirs = 2 if direction_mode == 'auto_compare' else 1
-        progress_total = max(1, _slot_start_count(int(anchor_year), int(slot_step_days)) * dirs)
-
-        job_id = uuid.uuid4().hex
-        progress_init(job_id, progress_total, session_id=str(session_id) if session_id else None)
-        _set_tour_slot_job(job_id, str(session_id) if session_id else None, {
-            'job_id': job_id,
-            'status': 'queued',
-            'created_at': time.time(),
-            'result': None,
-            'error': None,
-            'meta': {
-                'gpx_path': str(gpx_path),
-                'total_days': int(total_days),
-                'rest_day_indexes': list(rest_day_indexes),
-                'boundaries_km': list(boundaries_km),
-                'years_selected': list(years_selected),
-                'anchor_year': int(anchor_year),
-                'direction_mode': direction_mode,
-                'objective_mode': objective_mode,
-                'slot_granularity': slot_granularity,
-                'slot_step_days': int(slot_step_days),
-                'lucky_thresholds': dict(lucky_thresholds),
-                'top_n': int(top_n),
-            },
-        })
-
-        worker = threading.Thread(
-            target=_run_tour_slot_optimizer_job,
-            kwargs={
-                'job_id': job_id,
-                'session_id': str(session_id) if session_id else None,
-                'route_data': route_data,
-                'total_days': int(total_days),
-                'rest_day_indexes': list(rest_day_indexes),
-                'boundaries_km': list(boundaries_km),
-                'years_selected': list(years_selected),
-                'anchor_year': int(anchor_year),
-                'direction_mode': direction_mode,
-                'objective_mode': objective_mode,
-                'slot_step_days': int(slot_step_days),
-                'lucky_thresholds': dict(lucky_thresholds),
-                'top_n': int(top_n),
-            },
-            daemon=True,
-        )
-        worker.start()
-
-        return jsonify({
-            'job_id': job_id,
-            'status': 'queued',
-            'progress_total': progress_total,
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/tour_slot_optimizer/progress/<job_id>', methods=['GET'])
-def api_tour_slot_optimizer_progress(job_id: str):
-    try:
-        session_id = _resolve_request_session_id(create=True)
-        st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
-        job = _get_tour_slot_job(job_id, str(session_id) if session_id else None)
-        status = str((job or {}).get('status') or ('done' if st.get('done') else 'running'))
-        return jsonify({
-            'job_id': str(job_id),
-            'status': status,
-            'progress': st,
-            'error': (job or {}).get('error'),
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/tour_slot_optimizer/result/<job_id>', methods=['GET'])
-def api_tour_slot_optimizer_result(job_id: str):
-    try:
-        session_id = _resolve_request_session_id(create=True)
-        st = _get_progress(job_id, session_id=str(session_id) if session_id else None)
-        job = _get_tour_slot_job(job_id, str(session_id) if session_id else None)
-        if not job:
-            return jsonify({'error': 'Unknown optimizer job id'}), 404
-        return jsonify({
-            'job_id': str(job_id),
-            'status': str(job.get('status') or 'unknown'),
-            'progress': st,
-            'meta': dict(job.get('meta') or {}),
-            'result': job.get('result'),
-            'error': job.get('error'),
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/map_stream')
@@ -3682,17 +2202,13 @@ def api_map_stream():
     grid_deg_param = request.args.get('grid_deg')
     fetch_mode = request.args.get('mode', 'single_day')
     profile_step_km_param = request.args.get('profile_step_km')
-    elevation_validation_param = request.args.get('elevation_validation')
     # Tour-day assignment params
     start_date_param = request.args.get('start_date')  # YYYY-MM-DD
-    tour_weather_mode_param = request.args.get('tour_weather_mode')
     tour_days_param = request.args.get('total_days')
     hist_years_param = request.args.get('hist_years')
     hist_start_param = request.args.get('hist_start')
-    years_selected_req = _parse_years_csv(request.args.get('years'))
     reverse_param = request.args.get('reverse')
     dry_run_param = request.args.get('dry_run')
-    weather_only_param = request.args.get('weather_only')
     reset_api_param = request.args.get('reset_api')
     force_online_param = request.args.get('force_online')
     # Comfort thresholds from frontend settings
@@ -3702,10 +2218,6 @@ def api_map_stream():
     wind_head_comfort_param = request.args.get('wind_head_comfort')
     wind_tail_comfort_param = request.args.get('wind_tail_comfort')
     reuse_per_day_param = request.args.get('reuse_per_day')
-    temp_mode_param = request.args.get('temp_mode')
-    active_hours_param = request.args.get('active_hours') or request.args.get('ride_hours')
-
-    session_id = _resolve_request_session_id(create=True)
 
     if not date or len(date) != 5 or '-' not in date:
         return Response("data: {\"error\": \"Provide date as MM-DD\"}\n\n", mimetype='text/event-stream')
@@ -3730,36 +2242,19 @@ def api_map_stream():
 
     def event_stream():
         log.info('[SSE] map_stream start date=%s mode=%s', date, fetch_mode)
-        session_state = load_session_state(session_id=str(session_id) if session_id else None)
         # Prevent parallel heavy streams: assign token; dry-run streams do not cancel main
+        local_token = None
         is_dry_run = str(dry_run_param).lower() in ('1','true','yes')
-        weather_only_stream = str(weather_only_param).lower() in ('1', 'true', 'yes', 'on')
-        elevation_validation_mode = str(elevation_validation_param).lower() in ('1', 'true', 'yes', 'on')
         offline_only = str(offline_only_param).lower() in ('1', 'true', 'yes', 'on')
-        force_online = str(force_online_param).lower() in ('1', 'true', 'yes', 'on')
-        tour_weather_mode = _normalize_tour_weather_mode(
-            tour_weather_mode_param or session_state.get('tour_weather_mode') or '',
-            default='hybrid',
-        )
-        temp_mode = _normalize_climate_mode(temp_mode_param)
-        active_hour_start, active_hour_end = _parse_active_hours(active_hours_param)
-        if tour_weather_mode == 'forecast':
-            if offline_only:
-                tour_weather_mode = 'climatology'
-            else:
-                offline_only = False
-                force_online = True
-        elif tour_weather_mode == 'hybrid':
-            if offline_only:
-                tour_weather_mode = 'climatology'
-            else:
-                # Hybrid policy: prefer offline historical climatology for past/current
-                # days and use online forecast only for dates in forecast horizon.
-                # Keep force_online as requested, but do not auto-force it.
-                offline_only = False
-        local_token = _issue_stream_token(str(session_id) if session_id else None, is_dry_run)
+        with STREAM_LOCK:
+            global STREAM_TOKEN
+            if not is_dry_run:
+                STREAM_TOKEN += 1
+            local_token = STREAM_TOKEN
         try:
-            gpx_path = _resolve_session_gpx(gpx_override, session_id=str(session_id) if session_id else None)
+            gpx_path = GPX_FILE
+            if gpx_override and gpx_override.endswith('.gpx') and Path(gpx_override).exists():
+                gpx_path = Path(gpx_override)
             gpx_path_str = str(gpx_path)
             try:
                 gpx_is_uploaded = Path(gpx_path_str).name.startswith('uploaded_')
@@ -3774,19 +2269,21 @@ def api_map_stream():
                 try:
                     td = _parse_tour_days(tour_days_param)
                     if td is None:
-                        td = int(session_state.get('tour_days', 7))
+                        td = int(SESSION_STATE.get('tour_days', 7))
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
-                        "last_gpx_name": _display_gpx_name_for_path(gpx_path_str, session_state.get('last_gpx_name')),
+                        "last_gpx_name": (
+                            (SESSION_STATE.get('last_gpx_name') or '')
+                            if gpx_is_uploaded
+                            else Path(gpx_path_str).name
+                        ),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
-                        "start_date": (start_date_param or session_state.get('start_date') or ''),
-                        "tour_weather_mode": tour_weather_mode,
+                        "start_date": (start_date_param or SESSION_STATE.get('start_date') or ''),
                         "tour_days": int(td),
                         "first_year": int(first_year),
                         "num_years": int(num_years)
-                    }, session_id=str(session_id) if session_id else None)
-                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
+                    })
                 except Exception:
                     pass
             # Optional: force online/offline for debugging.
@@ -3800,187 +2297,27 @@ def api_map_stream():
                     set_force_online(False)
             except Exception:
                 pass
-            elevation_diagnostics = None
-            elevation_perf_ms = {}
-            elevation_source_dist_km = []
-            elevation_source_m = []
-            profile_display_geometry_key = 'profile_sampling'
-            profile_display_geometry_reason = 'sampled_profile_for_rendering'
+            step_km = float(step_km_param) if step_km_param else 25.0
+            sampled_points, route_feature = sample_route(str(gpx_path), step_km=step_km)
+            # Denser sampling for elevation profile (no weather fetching)
+            # Keep relief detail about 3x finer than the weather glyph spacing.
             try:
-                step_km = float(step_km_param) if step_km_param else 25.0
-                t0_gpx = time.perf_counter()
-                route_data = load_gpx_route(str(gpx_path))
-                elevation_perf_ms['gpx_import_ms'] = (time.perf_counter() - t0_gpx) * 1000.0
-                t0_weather_sample = time.perf_counter()
-                sampled_route = sample_route_data(route_data, step_km=step_km)
-                elevation_perf_ms['weather_sampling_ms'] = (time.perf_counter() - t0_weather_sample) * 1000.0
-                sampled_points = sampled_route['sampled_points']
-                glyph_cum_km = [float(v) for v in sampled_route['sampled_dist_km']]
-                route_feature = route_data['route_geojson']
-                source_points = list(route_data.get('points') or [])
-                elevation_source_dist_km = [float(v) for v in list(route_data.get('cum_km') or [])]
-                elevation_source_m = [
-                    (float(pt[2]) if (isinstance(pt, (tuple, list)) and len(pt) >= 3 and pt[2] is not None) else None)
-                    for pt in source_points
-                ]
-                if weather_only_stream:
-                    # Weather-only refresh: keep route sampling for station lookup,
-                    # but skip dense profile recalculation and profile diagnostics.
-                    profile_points = sampled_points
-                    profile_dist_km = list(glyph_cum_km)
-                    profile_elev_m = list(sampled_route.get('sampled_elev_m', []))
+                if profile_step_km_param:
+                    profile_step_km = float(profile_step_km_param)
                 else:
-                    # Denser sampling for elevation profile (no weather fetching)
-                    # Keep relief detail about 3x finer than the weather glyph spacing.
-                    try:
-                        if profile_step_km_param:
-                            profile_step_km = float(profile_step_km_param)
-                        else:
-                            profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
-                    except Exception:
-                        profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
-                    try:
-                        t0_profile_sample = time.perf_counter()
-                        profile_route = sample_route_data(route_data, step_km=profile_step_km)
-                        elevation_perf_ms['profile_sampling_ms'] = (time.perf_counter() - t0_profile_sample) * 1000.0
-                        profile_points = profile_route['sampled_points']
-                        profile_dist_km = [float(v) for v in profile_route['sampled_dist_km']]
-                        profile_elev_m = list(profile_route['sampled_elev_m'])
-                    except Exception:
-                        profile_points = sampled_points
-                        profile_dist_km = list(glyph_cum_km)
-                        profile_elev_m = [None for _ in profile_points]
-
-                    # Prefer original GPX geometry for profile rendering so ascent/descent
-                    # shown in the chart remain consistent with the high-fidelity source.
-                    try:
-                        source_profile_points = [
-                            (float(pt[0]), float(pt[1]))
-                            for pt in source_points
-                            if isinstance(pt, (tuple, list)) and len(pt) >= 2
-                        ]
-                        source_profile_dist_km = [float(v) for v in list(route_data.get('cum_km') or [])]
-                        if len(source_profile_points) >= 2 and len(source_profile_points) == len(source_profile_dist_km):
-                            profile_points = source_profile_points
-                            profile_dist_km = source_profile_dist_km
-                            profile_elev_m = list(elevation_source_m)
-                            profile_display_geometry_key = 'original_gpx'
-                            profile_display_geometry_reason = 'source_profile_prevents_elevation_loss'
-                    except Exception:
-                        pass
-
-                    original_stats = compute_elevation_stats_from_route_data(route_data, stage_key='original_gpx', label='Original GPX')
-                    weather_stats = compute_elevation_stats_from_series(
-                        [float(v) for v in sampled_route.get('sampled_dist_km', [])],
-                        list(sampled_route.get('sampled_elev_m', [])),
-                        stage_key='weather_sampling',
-                        label=f'Weather Sampling ({step_km:.2f} km)',
-                    )
-                    profile_stats = compute_elevation_stats_from_series(
-                        [float(v) for v in profile_dist_km],
-                        list(profile_elev_m),
-                        stage_key='profile_sampling',
-                        label=f'Profile Sampling ({profile_step_km:.2f} km)',
-                    )
-                    weather_loss = compare_elevation_stats(original_stats, weather_stats)
-                    profile_loss = compare_elevation_stats(original_stats, profile_stats)
-                    weather_stats.update({
-                        'ascent_loss_m': float(weather_loss.get('ascent_loss_m', 0.0)),
-                        'ascent_loss_pct': float(weather_loss.get('ascent_loss_pct', 0.0)),
-                        'descent_loss_m': float(weather_loss.get('descent_loss_m', 0.0)),
-                        'descent_loss_pct': float(weather_loss.get('descent_loss_pct', 0.0)),
-                    })
-                    profile_stats.update({
-                        'ascent_loss_m': float(profile_loss.get('ascent_loss_m', 0.0)),
-                        'ascent_loss_pct': float(profile_loss.get('ascent_loss_pct', 0.0)),
-                        'descent_loss_m': float(profile_loss.get('descent_loss_m', 0.0)),
-                        'descent_loss_pct': float(profile_loss.get('descent_loss_pct', 0.0)),
-                    })
-                    elevation_diagnostics = {
-                        'version': 1,
-                        'validation_mode': bool(elevation_validation_mode),
-                        'displayed_geometry_key': str(profile_display_geometry_key),
-                        'displayed_geometry_reason': str(profile_display_geometry_reason),
-                        'ascent_source_geometry_key': 'original_gpx',
-                        'profile_matches_ascent_source': bool(profile_display_geometry_key == 'original_gpx'),
-                        'stages': [original_stats, weather_stats, profile_stats],
-                        'comparisons': {
-                            'weather_vs_original': weather_loss,
-                            'profile_vs_original': profile_loss,
-                        },
-                        'timings_ms': {k: float(v) for k, v in elevation_perf_ms.items()},
-                        'validation': {
-                            'distance_conserved_weather': abs(float(weather_stats.get('distance_km', 0.0)) - float(original_stats.get('distance_km', 0.0))) <= 0.2,
-                            'distance_conserved_profile': abs(float(profile_stats.get('distance_km', 0.0)) - float(original_stats.get('distance_km', 0.0))) <= 0.2,
-                            'profile_sampling_acceptable': float(profile_loss.get('ascent_loss_pct', 0.0)) <= 10.0,
-                            'no_missing_elevation_in_source': int(original_stats.get('missing_elevation_points', 0)) == 0,
-                            'stage_ascent_matches_total': None,
-                            'stage_ascent_delta_m': None,
-                        },
-                    }
-                    try:
-                        log.info(
-                            '[ELEV] %s: %d pts, %.2f km, min=%s m, max=%s m, ascent=%.1f m, descent=%.1f m, missing=%d',
-                            original_stats.get('label'),
-                            int(original_stats.get('points', 0)),
-                            float(original_stats.get('distance_km', 0.0)),
-                            str(original_stats.get('min_elevation_m')),
-                            str(original_stats.get('max_elevation_m')),
-                            float(original_stats.get('ascent_m', 0.0)),
-                            float(original_stats.get('descent_m', 0.0)),
-                            int(original_stats.get('missing_elevation_points', 0)),
-                        )
-                        log.info(
-                            '[ELEV] %s: %d pts, %.2f km, ascent=%.1f m (loss %.1f m / %.1f%%), descent=%.1f m (loss %.1f m / %.1f%%)',
-                            weather_stats.get('label'),
-                            int(weather_stats.get('points', 0)),
-                            float(weather_stats.get('distance_km', 0.0)),
-                            float(weather_stats.get('ascent_m', 0.0)),
-                            float(weather_stats.get('ascent_loss_m', 0.0)),
-                            float(weather_stats.get('ascent_loss_pct', 0.0)),
-                            float(weather_stats.get('descent_m', 0.0)),
-                            float(weather_stats.get('descent_loss_m', 0.0)),
-                            float(weather_stats.get('descent_loss_pct', 0.0)),
-                        )
-                        log.info(
-                            '[ELEV] %s: %d pts, %.2f km, ascent=%.1f m (loss %.1f m / %.1f%%), descent=%.1f m (loss %.1f m / %.1f%%)',
-                            profile_stats.get('label'),
-                            int(profile_stats.get('points', 0)),
-                            float(profile_stats.get('distance_km', 0.0)),
-                            float(profile_stats.get('ascent_m', 0.0)),
-                            float(profile_stats.get('ascent_loss_m', 0.0)),
-                            float(profile_stats.get('ascent_loss_pct', 0.0)),
-                            float(profile_stats.get('descent_m', 0.0)),
-                            float(profile_stats.get('descent_loss_m', 0.0)),
-                            float(profile_stats.get('descent_loss_pct', 0.0)),
-                        )
-                    except Exception:
-                        pass
-            except Exception as exc:
-                log.warning('[SSE] route setup failed for %s: %s', gpx_path_str, exc, exc_info=True)
-                if not is_dry_run:
-                    try:
-                        active_gpx = str(session_state.get('last_gpx_path') or '')
-                        if active_gpx == gpx_path_str:
-                            save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
-                            session_state['last_gpx_path'] = ''
-                            session_state['last_gpx_name'] = ''
-                    except Exception:
-                        pass
-                err_payload = json.dumps({
-                    'code': 'route_setup_failed',
-                    'message': str(exc),
-                    'fatal': True,
-                    'gpx_path': gpx_path_str,
-                })
-                yield f"event: stream_error\ndata: {err_payload}\n\n"
-                return
+                    profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
+            except Exception:
+                profile_step_km = max(0.5, min(step_km / 3.0, 10.0))
+            try:
+                profile_points, _ = sample_route(str(gpx_path), step_km=profile_step_km)
+            except Exception:
+                profile_points = sampled_points
             # Persist session change (gpx, spacing, reverse flag are known here)
             if not is_dry_run:
                 try:
                     # Derive years start if provided; otherwise compute from current year
                     import datetime as _dt
-                    num_years = int(hist_years_param) if hist_years_param else session_state.get('num_years', 10)
+                    num_years = int(hist_years_param) if hist_years_param else SESSION_STATE.get('num_years', 10)
                     first_year = None
                     if hist_start_param:
                         try:
@@ -3992,19 +2329,21 @@ def api_map_stream():
                             today_year = _dt.date.today().year
                             first_year = today_year - num_years
                         except Exception:
-                            first_year = session_state.get('first_year', 2016)
+                            first_year = SESSION_STATE.get('first_year', 2016)
                     save_session_state({
                         "last_gpx_path": str(gpx_path),
-                        "last_gpx_name": _display_gpx_name_for_path(gpx_path_str, session_state.get('last_gpx_name')),
+                        "last_gpx_name": (
+                            (SESSION_STATE.get('last_gpx_name') or '')
+                            if gpx_is_uploaded
+                            else Path(gpx_path_str).name
+                        ),
                         "glyph_spacing_km": float(step_km),
                         "reverse": (str(reverse_param).lower() in ('1','true','yes')),
-                        "start_date": (start_date_param or session_state.get('start_date') or ''),
-                        "tour_weather_mode": tour_weather_mode,
-                        "tour_days": (int(tour_days_param) if (tour_days_param and tour_days_param.isdigit()) else session_state.get('tour_days', 7)),
+                        "start_date": (start_date_param or SESSION_STATE.get('start_date') or ''),
+                        "tour_days": (int(tour_days_param) if (tour_days_param and tour_days_param.isdigit()) else SESSION_STATE.get('tour_days', 7)),
                         "first_year": int(first_year),
                         "num_years": int(num_years)
-                    }, session_id=str(session_id) if session_id else None)
-                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
+                    })
                 except Exception:
                     pass
             # Optional reverse tour order
@@ -4014,21 +2353,11 @@ def api_map_stream():
                 reversed_tour = False
             if reversed_tour:
                 try:
-                    route_total_km = float(route_data.get('total_km') or 0.0)
                     route_feature['geometry']['coordinates'] = list(reversed(route_feature['geometry']['coordinates']))
                     sampled_points = list(reversed(sampled_points))
-                    glyph_cum_km = [route_total_km - float(d) for d in reversed(glyph_cum_km)]
                     # Also reverse profile sampling points to preserve forward progression in the profile
                     try:
                         profile_points = list(reversed(profile_points))
-                        profile_dist_km = [route_total_km - float(d) for d in reversed(profile_dist_km)]
-                        profile_elev_m = list(reversed(profile_elev_m))
-                    except Exception:
-                        pass
-                    try:
-                        if elevation_source_dist_km and elevation_source_m:
-                            elevation_source_dist_km = [route_total_km - float(d) for d in reversed(elevation_source_dist_km)]
-                            elevation_source_m = list(reversed(elevation_source_m))
                     except Exception:
                         pass
                     log.info('[PLAN] Reversed route and sampled points for tour')
@@ -4041,28 +2370,19 @@ def api_map_stream():
                     grid_deg = 0.25
             except Exception:
                 grid_deg = 0.25
-        except Exception as exc:
-            try:
-                active_gpx = str(session_state.get('last_gpx_path') or '')
-                if gpx_path_str and active_gpx == gpx_path_str:
-                    save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
-                    session_state['last_gpx_path'] = ''
-                    session_state['last_gpx_name'] = ''
-            except Exception:
-                pass
-            err_payload = json.dumps({
-                'code': 'route_setup_failed',
-                'message': f'Route error: {str(exc)}',
-                'fatal': True,
-                'gpx_path': gpx_path_str if 'gpx_path_str' in locals() else '',
-            })
-            yield f"event: stream_error\ndata: {err_payload}\n\n"
+        except Exception as e:
+            yield f"data: {{\"error\": \"Route error: {str(e)}\"}}\n\n"
             return
 
         total = len(sampled_points)
         # Compute total route distance and tour-day setup BEFORE emitting route
         try:
-            total_distance_km = float(route_data.get('total_km') or 0.0)
+            coords_all = route_feature['geometry']['coordinates']
+            total_distance_km = 0.0
+            for i in range(1, len(coords_all)):
+                lon1, lat1 = coords_all[i-1]
+                lon2, lat2 = coords_all[i]
+                total_distance_km += haversine_km(lat1, lon1, lat2, lon2)
         except Exception:
             total_distance_km = None
         import datetime as _dt
@@ -4157,6 +2477,7 @@ def api_map_stream():
 
         # Emit route first
         try:
+            import json
             # Build day-segmented route if tour params available
             route_segments = None
             start_marker = None
@@ -4258,7 +2579,7 @@ def api_map_stream():
             # Years span used by fetchers
             try:
                 # Derive span from request params if provided; fallback to recent years ending last year
-                num_years = int(hist_years_param) if hist_years_param else session_state.get('num_years', 10)
+                num_years = int(hist_years_param) if hist_years_param else SESSION_STATE.get('num_years', 10)
                 start_year = None
                 if hist_start_param:
                     try:
@@ -4275,31 +2596,82 @@ def api_map_stream():
             except Exception:
                 years_start = None
                 years_end = None
-            if not weather_only_stream:
-                route_msg = json.dumps({
-                    "route": route_feature,
-                    "route_segments": route_segments,
-                    "start_marker": start_marker,
-                    "end_marker": end_marker,
-                    # Echo the GPX actually used so the frontend can keep the
-                    # "Loaded GPX" label consistent even when an override is missing.
-                    "gpx_path": str(gpx_path),
-                    "gpx_name": _display_gpx_name_for_path(gpx_path, session_state.get('last_gpx_name')),
-                    "years_start": years_start,
-                    "years_end": years_end,
-                    "total": total
-                })
-                # Abort if a newer non-dry-run stream started
-                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
-                    log.info('[SSE] stream cancelled before route emit')
-                    return
-                yield f"event: route\ndata: {route_msg}\n\n"
-                log.info('[SSE] route emitted: points=%d', total)
-            else:
-                log.info('[SSE] weather_only=1: skipping route emit')
+            route_msg = json.dumps({
+                "route": route_feature,
+                "route_segments": route_segments,
+                "start_marker": start_marker,
+                "end_marker": end_marker,
+                # Echo the GPX actually used so the frontend can keep the
+                # "Loaded GPX" label consistent even when an override is missing.
+                "gpx_path": str(gpx_path),
+                "gpx_name": (
+                    (SESSION_STATE.get('last_gpx_name') or '')
+                    if (
+                        (str(SESSION_STATE.get('last_gpx_path') or '') == str(gpx_path))
+                        and (Path(str(gpx_path)).name.startswith('uploaded_'))
+                        and (SESSION_STATE.get('last_gpx_name') or '')
+                    )
+                    else Path(str(gpx_path)).name
+                ),
+                "years_start": years_start,
+                "years_end": years_end,
+                "total": total
+            })
+            # Abort if a newer non-dry-run stream started
+            if (not is_dry_run) and (local_token != STREAM_TOKEN):
+                log.info('[SSE] stream cancelled before route emit')
+                return
+            yield f"event: route\ndata: {route_msg}\n\n"
+            log.info('[SSE] route emitted: points=%d', total)
         except Exception:
             pass
-        sampled_total_km = float(profile_dist_km[-1]) if profile_dist_km else 0.0
+        # Compute cumulative distances along the full route geometry
+        coords = route_feature['geometry']['coordinates']
+        cum_route_km = []
+        try:
+            acc_full = 0.0
+            cum_route_km.append(0.0)
+            for i in range(1, len(coords)):
+                lon1, lat1 = coords[i-1]
+                lon2, lat2 = coords[i]
+                acc_full += haversine_km(lat1, lon1, lat2, lon2)
+                cum_route_km.append(acc_full)
+            full_total_km = acc_full
+        except Exception:
+            # Fallback: use previously computed total_distance_km
+            full_total_km = total_distance_km or 0.0
+            cum_route_km = [full_total_km]
+
+        # Map each profile sampled point to nearest route coordinate distance
+        def _nearest_route_index(lat: float, lon: float) -> int:
+            try:
+                import math as _m
+                best_i = 0
+                best_d2 = float('inf')
+                for j in range(len(coords)):
+                    lonR, latR = coords[j]
+                    mx = (lat + latR) * 0.5
+                    dx = (lonR - lon) * (3.141592653589793 / 180.0) * max(0.1, abs(_m.cos(mx * 3.141592653589793 / 180.0)))
+                    dy = (latR - lat) * (3.141592653589793 / 180.0)
+                    d2 = dx*dx + dy*dy
+                    if d2 < best_d2:
+                        best_d2 = d2
+                        best_i = j
+                return best_i
+            except Exception:
+                return 0
+
+        distances_from_start = {}
+        for i, (plat, plon) in enumerate(profile_points):
+            try:
+                ridx = _nearest_route_index(plat, plon)
+                distances_from_start[i] = float(cum_route_km[ridx]) if (0 <= ridx < len(cum_route_km)) else 0.0
+            except Exception:
+                distances_from_start[i] = 0.0
+
+        # Scaling factor becomes 1.0 because distances are on full route scale
+        sampled_total_km = float(distances_from_start.get(len(profile_points)-1, 0.0)) if profile_points else 0.0
+        scale_factor = 1.0
 
         # Compute simple route heading at each sampled point (bearing prev→next)
         def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -4323,25 +2695,34 @@ def api_map_stream():
                 lat2, lon2 = profile_points[i+1]
             sampled_heading_deg.append(_bearing_deg(lat1, lon1, lat2, lon2))
 
+        # Distances for glyph points: map each glyph to nearest route coordinate cumulative distance
+        glyph_route_dist_km: Dict[int, float] = {}
+        try:
+            for i, (glat, glon) in enumerate(sampled_points):
+                ridx = _nearest_route_index(glat, glon)
+                glyph_route_dist_km[i] = float(cum_route_km[ridx]) if (0 <= ridx < len(cum_route_km)) else 0.0
+        except Exception:
+            glyph_route_dist_km = {i: 0.0 for i in range(len(sampled_points))}
+
         # Monotonic glyph distance from start (based on route cumulative distance).
         # IMPORTANT: Do NOT use haversine distance between glyph points here — that
         # underestimates the true along-route distance (chord vs path) and causes
         # glyphs to end early on the profile chart.
+        glyph_cum_km: list[float]
         try:
+            glyph_cum_km = []
             prev = 0.0
-            monotonic_glyph_cum_km = []
-            for d in glyph_cum_km:
-                d = float(d)
+            for i in range(len(sampled_points)):
+                d = float(glyph_route_dist_km.get(i, 0.0))
                 if d < prev:
                     d = prev
-                monotonic_glyph_cum_km.append(d)
+                glyph_cum_km.append(d)
                 prev = d
-            glyph_cum_km = monotonic_glyph_cum_km
 
             # Optional: ensure the series reaches the full profile length.
             # (The profile chart x-axis uses `sampled_total_km`.)
             try:
-                route_total_km = float(sampled_total_km) if sampled_total_km else float(route_data.get('total_km') or 0.0)
+                route_total_km = float(sampled_total_km) if sampled_total_km else (float(cum_route_km[-1]) if cum_route_km else 0.0)
                 last_d = float(glyph_cum_km[-1]) if glyph_cum_km else 0.0
                 if route_total_km > 0.0 and last_d > 0.0:
                     rel_err = abs(route_total_km - last_d) / route_total_km
@@ -4351,7 +2732,7 @@ def api_map_stream():
             except Exception:
                 pass
         except Exception:
-            glyph_cum_km = [float(v) for v in glyph_cum_km]
+            glyph_cum_km = [float(glyph_route_dist_km.get(i, 0.0)) for i in range(len(sampled_points))]
 
         def _glyph_dist_km(i: int) -> float:
             try:
@@ -4360,10 +2741,7 @@ def api_map_stream():
                     return float(glyph_cum_km[ii])
             except Exception:
                 pass
-            if glyph_cum_km:
-                idx = max(0, min(int(i), len(glyph_cum_km) - 1))
-                return float(glyph_cum_km[idx])
-            return 0.0
+            return float(glyph_route_dist_km.get(int(i), 0.0))
 
         # Day boundaries marks (distance in km from start)
         day_boundaries = []
@@ -4373,65 +2751,65 @@ def api_map_stream():
                 for k, m in enumerate(marks):
                     d = start_date + _dt.timedelta(days=int(k))
                     day_boundaries.append({"distance_km": float(m), "day_index": int(k), "date": d.isoformat()})
-                try:
-                    if elevation_diagnostics:
-                        seg_stats = compute_segment_ascent_sum(elevation_source_dist_km, elevation_source_m, marks)
-                        stage_sum = float(seg_stats.get('sum_ascent_m', 0.0))
-                        source_total = 0.0
-                        for st in list(elevation_diagnostics.get('stages') or []):
-                            if str(st.get('key')) == 'original_gpx':
-                                source_total = float(st.get('ascent_m', 0.0))
-                                break
-                        delta = abs(stage_sum - source_total)
-                        tol = max(1.0, source_total * 0.002)
-                        validation = dict(elevation_diagnostics.get('validation') or {})
-                        validation['stage_ascent_matches_total'] = bool(delta <= tol)
-                        validation['stage_ascent_delta_m'] = float(delta)
-                        validation['stage_ascent_sum_m'] = float(stage_sum)
-                        validation['stage_ascent_tol_m'] = float(tol)
-                        elevation_diagnostics['validation'] = validation
-                        elevation_diagnostics['segment_ascent_m'] = list(seg_stats.get('segment_ascent_m') or [])
-                except Exception:
-                    pass
         except Exception:
             pass
 
-        # Emit profile event with necessary arrays
-        if not weather_only_stream:
-            try:
-                prof_msg = json.dumps({
-                    "profile": {
-                        "sampled_points": [[float(lon), float(lat)] for (lat, lon) in profile_points],
-                        "sampled_dist_km": [float(v) for v in profile_dist_km],
-                        "sampled_heading_deg": sampled_heading_deg,
-                        "elev_m": profile_elev_m,
-                        "day_boundaries": day_boundaries,
-                        "elevation_source": {
-                            "key": "original_gpx",
-                            "label": "Original GPX",
-                            "dist_km": [float(v) for v in elevation_source_dist_km],
-                            "elev_m": elevation_source_m,
-                        },
-                        "elevation_diagnostics": elevation_diagnostics,
-                    }
-                })
-                # Cancel check before profile emit
-                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
-                    log.info('[SSE] stream cancelled before profile emit')
-                    return
-                yield f"event: profile\ndata: {prof_msg}\n\n"
-                # Optional dry-run: after sending profile, finish without station fetching
+        # Elevation per profile point via nearest GPX track point (use active gpx_path)
+        elev_m = []
+        try:
+            import gpxpy
+            # Read the same GPX used for this stream
+            with open(str(gpx_path), 'r', encoding='utf-8') as _f:
+                _g = gpxpy.parse(_f)
+            raw = []
+            for tr in _g.tracks:
+                for seg in tr.segments:
+                    for p in seg.points:
+                        raw.append((float(p.latitude), float(p.longitude), float(p.elevation) if (p.elevation is not None) else None))
+            for rt in _g.routes:
+                for p in rt.points:
+                    raw.append((float(p.latitude), float(p.longitude), float(p.elevation) if (p.elevation is not None) else None))
+            def _nearest_ele(lat: float, lon: float) -> float:
+                best = None; best_d = 1e9
+                for (la, lo, el) in raw:
+                    d = haversine_km(lat, lon, la, lo)
+                    if d < best_d:
+                        best_d = d; best = el
                 try:
-                    if str(dry_run_param).lower() in ('1','true','yes'):
-                        yield "event: done\ndata: {\"stations_count\": 0}\n\n"
-                        log.info('[SSE] dry-run done (profile only)')
-                        return
+                    return float(best) if best is not None else None
                 except Exception:
-                    pass
-            except Exception as _e:
-                log.warning('[SSE] profile emit failed: %s', _e)
-        else:
-            log.info('[SSE] weather_only=1: skipping profile emit')
+                    return None
+            for (lat, lon) in profile_points:
+                elev_m.append(_nearest_ele(lat, lon))
+        except Exception:
+            elev_m = [None for _ in profile_points]
+
+        # Emit profile event with necessary arrays
+        try:
+            prof_msg = json.dumps({
+                "profile": {
+                    "sampled_points": [[float(lon), float(lat)] for (lat, lon) in profile_points],
+                    "sampled_dist_km": [float(distances_from_start[i] * scale_factor) for i in range(len(profile_points))],
+                    "sampled_heading_deg": sampled_heading_deg,
+                    "elev_m": elev_m,
+                    "day_boundaries": day_boundaries
+                }
+            })
+            # Cancel check before profile emit
+            if (not is_dry_run) and (local_token != STREAM_TOKEN):
+                log.info('[SSE] stream cancelled before profile emit')
+                return
+            yield f"event: profile\ndata: {prof_msg}\n\n"
+            # Optional dry-run: after sending profile, finish without station fetching
+            try:
+                if str(dry_run_param).lower() in ('1','true','yes'):
+                    yield "event: done\ndata: {\"stations_count\": 0}\n\n"
+                    log.info('[SSE] dry-run done (profile only)')
+                    return
+            except Exception:
+                pass
+        except Exception as _e:
+            log.warning('[SSE] profile emit failed: %s', _e)
 
         # Helper: nearest segment day assignment using route_segments
         def _nearest_segment_day(lat: float, lon: float):
@@ -4505,21 +2883,7 @@ def api_map_stream():
             years_start_req = None
             years_end_req = None
 
-        if years_selected_req:
-            try:
-                years_start_req = int(min(years_selected_req))
-                years_end_req = int(max(years_selected_req))
-            except Exception:
-                pass
-        requested_years_list = _normalize_requested_years(
-            years_selected=years_selected_req,
-            start_year=years_start_req,
-            end_year=years_end_req,
-        )
-
         def _span_tag() -> str:
-            if years_selected_req:
-                return f"ysel{'-'.join(str(int(year)) for year in years_selected_req)}"
             if years_start_req is None or years_end_req is None:
                 return f"yspan{int(years_window)}"
             return f"y{int(years_start_req)}-{int(years_end_req)}"
@@ -4567,33 +2931,13 @@ def api_map_stream():
             'offline_tile': 0,
             'api': 0,
             'dummy': 0,
-            'skipped': 0,
         }
         provenance_providers: set[str] = set()
         years_used_min: int | None = None
         years_used_max: int | None = None
-        years_used_set: set[int] = set()
 
-        def _record_years(ys: Any = None, ye: Any = None, years_used: Any = None) -> None:
-            nonlocal years_used_min, years_used_max, years_used_set
-            if isinstance(years_used, (list, tuple, set)):
-                normalized_years: list[int] = []
-                for year in years_used:
-                    try:
-                        normalized_years.append(int(year))
-                    except Exception:
-                        continue
-                if not normalized_years:
-                    return
-                for year in normalized_years:
-                    years_used_set.add(int(year))
-                ys_i = min(normalized_years)
-                ye_i = max(normalized_years)
-                if years_used_min is None or ys_i < years_used_min:
-                    years_used_min = ys_i
-                if years_used_max is None or ye_i > years_used_max:
-                    years_used_max = ye_i
-                return
+        def _record_years(ys: Any, ye: Any) -> None:
+            nonlocal years_used_min, years_used_max
             try:
                 ys_i = int(ys)
                 ye_i = int(ye)
@@ -4603,25 +2947,6 @@ def api_map_stream():
                 years_used_min = ys_i
             if years_used_max is None or ye_i > years_used_max:
                 years_used_max = ye_i
-            if ye_i < ys_i:
-                return
-            for year in range(ys_i, ye_i + 1):
-                years_used_set.add(int(year))
-
-        def _record_stats_years(stats: Any) -> None:
-            try:
-                if not isinstance(stats, dict):
-                    return
-                years_used = stats.get('_years_used')
-                if isinstance(years_used, (list, tuple, set)) and years_used:
-                    _record_years(years_used=years_used)
-                    return
-                ys = stats.get('_years_start')
-                ye = stats.get('_years_end')
-                if ys is not None and ye is not None:
-                    _record_years(ys, ye)
-            except Exception:
-                return
 
         def _record_provider(p: Any) -> None:
             try:
@@ -4687,15 +3012,12 @@ def api_map_stream():
             if not used:
                 return None
 
-            forecast_mode_active = (tour_weather_mode == 'forecast')
             years_txt = _format_years_span(years_used_min, years_used_max)
             providers = sorted(list(provenance_providers))
             provider_txt = None
             if len(providers) == 1:
                 p = providers[0].lower()
                 if p in ('openmeteo', 'open-meteo', 'open_meteo'):
-                    provider_txt = 'Open-Meteo'
-                elif p in ('openmeteo_forecast', 'openmeteo_forecast_hourly'):
                     provider_txt = 'Open-Meteo'
                 elif p == 'meteostat':
                     provider_txt = 'Meteostat'
@@ -4705,15 +3027,9 @@ def api_map_stream():
             if used == ['offline_tile']:
                 base = 'offline Open-Meteo tile DB'
             elif used == ['disk_cache']:
-                if forecast_mode_active:
-                    base = f"cached {provider_txt} forecast stats" if provider_txt else 'cached forecast stats'
-                else:
-                    base = f"cached {provider_txt} station stats" if provider_txt else 'cached station stats'
+                base = f"cached {provider_txt} station stats" if provider_txt else 'cached station stats'
             elif used == ['api']:
-                if forecast_mode_active:
-                    base = f"live {provider_txt} forecast" if provider_txt else 'live forecast data'
-                else:
-                    base = f"historical {provider_txt} weather data" if provider_txt else 'historical weather data'
+                base = f"historical {provider_txt} weather data" if provider_txt else 'historical weather data'
             elif used == ['dummy']:
                 base = 'fallback dummy data'
             else:
@@ -4721,88 +3037,20 @@ def api_map_stream():
                 if provenance_counts.get('offline_tile', 0) > 0:
                     parts.append('offline tiles')
                 if provenance_counts.get('disk_cache', 0) > 0:
-                    parts.append('cached forecast stats' if forecast_mode_active else 'cached stats')
+                    parts.append('cached stats')
                 if provenance_counts.get('api', 0) > 0:
-                    parts.append('forecast data' if forecast_mode_active else 'historical data')
+                    parts.append('historical data')
                 if provenance_counts.get('dummy', 0) > 0:
                     parts.append('dummy fallback')
-                if provenance_counts.get('skipped', 0) > 0:
-                    parts.append('skipped points')
                 base = 'mixed sources' + (f" ({' / '.join(parts)})" if parts else '')
 
-            if years_txt and (not forecast_mode_active) and 'dummy' not in used:
+            if years_txt and 'dummy' not in used:
                 base = f"{base} {years_txt}"
             return f"from {base}"
 
-        def _year_coverage_provenance() -> Dict[str, Any]:
-            requested = [int(year) for year in requested_years_list]
-            used_set = {int(year) for year in years_used_set}
-            requested_set = {int(year) for year in requested}
-            used = [int(year) for year in requested if int(year) in used_set]
-            missing_requested = [int(year) for year in requested if int(year) not in years_used_set]
-            used_unrequested = sorted((int(year) for year in used_set if int(year) not in requested_set), reverse=True)
-            skipped_points = int(provenance_counts.get('skipped', 0) or 0)
-            fallback_active = bool(missing_requested or used_unrequested or int(provenance_counts.get('dummy', 0) or 0) > 0 or skipped_points > 0)
-
-            def _fmt_years(values: list[int]) -> str:
-                return ', '.join(str(int(value)) for value in values)
-
-            summary_parts: list[str] = []
-            if used:
-                summary_parts.append(f"Contributing selected years: {_fmt_years(used)}")
-            if missing_requested:
-                summary_parts.append(f"Missing selected: {_fmt_years(missing_requested)}")
-            if used_unrequested:
-                summary_parts.append(f"Fallback outside selection: {_fmt_years(used_unrequested)}")
-            if int(provenance_counts.get('dummy', 0) or 0) > 0:
-                summary_parts.append('Dummy fallback used')
-            if skipped_points > 0:
-                summary_parts.append(f"Skipped points: {skipped_points}")
-
-            return {
-                'requested_years': requested,
-                'used_years': used,
-                'missing_requested_years': missing_requested,
-                'used_unrequested_years': used_unrequested,
-                'skipped_points': skipped_points,
-                'fallback_active': bool(fallback_active),
-                'summary_text': ' ; '.join(summary_parts) if summary_parts else None,
-            }
-
-        def _emit_skipped_route_point(index: int, lat: float, lon: float, reason: str, assigned_date: Any = None, day_idx: Any = None) -> str:
-            nonlocal completed
-            try:
-                provenance_counts['skipped'] += 1
-            except Exception:
-                pass
-            completed += 1
-            payload: Dict[str, Any] = {
-                'skipped': True,
-                'reason': str(reason or 'No valid weather data for this route point'),
-                'point_index': int(index),
-                'lat': float(lat),
-                'lon': float(lon),
-                'distance_from_start_km': _glyph_dist_km(index),
-                'completed': int(completed),
-                'total': int(total),
-            }
-            try:
-                if assigned_date is not None:
-                    payload['date'] = assigned_date.isoformat()
-            except Exception:
-                pass
-            try:
-                if day_idx is not None:
-                    payload['tour_day_index'] = int(day_idx)
-            except Exception:
-                pass
-            return json.dumps(payload)
-
         reuse_per_day = str(reuse_per_day_param).lower() in ('1', 'true', 'yes', 'on')
-        require_point_level_offline_stats = bool(reuse_per_day and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
-        route_start_effective_mode = _effective_tour_weather_mode(tour_weather_mode, start_date)
 
-        if tour_planning and sampled_points and reuse_per_day and route_start_effective_mode == 'climatology' and (not require_point_level_offline_stats):
+        if tour_planning and sampled_points and reuse_per_day:
             # Tour Planning (optional): reuse stats PER DAY (not for the whole tour).
             # Default behavior is per-point stats (day + coordinate) so long routes
             # do not show repeated glyphs within a day segment.
@@ -4894,17 +3142,8 @@ def api_map_stream():
                 # Always probe offline availability (cheap) to support fallback when API is unavailable.
                 # Only accept offline/cached data that matches the requested year span unless the
                 # request explicitly disallows online (offline-only/strict).
-                must_accept_offline_anyway = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
-                offline_stats_raw = None if force_online else _get_offline_stats(
-                    rep_lat,
-                    rep_lon,
-                    mm,
-                    dd,
-                    start_year=years_start_req,
-                    end_year=years_end_req,
-                    years_selected=years_selected_req,
-                    allow_span_mismatch=must_accept_offline_anyway,
-                )
+                must_accept_offline_anyway = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
+                offline_stats_raw = _get_offline_stats(rep_lat, rep_lon, mm, dd)
                 offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                 offline_span = _years_span_from_stats(offline_stats) if offline_stats is not None else 0
 
@@ -4949,10 +3188,10 @@ def api_map_stream():
 
                 # If cache does not satisfy the requested multi-year window, try online (warm cache).
                 # If offline strict is enabled, we can only use offline/cached data.
-                must_skip_online = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
+                must_skip_online = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
 
                 if ((not rep_cache_hit) or (need_multi and (not has_multi_cached))) and (stats is None) and (not must_skip_online):
-                    if (not force_online) and _offline_strict_enabled() and _get_offline_store() is not None:
+                    if _offline_strict_enabled() and _get_offline_store() is not None:
                         yield "event: error\ndata: {\"error\": \"Offline strict mode: no offline data for representative point/day.\"}\n\n"
                         return
                     if fetch_mode == 'single_day':
@@ -4995,8 +3234,8 @@ def api_map_stream():
                         matches = 0
                 elif rep_cache_hit and isinstance(stats, dict) and (has_multi_cached or (not need_multi)):
                     pass
-                elif stats is not None and isinstance(stats, dict) and (offline_stats is not None):
-                    # already handled above, including aggregated partial multi-year offline coverage
+                elif stats is not None and isinstance(stats, dict) and (offline_stats is not None) and (not need_multi):
+                    # already handled above
                     pass
                 else:
                     stats, matches = compute_weather_statistics(df, mm, dd)
@@ -5020,13 +3259,7 @@ def api_map_stream():
                             start_year=years_start_req,
                             end_year=years_end_req,
                         )
-                        dt_stats, _dt_points = compute_daytime_temperature_statistics(
-                            dfh,
-                            mm,
-                            dd,
-                            start_hour=active_hour_start,
-                            end_hour=active_hour_end,
-                        )
+                        dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
                         stats.update(dt_stats)
                         stats['_temp_source'] = 'hourly_daytime'
                     except Exception as e:
@@ -5056,13 +3289,15 @@ def api_map_stream():
                 # Track per-day provenance so per-glyph counts are accurate.
                 try:
                     src = 'dummy' if str(stats.get('_temp_source', '')).startswith('dummy') else ('offline_tile' if bool(stats.get('_offline')) else ('disk_cache' if rep_cache_hit else 'api'))
-                    _record_stats_years(stats)
+                    ys = stats.get('_years_start')
+                    ye = stats.get('_years_end')
+                    if ys is not None and ye is not None:
+                        _record_years(ys, ye)
                     _record_provider(stats.get('_provider'))
                     source_by_day[int(d_idx)] = {
                         'source': src,
-                        'years_start': stats.get('_years_start'),
-                        'years_end': stats.get('_years_end'),
-                        'years_used': list(stats.get('_years_used') or []),
+                        'years_start': ys,
+                        'years_end': ye,
                         'provider': stats.get('_provider'),
                     }
                 except Exception:
@@ -5074,7 +3309,7 @@ def api_map_stream():
 
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
-                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
+                if (not is_dry_run) and (local_token != STREAM_TOKEN):
                     log.info('[SSE] stream cancelled during station loop')
                     return
                 try:
@@ -5121,7 +3356,10 @@ def api_map_stream():
                         src = str(sm.get('source', '') or '')
                         if src in provenance_counts:
                             provenance_counts[src] += 1
-                        _record_years(sm.get('years_start'), sm.get('years_end'), sm.get('years_used'))
+                        ys = sm.get('years_start')
+                        ye = sm.get('years_end')
+                        if ys is not None and ye is not None:
+                            _record_years(ys, ye)
                         _record_provider(sm.get('provider'))
                     except Exception:
                         pass
@@ -5179,7 +3417,6 @@ def api_map_stream():
                 W_TAIL = float(wind_tail_comfort_param) if wind_tail_comfort_param is not None else 10.0
                 rain_days = 0; headwind_days = 0; tailwind_days = 0; comfort_days = 0; extreme_hot = 0; extreme_cold = 0
                 temps = []; winds = []; precs = []
-                day_summaries = []
                 for d_idx in range(total_days_val):
                     st, _mch = stats_by_day.get(int(d_idx), next(iter(stats_by_day.values())))
                     # Prefer daytime/ride-hours median temperature when available.
@@ -5201,33 +3438,19 @@ def api_map_stream():
                     elif eff < -0.33: headwind_days += 1
                     # comfort criteria
                     # Comfort: temp within [T_COLD..T_HOT], rain below R_MAX, wind threshold varies by effective wind direction
-                    is_lucky_day = False
                     if (T_COLD <= t <= T_HOT) and (pmm < R_MAX):
                         # eff < -0.33 → headwind, eff > 0.33 → tailwind, else crosswind → treat like headwind
                         if eff < -0.33:
                             if w < W_HEAD:
                                 comfort_days += 1
-                                is_lucky_day = True
                         elif eff > 0.33:
                             if w < W_TAIL:
                                 comfort_days += 1
-                                is_lucky_day = True
                         else:
                             if w < W_HEAD:
                                 comfort_days += 1
-                                is_lucky_day = True
                     if t >= 30.0: extreme_hot += 1
                     if t <= 5.0: extreme_cold += 1
-                    day_summaries.append({
-                        "day_index": int(d_idx),
-                        "temp_median": float(t),
-                        "wind_mean": float(w),
-                        "precip_sum": float(pmm),
-                        "precip_mean": float(pmm),
-                        "eff_mean": float(eff),
-                        "lucky": bool(is_lucky_day),
-                        "weather_source": "climatology",
-                    })
                 med_t = float(_np.nanmedian(temps)) if temps else None
                 max_t = float(_np.nanmax(temps)) if temps else None
                 min_t = float(_np.nanmin(temps)) if temps else None
@@ -5239,19 +3462,16 @@ def api_map_stream():
                     "headwind_days": int(headwind_days),
                     "tailwind_days": int(tailwind_days),
                     "comfort_days": int(comfort_days),
-                    "lucky_days": int(comfort_days),
                     "extreme_days_hot": int(extreme_hot),
                     "extreme_days_cold": int(extreme_cold),
                     "median_temperature": med_t,
                     "max_temperature": max_t,
                     "min_temperature": min_t,
                     "total_precipitation": total_prec,
-                    "mean_wind_speed": mean_wind,
-                    "day_summaries": day_summaries,
+                    "mean_wind_speed": mean_wind
                 }
                 try:
-                    save_session_state({"tour_summary": tour_summary, "tour_day_summaries": day_summaries}, session_id=str(session_id) if session_id else None)
-                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
+                    save_session_state({"tour_summary": tour_summary})
                 except Exception:
                     pass
                 yield f"event: tour_summary\ndata: {_json.dumps(tour_summary)}\n\n"
@@ -5271,7 +3491,7 @@ def api_map_stream():
                     return
                 ag = day_aggr.get(dkey)
                 if ag is None:
-                    ag = {"temps": [], "winds": [], "precs": [], "effs": [], "weather_sources": []}
+                    ag = {"temps": [], "winds": [], "precs": [], "effs": []}
                     day_aggr[dkey] = ag
                 try:
                     t_day = stats_obj.get('temp_day_median')
@@ -5279,7 +3499,6 @@ def api_map_stream():
                     ag["temps"].append(float(t_use))
                     ag["winds"].append(float(stats_obj.get('wind_speed_ms', 0.0)))
                     ag["precs"].append(float(stats_obj.get('precipitation_mm', 0.0)))
-                    ag["weather_sources"].append(str(stats_obj.get('_weather_source') or _effective_tour_weather_mode(tour_weather_mode, assigned_date_value)))
                     import math as _m
                     seg_head = float(day_headings.get(dkey, 0.0))
                     wdir_to = (float(stats_obj.get('wind_dir_deg', 0.0)) + 180.0) % 360.0
@@ -5290,7 +3509,7 @@ def api_map_stream():
 
             for i, (lat, lon) in enumerate(sampled_points):
                 # Cancel check to prevent parallel streams
-                if not _is_stream_token_current(str(session_id) if session_id else None, local_token, is_dry_run):
+                if (not is_dry_run) and (local_token != STREAM_TOKEN):
                     log.info('[SSE] stream cancelled during station loop')
                     return
                 try:
@@ -5337,36 +3556,11 @@ def api_map_stream():
                     if assigned_date is not None:
                         mm = assigned_date.month
                         dd = assigned_date.day
-                    point_weather_mode = _effective_tour_weather_mode(tour_weather_mode, assigned_date)
-                    hybrid_hist_spec = _hybrid_current_year_historical_spec(tour_weather_mode, assigned_date)
-                    point_years_window = int(hybrid_hist_spec.get('years_window')) if hybrid_hist_spec else int(years_window)
-                    point_years_start_req = int(hybrid_hist_spec.get('start_year')) if hybrid_hist_spec else years_start_req
-                    point_years_end_req = int(hybrid_hist_spec.get('end_year')) if hybrid_hist_spec else years_end_req
-                    point_span_tag = str(hybrid_hist_spec.get('span_tag')) if hybrid_hist_spec else _span_tag()
-                    point_include_current_year = bool(hybrid_hist_spec.get('include_current_year')) if hybrid_hist_spec else False
-                    point_weather_source = str(hybrid_hist_spec.get('weather_source')) if hybrid_hist_spec else point_weather_mode
-
-                    def _point_span_exact_match(st: Any) -> bool:
-                        try:
-                            if point_years_start_req is None or point_years_end_req is None:
-                                return True
-                            if not isinstance(st, dict):
-                                return False
-                            ys = st.get('_years_start')
-                            ye = st.get('_years_end')
-                            if ys is None or ye is None:
-                                return False
-                            return int(ys) == int(point_years_start_req) and int(ye) == int(point_years_end_req)
-                        except Exception:
-                            return False
 
                     # Disk cache by quantized lat/lon + month/day + fetch_mode
-                    stats_name = None
-                    stats_path = None
-                    if point_weather_mode != 'forecast':
-                        stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}_{point_span_tag}.json"
-                        stats_path = STATS_CACHE_DIR / stats_name
-                    if stats_path and stats_path.exists():
+                    stats_name = f"stats_lat{qlat:.2f}_lon{qlon:.2f}_m{mm:02d}_d{dd:02d}_{fetch_mode}_{_span_tag()}.json"
+                    stats_path = STATS_CACHE_DIR / stats_name
+                    if stats_path.exists():
                         try:
                             stats = __import__('json').load(open(stats_path, 'r', encoding='utf-8'))
                             matching = int(stats.get('_match_days', 0) or 0)
@@ -5374,12 +3568,15 @@ def api_map_stream():
                                 raise RuntimeError('stale cache (missing rain percentiles)')
                             if not _stats_has_temperature_summary_fields(stats):
                                 raise RuntimeError('stale cache (missing temp summary fields)')
-                            if not _point_span_exact_match(stats):
+                            if not _span_exact_match(stats):
                                 raise RuntimeError('stale cache (years span mismatch)')
                             stats = _ensure_temperature_summary_fields(stats)
                             try:
                                 provenance_counts['disk_cache'] += 1
-                                _record_stats_years(stats)
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
@@ -5397,15 +3594,11 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "tour_planning_offline",
+                                    "_source_mode": "disk_cache",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
-                            try:
-                                feature['properties']['weather_source'] = str(stats.get('_weather_source') or point_weather_source)
-                            except Exception:
-                                pass
                             if segment_length and start_date is not None and assigned_date is not None:
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
@@ -5421,24 +3614,12 @@ def api_map_stream():
                             pass
 
                     # Offline-first per point/day: if tile stats exist, skip any network requests.
-                    must_accept_offline_anyway = False
-                    offline_stats = None
+                    must_accept_offline_anyway = bool(offline_only or (_offline_strict_enabled() and _get_offline_store() is not None))
+                    offline_stats_raw = _get_offline_stats(lat, lon, mm, dd)
+                    offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                     offline_fallback_stats = None
-                    if point_weather_mode != 'forecast':
-                        must_accept_offline_anyway = bool((not force_online) and (offline_only or (_offline_strict_enabled() and _get_offline_store() is not None)))
-                        offline_stats_raw = None if force_online else _get_offline_stats(
-                            lat,
-                            lon,
-                            mm,
-                            dd,
-                            start_year=point_years_start_req,
-                            end_year=point_years_end_req,
-                            years_selected=years_selected_req,
-                            allow_span_mismatch=must_accept_offline_anyway,
-                        )
-                        offline_stats = offline_stats_raw if (offline_stats_raw is not None and (_point_span_exact_match(offline_stats_raw) or must_accept_offline_anyway)) else None
                     try:
-                        want_multi_year = (point_years_start_req is not None and point_years_end_req is not None and int(point_years_end_req) - int(point_years_start_req) + 1 >= 2)
+                        want_multi_year = (years_start_req is not None and years_end_req is not None and int(years_end_req) - int(years_start_req) + 1 >= 2)
                     except Exception:
                         want_multi_year = False
 
@@ -5450,13 +3631,14 @@ def api_map_stream():
                         if (not want_multi_year) or offline_span >= 2:
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                _record_stats_years(stats)
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
                             try:
-                                if not stats_path:
-                                    raise RuntimeError('skip cache write')
                                 s = {**stats, '_match_days': matching}
                                 import json as _json
                                 _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
@@ -5477,15 +3659,11 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "tour_planning_offline",
+                                    "_source_mode": "offline_tile",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
-                            try:
-                                feature['properties']['weather_source'] = str(stats.get('_weather_source') or point_weather_source)
-                            except Exception:
-                                pass
                             if segment_length and start_date is not None and assigned_date is not None:
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
@@ -5500,14 +3678,17 @@ def api_map_stream():
                         # Multi-year requested but offline is single-year: keep offline as fallback and continue to online/cached fetch.
                         offline_fallback_stats = stats
 
-                    if (not force_online) and _offline_strict_enabled() and _get_offline_store() is not None:
+                    if _offline_strict_enabled() and _get_offline_store() is not None:
                         # Strict mode: do not use online fallback or dummy glyphs.
                         if offline_fallback_stats is not None:
                             stats = dict(offline_fallback_stats)
                             matching = int(stats.get('_match_days', 0) or 0)
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                _record_stats_years(stats)
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
@@ -5525,7 +3706,7 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "tour_planning_offline",
+                                    "_source_mode": "offline_tile",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
@@ -5550,15 +3731,22 @@ def api_map_stream():
                             matching = int(stats.get('_match_days', 0) or 0)
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                _record_stats_years(stats)
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
-                            src_mode = 'tour_planning_offline'
+                            src_mode = 'offline_tile'
                         else:
-                            msg = _emit_skipped_route_point(i, lat, lon, 'No offline weather data available for this route point across the selected or fallback years', assigned_date, day_idx)
-                            yield f"event: station\ndata: {msg}\n\n"
-                            continue
+                            stats = _dummy_stats(mm, dd)
+                            matching = 0
+                            try:
+                                provenance_counts['dummy'] += 1
+                            except Exception:
+                                pass
+                            src_mode = 'dummy'
                         svg = generate_glyph_v2(stats, debug=False)
                         feature = {
                             "type": "Feature",
@@ -5578,10 +3766,6 @@ def api_map_stream():
                                 "distance_from_start_km": _glyph_dist_km(i)
                             }
                         }
-                        try:
-                            feature['properties']['weather_source'] = str(stats.get('_weather_source') or point_weather_source)
-                        except Exception:
-                            pass
                         if segment_length and start_date is not None and assigned_date is not None:
                             feature['properties']['tour_day_index'] = day_idx
                             feature['properties']['tour_total_days'] = tour_days
@@ -5595,37 +3779,27 @@ def api_map_stream():
                     # Tour optimization: when start_date+tour_days is known, fetch ONE contiguous
                     # daily window per year for the whole tour, then reuse it for all points.
                     use_tour_window = bool(segment_length and start_date is not None and tour_days is not None)
-                    use_tour_window_for_point = bool(use_tour_window and not hybrid_hist_spec)
-                    if use_tour_window_for_point:
+                    if use_tour_window:
                         span_days = int(tour_days)
-                        window_key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:window:{start_date.isoformat()}:{span_days}:{point_span_tag}"
+                        window_key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:window:{start_date.isoformat()}:{span_days}:{_span_tag()}"
                         if window_key in df_cache:
                             df = df_cache[window_key]
                         else:
-                            if point_weather_mode == 'forecast':
-                                df = fetch_forecast_weather_window(
-                                    qlat,
-                                    qlon,
-                                    start_date,
-                                    span_days,
-                                )
-                            else:
-                                df = fetch_daily_weather_window(
-                                    qlat,
-                                    qlon,
-                                    start_date.month,
-                                    start_date.day,
-                                    span_days,
-                                    years_window=point_years_window,
-                                    start_year=point_years_start_req,
-                                    end_year=point_years_end_req,
-                                    include_current_year=point_include_current_year,
-                                )
+                            df = fetch_daily_weather_window(
+                                qlat,
+                                qlon,
+                                start_date.month,
+                                start_date.day,
+                                span_days,
+                                years_window=years_window,
+                                start_year=years_start_req,
+                                end_year=years_end_req,
+                            )
                             df_cache[window_key] = df
-                        min_rows = 1 if point_weather_mode == 'forecast' else max(1, int(span_days))
+                        min_rows = max(1, int(span_days))
                     else:
                         # Fetch daily data using assigned mm/dd and cache per date
-                        key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}:{point_span_tag}"
+                        key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:{mm:02d}-{dd:02d}:{_span_tag()}"
                         if key in df_cache:
                             df = df_cache[key]
                         else:
@@ -5635,10 +3809,9 @@ def api_map_stream():
                                     qlon,
                                     mm,
                                     dd,
-                                    years_window=point_years_window,
-                                    start_year=point_years_start_req,
-                                    end_year=point_years_end_req,
-                                    include_current_year=point_include_current_year,
+                                    years_window=years_window,
+                                    start_year=years_start_req,
+                                    end_year=years_end_req,
                                 )
                             else:
                                 df = fetch_daily_weather(
@@ -5646,10 +3819,9 @@ def api_map_stream():
                                     qlon,
                                     mm,
                                     dd,
-                                    years_window=point_years_window,
-                                    start_year=point_years_start_req,
-                                    end_year=point_years_end_req,
-                                    include_current_year=point_include_current_year,
+                                    years_window=years_window,
+                                    start_year=years_start_req,
+                                    end_year=years_end_req,
                                 )
                             df_cache[key] = df
                         min_rows = (1 if fetch_mode == 'single_day' else 30)
@@ -5660,13 +3832,14 @@ def api_map_stream():
                             matching = int(stats.get('_match_days', 0) or 0)
                             try:
                                 provenance_counts['offline_tile'] += 1
-                                _record_stats_years(stats)
+                                ys = stats.get('_years_start')
+                                ye = stats.get('_years_end')
+                                if ys is not None and ye is not None:
+                                    _record_years(ys, ye)
                                 _record_provider(stats.get('_provider'))
                             except Exception:
                                 pass
                             try:
-                                if not stats_path:
-                                    raise RuntimeError('skip cache write')
                                 s = {**stats, '_match_days': matching}
                                 import json as _json
                                 _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
@@ -5687,15 +3860,11 @@ def api_map_stream():
                                     "min_distance_to_route_km": 0.0,
                                     "usage_count": 1,
                                     "_match_days": matching,
-                                    "_source_mode": "tour_planning_offline",
+                                    "_source_mode": "offline_tile",
                                     "_grid_deg": grid_deg,
                                     "distance_from_start_km": _glyph_dist_km(i)
                                 }
                             }
-                            try:
-                                feature['properties']['weather_source'] = str(stats.get('_weather_source') or point_weather_source)
-                            except Exception:
-                                pass
                             if segment_length and start_date is not None and assigned_date is not None:
                                 feature['properties']['tour_day_index'] = day_idx
                                 feature['properties']['tour_total_days'] = tour_days
@@ -5707,22 +3876,54 @@ def api_map_stream():
                             if completed % 5 == 0 or completed == total:
                                 log.info('[SSE] station emitted %d/%d (offline fallback)', completed, total)
                             continue
-                        msg = _emit_skipped_route_point(i, lat, lon, 'No valid weather data available for this route point', assigned_date, day_idx)
-                        yield f"event: station\ndata: {msg}\n\n"
-                        continue
-                    if point_weather_mode == 'forecast' and assigned_date is not None:
+                        # Emit a dummy glyph for this point
                         try:
-                            date_series = pd.to_datetime(df['date']).dt.date
-                            df = df.loc[date_series == assigned_date]
+                            provenance_counts['dummy'] += 1
                         except Exception:
-                            df = pd.DataFrame([])
-                        if df is None or len(df) < 1:
-                            msg = _emit_skipped_route_point(i, lat, lon, 'No forecast data available for this route point within the 14-day horizon', assigned_date, day_idx)
-                            yield f"event: station\ndata: {msg}\n\n"
-                            continue
+                            pass
+                        base_t = 15.0 if mm in (4,5,6,9,10) else (25.0 if mm in (7,8) else (5.0 if mm in (1,2,12) else 12.0))
+                        stats = {
+                            'temperature_c': base_t,
+                            'temp_p25': base_t - 2.0,
+                            'temp_p75': base_t + 2.0,
+                            'precipitation_mm': 0.0,
+                            'wind_dir_deg': 180.0,
+                            'wind_var_deg': 20.0,
+                            'wind_speed_ms': 4.0,
+                            '_temp_source': 'dummy_offline',
+                        }
+                        svg = generate_glyph_v2(stats, debug=False)
+                        feature = {
+                            "type": "Feature",
+                            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                            "properties": {
+                                **stats,
+                                "svg": svg,
+                                "station_id": f"point_{i}",
+                                "station_name": f"Route Point {i}",
+                                "station_lat": lat,
+                                "station_lon": lon,
+                                "min_distance_to_route_km": 0.0,
+                                "usage_count": 1,
+                                "_match_days": [],
+                                "_source_mode": f"per_point_{fetch_mode}_window_dummy" if use_tour_window else f"per_point_{fetch_mode}_dummy",
+                                "_grid_deg": grid_deg,
+                                "distance_from_start_km": _glyph_dist_km(i)
+                            }
+                        }
+                        if segment_length and start_date is not None and assigned_date is not None:
+                            feature['properties']['tour_day_index'] = day_idx
+                            feature['properties']['tour_total_days'] = tour_days
+                            feature['properties']['date'] = assigned_date.isoformat()
+                        _append_day_aggr(stats, day_idx, assigned_date)
+                        completed += 1
+                        msg = json.dumps({"feature": feature, "completed": completed, "total": total})
+                        yield f"event: station\ndata: {msg}\n\n"
+                        if completed % 5 == 0 or completed == total:
+                            log.info('[SSE] station emitted %d/%d (dummy)', completed, total)
+                        continue
                     # Compute stats for this mm/dd
                     stats, matching = compute_weather_statistics(df, mm, dd)
-                    stats = _ensure_temperature_summary_fields(stats)
                     # Attach provenance and count usage.
                     try:
                         provenance_counts['api'] += 1
@@ -5737,94 +3938,46 @@ def api_map_stream():
                             _record_provider(prov)
                     except Exception:
                         pass
-                    # Daytime variability (hourly across years / forecast window) — cache by quantized lat/lon and date
-                    if point_weather_mode == 'forecast':
-                        stats['_temp_source'] = 'daily_forecast'
-                        if temp_mode == 'active' and assigned_date is not None and use_tour_window:
-                            try:
-                                hourly_window_key = f"{qlat:.4f},{qlon:.4f}:forecast:hourly_window:{start_date.isoformat()}:{span_days}:{active_hour_start}-{active_hour_end}"
-                                dfh = df_cache.get(hourly_window_key)
-                                if dfh is None:
-                                    dfh = fetch_hourly_forecast_weather_window(
-                                        qlat,
-                                        qlon,
-                                        start_date,
-                                        span_days,
-                                    )
-                                    df_cache[hourly_window_key] = dfh
-                                if dfh is not None and len(dfh) >= 2:
-                                    date_series_h = pd.to_datetime(dfh['time']).dt.date
-                                    dfh = dfh.loc[date_series_h == assigned_date]
-                                if dfh is not None and len(dfh) >= 2:
-                                    dt_stats, _dt_points = compute_daytime_temperature_statistics(
-                                        dfh,
-                                        mm,
-                                        dd,
-                                        start_hour=active_hour_start,
-                                        end_hour=active_hour_end,
-                                    )
-                                    for k in (
-                                        'temperature_c',
-                                        'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
-                                        'temp_hist_p25', 'temp_hist_p75',
-                                        'temp_day_typical_min', 'temp_day_typical_max',
-                                        'temp_day_p25', 'temp_day_p75', 'temp_day_median'
-                                    ):
-                                        if k in dt_stats:
-                                            stats[k] = dt_stats[k]
-                                    stats['_temp_source'] = 'forecast_hourly_active'
-                            except Exception as e:
-                                log.warning('[SSE] Forecast active-hour temp unavailable (per-point %s,%s %s %02d-%02d %02d-%02d): %s', qlat, qlon, assigned_date, mm, dd, active_hour_start, active_hour_end, e)
-                    else:
-                        try:
-                            dt_key = f"{qlat:.4f},{qlon:.4f}:{mm:02d}-{dd:02d}:hourly:{point_span_tag}"
-                            dfh = df_cache.get(dt_key)
-                            if dfh is None:
-                                dfh = fetch_hourly_weather_same_day(
-                                    qlat,
-                                    qlon,
-                                    mm,
-                                    dd,
-                                    years_window=point_years_window,
-                                    start_year=point_years_start_req,
-                                    end_year=point_years_end_req,
-                                    include_current_year=point_include_current_year,
-                                )
-                                df_cache[dt_key] = dfh
-                            if dfh is not None and len(dfh) >= 4:
-                                dt_stats, _dt_points = compute_daytime_temperature_statistics(
-                                    dfh,
-                                    mm,
-                                    dd,
-                                    start_hour=active_hour_start,
-                                    end_hour=active_hour_end,
-                                )
-                                for k in (
-                                    'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
-                                    'temp_day_typical_min', 'temp_day_typical_max',
-                                    'temp_day_p25', 'temp_day_p75', 'temp_day_median'
-                                ):
-                                    if k in dt_stats:
-                                        stats[k] = dt_stats[k]
-                                if 'temp_hist_p25' in dt_stats and 'temp_hist_p75' in dt_stats:
-                                    stats['temp_hist_p25'] = dt_stats['temp_hist_p25']
-                                    stats['temp_hist_p75'] = dt_stats['temp_hist_p75']
-                                stats['_temp_source'] = 'daily+hourly'
-                        except Exception as e:
-                            log.warning('[SSE] Daytime temp unavailable (per-point %s,%s m%d d%d): %s', qlat, qlon, mm, dd, e)
+                    # Daytime variability (hourly across years) — cache by quantized lat/lon and date
                     try:
-                        stats['_weather_source'] = point_weather_source
+                        dt_key = f"{qlat:.4f},{qlon:.4f}:{mm:02d}-{dd:02d}:hourly:{_span_tag()}"
+                        dfh = df_cache.get(dt_key)
+                        if dfh is None:
+                            dfh = fetch_hourly_weather_same_day(
+                                qlat,
+                                qlon,
+                                mm,
+                                dd,
+                                years_window=years_window,
+                                start_year=years_start_req,
+                                end_year=years_end_req,
+                            )
+                            df_cache[dt_key] = dfh
+                        if dfh is not None and len(dfh) >= 4:
+                            dt_stats, _dt_points = compute_daytime_temperature_statistics(dfh, mm, dd)
+                            # Add explicit historical/daytime tooltip fields plus legacy profile fields.
+                            for k in (
+                                'temp_hist_median', 'temp_hist_min', 'temp_hist_max',
+                                'temp_day_typical_min', 'temp_day_typical_max',
+                                'temp_day_p25', 'temp_day_p75', 'temp_day_median'
+                            ):
+                                if k in dt_stats:
+                                    stats[k] = dt_stats[k]
+                            if 'temp_hist_p25' in dt_stats and 'temp_hist_p75' in dt_stats:
+                                # Ensure historical keys are present for clarity (duplicate of temp_p25/temp_p75)
+                                stats['temp_hist_p25'] = dt_stats['temp_hist_p25']
+                                stats['temp_hist_p75'] = dt_stats['temp_hist_p75']
+                            stats['_temp_source'] = 'daily+hourly'
+                    except Exception as e:
+                        log.warning('[SSE] Daytime temp unavailable (per-point %s,%s m%d d%d): %s', qlat, qlon, mm, dd, e)
+                    # Save computed stats to disk cache AFTER daytime adjustments.
+                    try:
+                        s = {**stats, '_match_days': matching}
+                        import json as _json
+                        _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
+                        log.info('[CACHE][SSE] miss -> saved %s', stats_name)
                     except Exception:
                         pass
-                    # Save computed stats to disk cache AFTER daytime adjustments.
-                    if stats_path and stats_name:
-                        try:
-                            s = {**stats, '_match_days': matching}
-                            import json as _json
-                            _json.dump(s, open(stats_path, 'w', encoding='utf-8'), default=_json_default)
-                            log.info('[CACHE][SSE] miss -> saved %s', stats_name)
-                        except Exception:
-                            pass
                     # Optional: Skip per-point hourly to reduce request load
                     # (Representative hourly is computed in tour_planning mode)
                     svg = generate_glyph_v2(stats, debug=False)
@@ -5846,10 +3999,6 @@ def api_map_stream():
                             "distance_from_start_km": _glyph_dist_km(i)
                         }
                     }
-                    try:
-                        feature['properties']['weather_source'] = str(stats.get('_weather_source') or point_weather_source)
-                    except Exception:
-                        pass
                     if segment_length and start_date is not None and assigned_date is not None:
                         feature['properties']['tour_day_index'] = day_idx
                         feature['properties']['tour_total_days'] = tour_days
@@ -5878,12 +4027,10 @@ def api_map_stream():
                 day_meds = []
                 winds_means = []
                 prec_sums = []
-                day_summaries = []
                 for dkey, ag in sorted(day_aggr.items()):
                     t_med = float(_np.nanmedian(ag["temps"])) if ag["temps"] else float('nan')
                     w_mean = float(_np.nanmean(ag["winds"])) if ag["winds"] else float('nan')
                     p_sum = float(_np.nansum(ag["precs"])) if ag["precs"] else 0.0
-                    p_mean = float(_np.nanmean(ag["precs"])) if ag["precs"] else float('nan')
                     e_mean = float(_np.nanmean(ag["effs"])) if ag["effs"] else float('nan')
                     day_meds.append(t_med)
                     winds_means.append(w_mean)
@@ -5893,70 +4040,44 @@ def api_map_stream():
                         if e_mean > 0.33: tailwind_days += 1
                         elif e_mean < -0.33: headwind_days += 1
                     # Comfort: temp within [T_COLD..T_HOT], rain below R_MAX, wind varies by effective wind
-                    is_lucky_day = False
                     if (_np.isfinite(t_med) and T_COLD <= t_med <= T_HOT) and (p_sum < R_MAX):
                         # eff < -0.33 → headwind, eff > 0.33 → tailwind, else crosswind → treat as headwind
                         if _np.isfinite(e_mean):
                             if e_mean < -0.33:
                                 if _np.isfinite(w_mean) and w_mean < W_HEAD:
                                     comfort_days += 1
-                                    is_lucky_day = True
                             elif e_mean > 0.33:
                                 if _np.isfinite(w_mean) and w_mean < W_TAIL:
                                     comfort_days += 1
-                                    is_lucky_day = True
                             else:
                                 if _np.isfinite(w_mean) and w_mean < W_HEAD:
                                     comfort_days += 1
-                                    is_lucky_day = True
                         else:
                             if _np.isfinite(w_mean) and w_mean < W_HEAD:
                                 comfort_days += 1
-                                is_lucky_day = True
                     if _np.isfinite(t_med) and t_med >= 30.0: extreme_hot += 1
                     if _np.isfinite(t_med) and t_med <= 5.0: extreme_cold += 1
-                    source_counts: Dict[str, int] = {}
-                    for src in ag.get("weather_sources", []):
-                        source_counts[str(src)] = int(source_counts.get(str(src), 0) or 0) + 1
-                    day_weather_source = 'climatology'
-                    if source_counts:
-                        day_weather_source = sorted(source_counts.items(), key=lambda item: (-int(item[1]), item[0]))[0][0]
-                    day_summaries.append({
-                        "day_index": int(dkey),
-                        "date": ((start_date + _dt.timedelta(days=int(dkey))).isoformat() if start_date is not None else None),
-                        "temp_median": (float(t_med) if _np.isfinite(t_med) else None),
-                        "wind_mean": (float(w_mean) if _np.isfinite(w_mean) else None),
-                        "precip_sum": float(p_sum),
-                        "precip_mean": (float(p_mean) if _np.isfinite(p_mean) else None),
-                        "eff_mean": (float(e_mean) if _np.isfinite(e_mean) else None),
-                        "lucky": bool(is_lucky_day),
-                        "weather_source": str(day_weather_source),
-                    })
                 med_t = float(_np.nanmedian(day_meds)) if day_meds else None
                 max_t = float(_np.nanmax(day_meds)) if day_meds else None
                 min_t = float(_np.nanmin(day_meds)) if day_meds else None
                 total_prec = float(_np.nansum(prec_sums)) if prec_sums else 0.0
                 mean_wind = float(_np.nanmean(winds_means)) if winds_means else None
                 tour_summary = {
-                    "weather_mode": tour_weather_mode,
                     "total_days": total_days_val,
                     "rain_days": int(rain_days),
                     "headwind_days": int(headwind_days),
                     "tailwind_days": int(tailwind_days),
                     "comfort_days": int(comfort_days),
-                    "lucky_days": int(comfort_days),
                     "extreme_days_hot": int(extreme_hot),
                     "extreme_days_cold": int(extreme_cold),
                     "median_temperature": med_t,
                     "max_temperature": max_t,
                     "min_temperature": min_t,
                     "total_precipitation": total_prec,
-                    "mean_wind_speed": mean_wind,
-                    "day_summaries": day_summaries,
+                    "mean_wind_speed": mean_wind
                 }
                 try:
-                    save_session_state({"tour_summary": tour_summary, "tour_day_summaries": day_summaries}, session_id=str(session_id) if session_id else None)
-                    session_state = load_session_state(session_id=str(session_id) if session_id else None)
+                    save_session_state({"tour_summary": tour_summary})
                 except Exception:
                     pass
                 yield f"event: tour_summary\ndata: {_json.dumps(tour_summary)}\n\n"
@@ -5967,24 +4088,15 @@ def api_map_stream():
             import json as _json
             done_payload = {"stations_count": completed}
             try:
-                done_payload["tour_summary"] = session_state.get('tour_summary')
-                done_payload["tour_day_summaries"] = session_state.get('tour_day_summaries')
+                done_payload["tour_summary"] = SESSION_STATE.get('tour_summary')
             except Exception:
                 pass
             try:
-                coverage = _year_coverage_provenance()
                 done_payload['provenance'] = {
                     'counts': dict(provenance_counts),
                     'providers': sorted(list(provenance_providers)),
                     'years_used_start': years_used_min,
                     'years_used_end': years_used_max,
-                    'requested_years': coverage.get('requested_years'),
-                    'used_years': coverage.get('used_years'),
-                    'missing_requested_years': coverage.get('missing_requested_years'),
-                    'used_unrequested_years': coverage.get('used_unrequested_years'),
-                    'skipped_points': coverage.get('skipped_points'),
-                    'fallback_active': coverage.get('fallback_active'),
-                    'summary_text': coverage.get('summary_text'),
                 }
                 done_payload['station_source_text'] = _station_source_text()
             except Exception:

@@ -8,6 +8,8 @@ FRONTEND_MAP_JS = Path(__file__).resolve().parents[1] / 'frontend' / 'map.js'
 def test_tour_slot_optimizer_controls_present_in_tour_panel():
     html = FRONTEND_INDEX_HTML.read_text(encoding='utf-8')
     assert 'id="tourSlotOptimizeBtn"' in html
+    assert 'Start Simulation Run' in html
+    assert 'Simulation run idle.' in html
     assert 'id="tourSlotObjectiveMode"' not in html
     assert 'id="tourSlotGranularity"' in html
     assert 'id="tourSlotDirectionMode"' in html
@@ -20,7 +22,7 @@ def test_optimizer_button_uses_green_plan_variants_style_tokens():
     html = FRONTEND_INDEX_HTML.read_text(encoding='utf-8')
     assert '.wm-pref-action-btn.wm-slot-opt-btn' in html
     assert 'background: rgba(15,118,110,0.08);' in html
-    assert 'border-color: rgba(15,118,110,0.24);' in html
+    assert 'border-color: rgba(15,118,110,0.24)' in html
     assert 'color: #0f766e;' in html
 
 
@@ -35,6 +37,8 @@ def test_tour_slot_optimizer_frontend_calls_backend_endpoints():
     assert "luckyThresholds" in source
     assert 'Applied slot:' in source
     assert 'Refresh started.' in source
+    assert 'Simulation run complete.' in source
+    assert 'Simulation Run' in source
     assert 'loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });' in source
     assert 'Score semantics: LOWER is better.' in source
     assert 'year_penalty_curve_bundle' in source
