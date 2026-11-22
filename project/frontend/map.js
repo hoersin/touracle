@@ -1154,6 +1154,13 @@
     return byType[t] || '#64748b';
   }
 
+  function _overnightWebsiteHref(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^https?:\/\//i.test(raw)) return raw;
+    return `https://${raw}`;
+  }
+
   function _overnightUiCategoryFromType(type) {
     const t = _overnightNormalizeType(type);
     if (t === 'guesthouse') return 'hotel';
@@ -1410,6 +1417,70 @@
     return OVERNIGHT_DISCOVERED.filter((stop) => _overnightCandidateEnabledByCategory(stop && stop.type));
   }
 
+  function _overnightDensityForZoom() {
+    try {
+      const zoom = Number(map && map.getZoom && map.getZoom());
+      if (!Number.isFinite(zoom)) return { enabled: false, cellPx: 0, maxPerCell: 0 };
+      if (zoom >= 14) return { enabled: false, cellPx: 0, maxPerCell: 0 };
+      if (zoom >= 13) return { enabled: true, cellPx: 46, maxPerCell: 2 };
+      if (zoom >= 12) return { enabled: true, cellPx: 56, maxPerCell: 2 };
+      if (zoom >= 11) return { enabled: true, cellPx: 66, maxPerCell: 1 };
+      if (zoom >= 10) return { enabled: true, cellPx: 78, maxPerCell: 1 };
+      return { enabled: true, cellPx: 92, maxPerCell: 1 };
+    } catch (_) {
+      return { enabled: false, cellPx: 0, maxPerCell: 0 };
+    }
+  }
+
+  function _overnightThinDiscoveredForViewport(stops) {
+    try {
+      const list = Array.isArray(stops) ? stops : [];
+      if (!list.length || !map) return list;
+      const density = _overnightDensityForZoom();
+      if (!density.enabled) return list;
+      const bounds = map.getBounds ? map.getBounds() : null;
+      if (!bounds) return list;
+      const cellPx = Math.max(16, Number(density.cellPx) || 16);
+      const maxPerCell = Math.max(1, Number(density.maxPerCell) || 1);
+      const counts = new Map();
+      const out = [];
+      for (const stop of list) {
+        const lat = Number(stop && stop.lat);
+        const lon = Number(stop && stop.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const ll = L.latLng(lat, lon);
+        if (!bounds.contains(ll)) {
+          out.push(stop);
+          continue;
+        }
+        const pt = map.latLngToContainerPoint(ll);
+        const gx = Math.floor(Number(pt.x) / cellPx);
+        const gy = Math.floor(Number(pt.y) / cellPx);
+        const key = `${gx}:${gy}`;
+        const seen = Number(counts.get(key) || 0);
+        if (seen >= maxPerCell) continue;
+        counts.set(key, seen + 1);
+        out.push(stop);
+      }
+      return out;
+    } catch (_) {
+      return Array.isArray(stops) ? stops : [];
+    }
+  }
+
+  function _overnightEnsureViewportRefreshBinding() {
+    try {
+      if (OVERNIGHT_VIEWPORT_REFRESH_BOUND || !map) return;
+      OVERNIGHT_VIEWPORT_REFRESH_BOUND = true;
+      map.on('zoomend', () => {
+        try { if (_tourIsActive()) _renderOvernightPlanner(); } catch (_) {}
+      });
+      map.on('moveend', () => {
+        try { if (_tourIsActive()) _renderOvernightPlanner(); } catch (_) {}
+      });
+    } catch (_) {}
+  }
+
   function _overnightUpdatePanelCounts() {
     try {
       if (overnightOwnedCountEl) overnightOwnedCountEl.textContent = String(_overnightStopsFromPlan().length);
@@ -1570,6 +1641,12 @@
     const notes = String(stop && stop.notes || '');
     const notesExpanded = notes.trim().length ? 'true' : 'false';
     const notePrompt = notes.trim().length ? 'Edit note…' : 'Add a note…';
+    const website = String(stop && stop.website || '').trim();
+    const phone = String(stop && stop.phone || '').trim();
+    const websiteHref = _overnightWebsiteHref(website);
+    const contactHtml = (website || phone)
+      ? `<div class="wm-overnight-editor__section"><div class="wm-overnight-editor__section-title">Contact</div><div class="wm-overnight-editor__contact">${website ? `<a href="${_htmlEsc(websiteHref)}" target="_blank" rel="noopener noreferrer">${_htmlEsc(website)}</a>` : ''}${website && phone ? '<span class="sep">·</span>' : ''}${phone ? `<a href="tel:${_htmlEsc(phone)}">${_htmlEsc(phone)}</a>` : ''}</div></div>`
+      : '';
     const headingButton = `<button type="button" class="wm-overnight-editor__title-btn" data-overnight-action="edit-title" aria-label="Edit overnight name"><span data-overnight-title-text>${_htmlEsc(name)}</span><span class="wm-overnight-editor__title-pencil">✎</span></button>`;
     return `<div class="wm-overnight-editor" data-overnight-original-type="${_htmlEsc(storedType)}" data-overnight-ui-type-touched="false" data-overnight-original-status="${_htmlEsc(_overnightNormalizeStatus(stop && stop.status))}" data-overnight-ui-status="${_htmlEsc(uiStatus)}" data-overnight-ui-status-touched="false">
       <div class="wm-overnight-editor__head">
@@ -1586,6 +1663,7 @@
           ${stageOptions}
         </select>
       </div>
+      ${contactHtml}
       <div class="wm-overnight-editor__section">
         <div class="wm-overnight-editor__section-title">Accommodation type</div>
         <div class="wm-overnight-editor__icon-row" role="radiogroup" aria-label="Accommodation type">
@@ -1663,6 +1741,22 @@
     try { _renderOvernightPlanner(); } catch (_) {}
   }
 
+  function _overnightOpenEditorById(id) {
+    try {
+      const key = String(id || '').trim();
+      if (!key) return;
+      const stop = _overnightStopsFromPlan().find((entry) => String(entry && entry.id || '') === key);
+      if (!stop) return;
+      _openOvernightEditorOverlay(stop, {
+        persisted: true,
+        suggestedStageId: null,
+        latlng: { lat: Number(stop.lat), lng: Number(stop.lon) },
+      });
+      OVERNIGHT_SELECTED_MARKER_KEY = _overnightMarkerKey(stop);
+      try { _renderOvernightPlanner(); } catch (_) {}
+    } catch (_) {}
+  }
+
   function _overnightDelete(id) {
     const key = String(id || '');
     if (!key) return;
@@ -1717,6 +1811,10 @@
 .wm-overnight-editor__coords{font-size:11px;color:#94a3b8;margin:1px 0 8px}
 .wm-overnight-editor__section{padding-top:8px;margin-top:8px;border-top:1px solid rgba(148,163,184,.25)}
 .wm-overnight-editor__section-title{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#64748b;font-weight:700;margin-bottom:6px}
+.wm-overnight-editor__contact{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px}
+.wm-overnight-editor__contact a{color:#0c4a6e;text-decoration:none;font-weight:600}
+.wm-overnight-editor__contact a:hover{text-decoration:underline}
+.wm-overnight-editor__contact .sep{color:#94a3b8}
 .wm-overnight-editor__field{
   width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:8px;
   min-height:32px;padding:4px 9px;background:#fff;color:#0f172a;font-size:13px
@@ -1799,6 +1897,8 @@
 .wm-roadbook-overnight-item{display:flex;align-items:center;gap:4px;min-width:0;font-size:10px;color:#334155;line-height:1.15}
 .wm-roadbook-overnight-item .icon{font-size:12px;flex:none}
 .wm-roadbook-overnight-item .text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wm-roadbook-overnight-item .text[data-action="edit-overnight"]{cursor:pointer}
+.wm-roadbook-overnight-item .text[data-action="edit-overnight"]:hover{text-decoration:underline}
 .wm-roadbook-overnight-item .state{color:#64748b}
 .wm-roadbook-overnight-item .wm-roadbook-overnight-del{
   flex:none;display:inline-flex;align-items:center;justify-content:center;
@@ -2146,6 +2246,7 @@
   function _renderOvernightPlanner() {
     try {
       if (!map) return;
+      _overnightEnsureViewportRefreshBinding();
       _overnightApplyCategoryChipStates();
       _overnightUpdatePanelCounts();
       _overnightRefreshPlanningZones();
@@ -2163,8 +2264,10 @@
       }
       _overnightDrawSearchAreas();
       const persisted = _overnightStopsFromPlan().map((stop) => ({ ...stop, _persisted: true }));
-      const discovered = OVERNIGHT_DISCOVERED
+      const discoveredCandidates = OVERNIGHT_DISCOVERED
         .filter((item) => !persisted.some((p) => String(p.sourceType || '') === String(item && item.sourceType || '') && String(p.sourceId || '') === String(item && item.sourceId || '')))
+        .filter((item) => _overnightCandidateEnabledByCategory(item && item.type));
+      const discovered = _overnightThinDiscoveredForViewport(discoveredCandidates)
         .map((stop) => ({ ...stop, _persisted: false }));
       const knownStageIds = new Set(_overnightAssignableDays().map((day) => String(day && day.key || '')));
       const allStops = persisted.concat(discovered);
@@ -2172,7 +2275,6 @@
         if (stop && stop._persisted && !_overnightShowOwnedEnabled()) continue;
         if (stop && !stop._persisted) {
           if (!_overnightShowSearchResultsEnabled()) continue;
-          if (!_overnightCandidateEnabledByCategory(stop.type)) continue;
         }
         const lat = Number(stop && stop.lat);
         const lon = Number(stop && stop.lon);
@@ -2543,6 +2645,7 @@
   let OVERNIGHT_LAST_SEARCH_META = null;
   let OVERNIGHT_SEARCH_BUSY = false;
   let OVERNIGHT_SEARCH_REQUEST_SEQ = 0;
+  let OVERNIGHT_VIEWPORT_REFRESH_BOUND = false;
   let OVERNIGHT_PROGRESS_SNAPSHOT = null;
   let OVERNIGHT_PROGRESS_TICK = 0;
   let OVERNIGHT_PROGRESS_STARTED_AT = 0;
@@ -11086,6 +11189,23 @@
           _overnightDelete(overnightId);
         });
       });
+      roadbookList.querySelectorAll('.wm-roadbook-overnight-item .text[data-action="edit-overnight"]').forEach((entry) => {
+        entry.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const overnightId = String(entry.getAttribute('data-overnight-id') || '').trim();
+          if (!overnightId) return;
+          _overnightOpenEditorById(overnightId);
+        });
+        entry.addEventListener('keydown', (ev) => {
+          if (ev.key !== 'Enter' && ev.key !== ' ') return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const overnightId = String(entry.getAttribute('data-overnight-id') || '').trim();
+          if (!overnightId) return;
+          _overnightOpenEditorById(overnightId);
+        });
+      });
     } catch (_) {}
   }
 
@@ -11558,7 +11678,7 @@
           const name = String(stop && stop.name || typeLabel);
           const status = _overnightStatusLabel(stop && stop.status);
           const statusSymbol = _overnightStatusSymbol(stop && stop.status);
-          return `<div class="wm-roadbook-overnight-item"><span class="icon">${_htmlEsc(icon)}</span><span class="text">${_htmlEsc(name)} · <span class="state">${_htmlEsc(statusSymbol)} ${_htmlEsc(status)}</span></span><span class="wm-roadbook-overnight-del" role="button" tabindex="0" data-action="delete-overnight" data-overnight-id="${_htmlEsc(String(stop && stop.id || ''))}" title="Delete overnight" aria-label="Delete overnight">×</span></div>`;
+          return `<div class="wm-roadbook-overnight-item"><span class="icon">${_htmlEsc(icon)}</span><span class="text" role="button" tabindex="0" data-action="edit-overnight" data-overnight-id="${_htmlEsc(String(stop && stop.id || ''))}" title="Edit overnight" aria-label="Edit overnight">${_htmlEsc(name)} · <span class="state">${_htmlEsc(statusSymbol)} ${_htmlEsc(status)}</span></span><span class="wm-roadbook-overnight-del" role="button" tabindex="0" data-action="delete-overnight" data-overnight-id="${_htmlEsc(String(stop && stop.id || ''))}" title="Delete overnight" aria-label="Delete overnight">×</span></div>`;
         }).join('')}</div>`;
       };
       const _insertZoneHtml = (pos) => `<div class="wm-roadbook-insert-zone" data-insert-position="${pos}">

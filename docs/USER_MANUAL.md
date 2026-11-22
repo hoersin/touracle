@@ -105,6 +105,9 @@ The Tour hover tooltip labels these separately, so even a single-year selection 
 - **Accommodation search** provides `Search accommodations`, category icon chips (Camping/Hotel/Hostel/Bivouac), a radius control (`5–60 km`, default `30 km`), and `Show search results` / `Show search areas` toggles.
 - Search zones are computed from visible stage-arrival endpoints plus the visible tour-start point (edge case), and shown as dashed petrol-green circles.
 - Returned candidates are strictly clipped to the configured circle radius for each zone to avoid out-of-area markers.
+- OSM candidate marker density is reduced automatically at lower map zoom levels (grid thinning) and increases again when zooming in, to keep dense city areas selectable.
+- In the overnight editor popup, website and phone are shown when available from OpenStreetMap metadata.
+- In TourBook cards, clicking an overnight entry opens the same overnight editor popup for that entry.
 - Assign discovered places (or manual right-click points) to a ride stage; multiple options per stage are supported.
 - Overnight markers are rendered as category icons with glow highlighting for assigned/active links.
 - OSM-discovered overnight candidates are rendered with a softer, faint background style so they are visually distinct from user-set overnight points.

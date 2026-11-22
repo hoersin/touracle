@@ -36,6 +36,8 @@ def test_overnight_frontend_hooks_and_persistence_are_wired():
     assert 'map.on(\'contextmenu\'' in source
     assert "fetch('/api/overnight/discover'" in source
     assert 'function _overnightEditorPopupHtml(stop' in source
+    assert 'function _overnightWebsiteHref(value)' in source
+    assert 'function _overnightOpenEditorById(id)' in source
     assert 'function _openOvernightEditorOverlay(stop' in source
     assert 'function _closeOvernightEditorOverlay()' in source
     assert "marker.on('contextmenu'" in source
@@ -60,6 +62,9 @@ def test_overnight_frontend_hooks_and_persistence_are_wired():
     assert 'function _overnightShowSearchAreasEnabled()' in source
     assert 'function _overnightApplyCategoryChipStates()' in source
     assert 'function _overnightFilteredDiscoveredItems()' in source
+    assert 'function _overnightDensityForZoom()' in source
+    assert 'function _overnightThinDiscoveredForViewport(stops)' in source
+    assert 'function _overnightEnsureViewportRefreshBinding()' in source
     assert "progressPercentEl.textContent = `${done}/${total} zones • ${ok} ok • ${found} found`;" in source
     assert 'function _overnightInterleaveZoneCandidates(entries, radiusKm, limit)' in source
     assert 'OVERNIGHT_DISCOVERED = [];' in source
@@ -72,6 +77,8 @@ def test_overnight_frontend_hooks_and_persistence_are_wired():
     assert 'data-overnight-action="edit-title"' in source
     assert 'data-overnight-action="type"' in source
     assert 'data-overnight-action="status"' in source
+    assert 'data-action="edit-overnight"' in source
+    assert '.wm-roadbook-overnight-item .text[data-action="edit-overnight"]' in source
     assert 'const overnightStops = _overnightStopsForStage(dayKey);' in source
     assert 'const _roadbookOvernightHtml = (dayKey) => {' in source
     assert '${overnightHtml}' in source
