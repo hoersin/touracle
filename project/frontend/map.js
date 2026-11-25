@@ -4598,6 +4598,33 @@
     } catch (_) {}
   }
 
+  // Weather of a rest day by date, never by stage number.
+  function _roadbookRestDayWeather(day, rideEntries) {
+    const dateIso = String(day && day.dateIso || '');
+    const own = _tourRestDaySummaries().find((entry) => dateIso && String(entry && entry.date || '') === dateIso);
+    if (own) {
+      const tempC = _tourDaySummaryNumber(own, 'temp_median');
+      const rainMm = _tourDaySummaryNumber(own, 'precip_sum');
+      const windMs = _tourDaySummaryNumber(own, 'wind_mean');
+      return {
+        hasData: [tempC, rainMm, windMs].some((value) => value !== null),
+        tempC,
+        rainMm,
+        windMs,
+        lucky: null,
+        iconClass: Number(rainMm) > 0 ? mapWeatherByProb(1) : 'cloudy',
+        dateIso,
+        source: String(own.weather_source || 'climatology'),
+        effMean: null,
+      };
+    }
+    // Not loaded yet: a stage loaded for the same date is the closest available value.
+    const sameDate = (Array.isArray(LAST_TOUR_DAY_SUMMARIES) ? LAST_TOUR_DAY_SUMMARIES : [])
+      .find((entry) => dateIso && String(entry && entry.date || '').slice(0, 10) === dateIso);
+    if (sameDate) return _roadbookWeatherAtSlot(Number(sameDate.day_index), rideEntries);
+    return { hasData: false, tempC: null, rainMm: null, windMs: null, lucky: null, iconClass: 'cloudy', dateIso };
+  }
+
   function _deriveRoadbookDayWeather(day, rideEntries) {
     try {
       if (!day || typeof day !== 'object') return _roadbookWeatherAtSlot(0, rideEntries);
@@ -4605,8 +4632,7 @@
         const slot = Number.isFinite(Number(day.rideIdx)) ? Number(day.rideIdx) : Number(day.logicalIdx) || 0;
         return _roadbookWeatherAtSlot(slot, rideEntries);
       }
-      const slot = Number.isFinite(Number(day.logicalIdx)) ? Number(day.logicalIdx) : 0;
-      return _roadbookWeatherAtSlot(slot, rideEntries);
+      return _roadbookRestDayWeather(day, rideEntries);
     } catch (_) {
       return _roadbookWeatherAtSlot(0, rideEntries);
     }
@@ -5345,7 +5371,8 @@
 
   function _tourForecastMaxIso() {
     try {
-      const summaries = Array.isArray(LAST_TOUR_DAY_SUMMARIES) ? LAST_TOUR_DAY_SUMMARIES : [];
+      const summaries = (Array.isArray(LAST_TOUR_DAY_SUMMARIES) ? LAST_TOUR_DAY_SUMMARIES : [])
+        .concat(_tourRestDaySummaries());
       const dated = summaries
         .map((entry) => (entry && typeof entry.date === 'string') ? String(entry.date).slice(0, 10) : '')
         .filter((iso) => /^\d{4}-\d{2}-\d{2}$/.test(iso))
@@ -5379,6 +5406,29 @@
     } catch (_) {
       return 1;
     }
+  }
+
+  // Calendar position of a ride stage: rest days before it push it back.
+  function _tourCalendarDayIndex(rideIdx) {
+    const idx = Math.max(0, Math.round(Number(rideIdx) || 0));
+    const stops = _roadbookNormalizeRestStops(_tourRequestedRideDayCount(LAST_PROFILE));
+    return idx + stops.filter((stop) => stop.position <= idx).length;
+  }
+
+  function _tourRestDaySummaries() {
+    const list = LAST_TOUR_SUMMARY && LAST_TOUR_SUMMARY.rest_day_summaries;
+    return Array.isArray(list) ? list : [];
+  }
+
+  // Optional /api/map_stream schedule (same meaning as in the simulation payload).
+  function _tourStreamScheduleParams(rideDays) {
+    const roadbook = (TOUR_PLAN && TOUR_PLAN.roadbook) || {};
+    const boundaries = (Array.isArray(roadbook.boundariesKm) ? roadbook.boundariesKm : []).map(Number);
+    const rests = _roadbookNormalizeRestStops(rideDays).map((stop, idx) => stop.position + idx);
+    let params = '';
+    if (boundaries.length && boundaries.length === rideDays - 1) params += `&boundaries_km=${boundaries.join(',')}`;
+    if (rests.length) params += `&rest_days=${rests.join(',')}`;
+    return params;
   }
 
   function _tourBaseBoundaryKm(profile) {
@@ -5685,7 +5735,7 @@
         const summary = _tourSummarizeDayPoints(points) || {};
         out.push({
           day_index: dayIdx,
-          date: _roadbookLogicalDateIso(dayIdx) || null,
+          date: _roadbookLogicalDateIso(_tourCalendarDayIndex(dayIdx)) || null,
           temp_median: Number.isFinite(Number(summary.tempMedian)) ? Number(summary.tempMedian) : null,
           wind_mean: Number.isFinite(Number(summary.windMean)) ? Number(summary.windMean) : null,
           precip_sum: Number.isFinite(Number(summary.precipSum)) ? Number(summary.precipSum) : null,
@@ -6120,7 +6170,10 @@
       const rainProb = _tourMean(points.map((point) => pickFinite(point && point.rainProb)));
       const tempMedian = _tourMedian(temps);
       const windMean = _tourMean(winds);
-      const finitePrecs = precs.filter((value) => value !== null).map(Number).filter(Number.isFinite);
+      // The sampler emits the GPX start twice; it must not weigh twice in the daily rain.
+      const repeated = points.map((point, idx) => idx > 0
+        && Number(point && point.dist) === Number(points[idx - 1] && points[idx - 1].dist));
+      const finitePrecs = precs.filter((value, idx) => value !== null && !repeated[idx]).map(Number).filter(Number.isFinite);
       const precipMean = finitePrecs.length
         ? (finitePrecs.reduce((sum, value) => sum + value, 0) / finitePrecs.length)
         : null;
@@ -6298,6 +6351,7 @@
     const primary = incomingScore >= fallbackScore ? incoming : fallback;
     const secondary = primary === incoming ? fallback : incoming;
     const merged = { ...primary };
+    if (Array.isArray(incoming.rest_day_summaries)) merged.rest_day_summaries = incoming.rest_day_summaries;
     if (!Number.isFinite(Number(merged.lucky_days)) && Number.isFinite(Number(merged.comfort_days))) {
       merged.lucky_days = Number(merged.comfort_days);
     }
@@ -11296,7 +11350,7 @@
       if (!startIso) return '';
       const d = new Date(`${startIso}T00:00:00Z`);
       if (!Number.isFinite(d.getTime())) return '';
-      d.setUTCDate(d.getUTCDate() + Number(dayIdx || 0));
+      d.setUTCDate(d.getUTCDate() + _tourCalendarDayIndex(dayIdx));
       return _weekdayShort(d.toISOString().slice(0, 10));
     } catch (_) {
       return '';
@@ -11311,7 +11365,7 @@
       if (!startIso || !maxIso) return false;
       const d = new Date(`${startIso}T00:00:00Z`);
       if (!Number.isFinite(d.getTime())) return false;
-      d.setUTCDate(d.getUTCDate() + Math.max(0, Math.round(Number(dayIdx) || 0)));
+      d.setUTCDate(d.getUTCDate() + _tourCalendarDayIndex(dayIdx));
       const dayIso = d.toISOString().slice(0, 10);
       return dayIso > maxIso;
     } catch (_) {
@@ -24361,7 +24415,7 @@
       const qsComfort = `&temp_cold=${encodeURIComponent(SETTINGS.tempCold)}&temp_hot=${encodeURIComponent(SETTINGS.tempHot)}&rain_high=${encodeURIComponent(SETTINGS.rainHigh)}&wind_head_comfort=${encodeURIComponent(SETTINGS.windHeadComfort)}&wind_tail_comfort=${encodeURIComponent(SETTINGS.windTailComfort)}`;
       const elevationValidationParam = '&elevation_validation=1';
       const weatherOnlyParam = weatherOnly ? '&weather_only=1' : '';
-      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${tourWeatherModeParam}${qsComfort}${elevationValidationParam}${weatherOnlyParam}`);
+      evtSource = new EventSource(`/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}${_tourStreamScheduleParams(tourDays)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${tourWeatherModeParam}${qsComfort}${elevationValidationParam}${weatherOnlyParam}`);
     let streamHadFatalError = false;
     let stationCount = 0;
     let stationTotal = 0;
@@ -24640,7 +24694,10 @@
         const completed = Number(payload.completed || 0);
         const total = Number(payload.total || 0);
         const pct = total > 0 ? Math.min(100, Math.round(100 * completed / total)) : 0;
-        if (!payload || !payload.feature) {
+        // Rest days (indexed after the ride stages) are summarized, not drawn along the route.
+        const stationProps = payload && payload.feature && payload.feature.properties;
+        const isRestDay = !!stationProps && Number(stationProps.tour_day_index) >= Number(stationProps.tour_total_days);
+        if (!payload || !payload.feature || isRestDay) {
           setProgressPercent(pct);
           setStationProgress(completed, total);
           _setVerboseProgress(
@@ -24711,7 +24768,7 @@
             : (Array.isArray(props._match_days) ? props._match_days.length : props._match_days);
           const dateLabel = props.date ? _fmtISODayMonth(props.date) : mmdd2;
           const periodLabel = [
-            (props.tour_day_index !== undefined) ? `Day ${Number(props.tour_day_index) + 1}` : 'Route point',
+            (props.tour_day_index !== undefined) ? `Day ${_tourCalendarDayIndex(props.tour_day_index) + 1}` : 'Route point',
             dateLabel,
             `${fmt(props.distance_from_start_km, 1)} km`,
           ].join(' • ');
@@ -25056,7 +25113,7 @@
 
         const yearsKey = _strategicYearsKey(_strategicGetSelectedYears());
         const yearsParam = yearsKey ? `&years=${encodeURIComponent(String(yearsKey))}` : '';
-        const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=1&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${gpxParam}${revParam}`;
+        const url = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=1&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}${_tourStreamScheduleParams(tourDays)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${gpxParam}${revParam}`;
         evtSourceProfile = new EventSource(url);
         evtSourceProfile.addEventListener('profile', (ev) => {
           try {

@@ -105,12 +105,12 @@ def uneven(loaded):
 
 
 def stage_lengths(ui):
-    return [float(c['stage'].split(' km')[0]) for c in ui.cards()]
+    return [float(c['stage'].split(' km')[0]) for c in ui.cards() if c['kind'] == 'ride']
 
 
 def assert_rain_describes_displayed_stages(ui):
     start = 0.0
-    for c, length in zip(ui.cards(), stage_lengths(ui)):
+    for c, length in zip([c for c in ui.cards() if c['kind'] == 'ride'], stage_lengths(ui)):
         require('Rain' in c['weather'], f'stage without weather: {c}')
         shown = float(re.search(r'Rain ([\d.]+) mm', c['weather']).group(1))
         # Tolerance: 10 km sampling and half-open stage ends on this gradient.

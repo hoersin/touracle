@@ -15,8 +15,14 @@ temporary directory, and every external request is blocked. `vendor/` holds an u
 | `test_f03_schedule.py` | Displayed schedule, weather dates and simulation agree |
 | `test_f04_plan_preservation.py` | Loading weather never changes user-authored structure |
 
-## Documented contract gap (F-03)
+## Schedule contract (F-03)
 
-`/api/map_stream` accepts `start_date` and `total_days` only. It splits the route into equal stages on
-consecutive days, so it cannot represent rest days or user-defined stage boundaries. The tests that need this
-are strict `xfail`s. No new contract is introduced here.
+`/api/map_stream` accepts two optional parameters; without them it behaves as before (equal stages, consecutive days):
+
+* `boundaries_km`: comma-separated stage ends in km along the travelled direction, one per transition between
+  ride stages. Unusable input (wrong count, not increasing, outside the route) means equal stages.
+* `rest_days`: comma-separated zero-based calendar positions of rest days.
+
+`total_days` still counts ride stages. `tour_day_index` is the stage number; rest-day stations carry indexes from
+`tour_total_days` upwards. Rest-day weather (place: end of the previous stage) is reported in
+`tour_summary.rest_day_summaries` and is not part of the ride-day totals.

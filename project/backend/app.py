@@ -4882,6 +4882,9 @@ def api_map_stream():
     start_date_param = request.args.get('start_date')  # YYYY-MM-DD
     tour_weather_mode_param = request.args.get('tour_weather_mode')
     tour_days_param = request.args.get('total_days')
+    # Optional schedule; total_days keeps counting ride stages. Absent: equal stages on consecutive days.
+    boundaries_km_param = request.args.get('boundaries_km')  # CSV, km along the travelled direction
+    rest_days_param = request.args.get('rest_days')  # CSV, 0-based calendar positions
     hist_years_param = request.args.get('hist_years')
     hist_start_param = request.args.get('hist_start')
     years_selected_req = _parse_years_csv(request.args.get('years'))
@@ -4911,6 +4914,26 @@ def api_map_stream():
 
     def _quantize(v: float, g: float) -> float:
         return round(v / g) * g
+
+    def _parse_stage_marks(raw: Any, stages: int, total_km: float) -> list[float]:
+        """Stage ends in km; unusable input means equal stages."""
+        try:
+            marks = [float(v) for v in str(raw or '').split(',') if v.strip()]
+            edges = [0.0] + marks + [float(total_km)]
+            if len(marks) == stages - 1 and all(a < b for a, b in zip(edges, edges[1:])):
+                return marks
+        except ValueError:
+            pass
+        seg = max(0.0001, float(total_km) / stages)
+        return [seg * k for k in range(1, stages)]
+
+    def _parse_rest_days(raw: Any, stages: int) -> list[int]:
+        out: list[int] = []
+        for n in sorted({int(v) for v in str(raw or '').split(',') if v.strip().isdecimal()}):
+            # Only rests before, between or directly after the stages exist.
+            if n <= stages + len(out) and len(out) < 365:
+                out.append(n)
+        return out
 
     def _parse_tour_days(val: Any) -> int | None:
         try:
@@ -5265,6 +5288,28 @@ def api_map_stream():
             segment_length = max(0.0001, total_distance_km / tour_days)
             log.info('[PLAN] Total distance=%.1f km, Total days=%d, Segment length=%.2f km', total_distance_km, tour_days, segment_length)
 
+        stage_marks: list[float] = []
+        rest_indexes: list[int] = []
+        ride_indexes: list[int] = list(range(int(tour_days or 0)))
+        if segment_length:
+            stage_marks = _parse_stage_marks(boundaries_km_param, int(tour_days), total_distance_km)
+            if start_date is not None:
+                rest_indexes = _parse_rest_days(rest_days_param, int(tour_days))
+            ride_indexes = [n for n in range(int(tour_days) + len(rest_indexes)) if n not in rest_indexes]
+
+        def _tour_date(day_key: int) -> Any:
+            # Ride stages are keyed 0..tour_days-1, rest days follow after them.
+            n = int(day_key)
+            calendar = ride_indexes + rest_indexes
+            return start_date + _dt.timedelta(days=(calendar[n] if 0 <= n < len(calendar) else n))
+
+        def _stage_mid_km(stage_idx: int) -> float:
+            edges = [0.0] + stage_marks + [float(total_distance_km)]
+            return (edges[int(stage_idx)] + edges[int(stage_idx) + 1]) * 0.5
+
+        rest_points: list[tuple[float, float]] = []
+        rest_dist_km: list[float] = []
+
         try:
             tour_planning_active = str(tour_planning_param).lower() not in ('0', 'false')
             if tour_planning_active and sampled_points and segment_length and tour_days and tour_days > 0:
@@ -5314,7 +5359,7 @@ def api_map_stream():
                         lon_interp = float(lon_prev) + (float(lon_next) - float(lon_prev)) * frac
                         return lat_interp, lon_interp
 
-                    marks_fill = [float(segment_length) * k for k in range(1, int(tour_days))]
+                    marks_fill = stage_marks
                     sampled_with_dist = []
                     covered_days = set()
                     for idx_sample, (lat_fill, lon_fill) in enumerate(sampled_points):
@@ -5331,7 +5376,7 @@ def api_map_stream():
                     for missing_day in range(int(tour_days)):
                         if missing_day in covered_days:
                             continue
-                        target_km_fill = (float(missing_day) + 0.5) * float(segment_length)
+                        target_km_fill = _stage_mid_km(missing_day)
                         lat_added, lon_added = _route_point_at_km_fill(target_km_fill)
                         sampled_with_dist.append((target_km_fill, (lat_added, lon_added)))
                         added_days.append(int(missing_day))
@@ -5346,6 +5391,14 @@ def api_map_stream():
                             log.info('[PLAN] Added representative sampled points for missing days: %s', added_days)
                         except Exception:
                             pass
+
+                    # A rest day is spent where the previous stage ended.
+                    stage_ends = [0.0] + stage_marks + [float(total_distance_km)]
+                    for k, n in enumerate(rest_indexes):
+                        rest_km = float(stage_ends[n - k])
+                        rest_points.append(_route_point_at_km_fill(rest_km))
+                        rest_dist_km.append(rest_km)
+                    total += len(rest_points)
         except Exception as fill_exc:
             log.warning('[PLAN] Missing-day sample augmentation failed: %s', fill_exc)
 
@@ -5371,7 +5424,7 @@ def api_map_stream():
                                 log.info('[FLAGS] Start flag rendered at %.5f, %.5f', coords[0][1], coords[0][0])
                             except Exception:
                                 pass
-                            end_date = start_date + _dt.timedelta(days=(tour_days - 1)) if tour_days else start_date
+                            end_date = _tour_date(tour_days - 1) if tour_days else start_date
                             end_marker = {
                                 "type": "Feature",
                                 "geometry": {"type": "Point", "coordinates": coords[-1]},
@@ -5383,7 +5436,7 @@ def api_map_stream():
                                 pass
                         # Exact split into `tour_days` segments using distance marks
                         if segment_length and start_date is not None and tour_days and tour_days > 0:
-                            marks = [segment_length * k for k in range(1, int(tour_days))]
+                            marks = stage_marks
                             segs = []
                             acc = 0.0
                             cur = [coords[0]]
@@ -5413,7 +5466,7 @@ def api_map_stream():
                                     # close current segment at split point
                                     cur.append(split_pt)
                                     day_idx = next_mark_idx  # 0-based day index
-                                    d = start_date + _dt.timedelta(days=int(day_idx))
+                                    d = _tour_date(day_idx)
                                     # compute representative heading for this segment (start->end)
                                     try:
                                         seg_coords = cur
@@ -5434,7 +5487,7 @@ def api_map_stream():
                                 acc += seg_km
                             # Append last segment
                             last_day_idx = int(tour_days) - 1
-                            dlast = start_date + _dt.timedelta(days=last_day_idx)
+                            dlast = _tour_date(last_day_idx)
                             try:
                                 hlast = _bearing_deg(cur[0][1], cur[0][0], cur[-1][1], cur[-1][0])
                                 day_headings[int(last_day_idx)] = float(hlast)
@@ -5547,6 +5600,16 @@ def api_map_stream():
         except Exception:
             glyph_cum_km = [float(v) for v in glyph_cum_km]
 
+        # The sampler emits the GPX start twice; it must not weigh twice in the daily rain.
+        repeated_points = {
+            i for i in range(1, len(glyph_cum_km))
+            if i < len(sampled_points) and tuple(sampled_points[i]) == tuple(sampled_points[i - 1])
+            and float(glyph_cum_km[i]) == float(glyph_cum_km[i - 1])
+        }
+        first_rest_point = len(sampled_points)
+        sampled_points = list(sampled_points) + rest_points
+        glyph_cum_km = list(glyph_cum_km) + rest_dist_km
+
         def _glyph_dist_km(i: int) -> float:
             try:
                 ii = int(i)
@@ -5563,9 +5626,9 @@ def api_map_stream():
         day_boundaries = []
         try:
             if segment_length and start_date is not None and tour_days and tour_days > 0:
-                marks = [segment_length * k for k in range(1, int(tour_days))]
+                marks = stage_marks
                 for k, m in enumerate(marks):
-                    d = start_date + _dt.timedelta(days=int(k))
+                    d = _tour_date(k)
                     day_boundaries.append({"distance_km": float(m), "day_index": int(k), "date": d.isoformat()})
                 try:
                     if elevation_diagnostics:
@@ -6022,16 +6085,18 @@ def api_map_stream():
             if use_per_day:
                 # Choose a representative glyph point per day by distance-to-midpoint of day segment.
                 for d_idx in range(int(tour_days)):
-                    target_km = (float(d_idx) + 0.5) * float(segment_length)
+                    target_km = _stage_mid_km(d_idx)
                     best_i = 0
                     best_abs = float('inf')
-                    for i in range(len(sampled_points)):
+                    for i in range(first_rest_point):
                         dk = _glyph_dist_km(i)
                         a = abs(dk - target_km)
                         if a < best_abs:
                             best_abs = a
                             best_i = i
                     rep_by_day[d_idx] = (float(sampled_points[best_i][0]), float(sampled_points[best_i][1]))
+                for k, rest_point in enumerate(rest_points):
+                    rep_by_day[int(tour_days) + k] = rest_point
             else:
                 # Legacy: single representative point.
                 idx = len(sampled_points) // 2
@@ -6039,7 +6104,7 @@ def api_map_stream():
 
             for d_idx, (rep_lat, rep_lon) in rep_by_day.items():
                 if use_per_day and start_date is not None:
-                    assigned_date = start_date + _dt.timedelta(days=int(d_idx))
+                    assigned_date = _tour_date(d_idx)
                     mm = int(assigned_date.month)
                     dd = int(assigned_date.day)
                 else:
@@ -6284,7 +6349,7 @@ def api_map_stream():
                         day_idx_by_dist = None
                         try:
                             import bisect as _bisect
-                            marks = [float(segment_length) * k for k in range(1, int(tour_days))]
+                            marks = stage_marks
                             day_idx_by_dist = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks, d_km))))
                         except Exception:
                             try:
@@ -6305,7 +6370,9 @@ def api_map_stream():
                             day_idx = int(max(0, min(int(tour_days) - 1, int(day_idx))))
                         except Exception:
                             day_idx = 0
-                        assigned_date = start_date + _dt.timedelta(days=day_idx)
+                        if i >= first_rest_point:
+                            day_idx = int(tour_days) + (i - first_rest_point)
+                        assigned_date = _tour_date(day_idx)
 
                     stats, matches = stats_by_day.get(int(day_idx), next(iter(stats_by_day.values())))
 
@@ -6422,6 +6489,20 @@ def api_map_stream():
                         "lucky": bool(is_lucky_day),
                         "weather_source": "climatology",
                     })
+                rest_day_summaries = []
+                for k, n in enumerate(rest_indexes):
+                    if (int(tour_days) + k) not in stats_by_day:
+                        continue
+                    st = stats_by_day[int(tour_days) + k][0]
+                    t_rest = st.get('temp_day_median')
+                    rest_day_summaries.append({
+                        "calendar_index": int(n),
+                        "date": _tour_date(int(tour_days) + k).isoformat(),
+                        "temp_median": float(t_rest if t_rest is not None else st.get('temperature_c', 0.0)),
+                        "wind_mean": float(st.get('wind_speed_ms', 0.0)),
+                        "precip_sum": float(st.get('precipitation_mm', 0.0)),
+                        "weather_source": "climatology",
+                    })
                 med_t = float(_np.nanmedian(temps)) if temps else None
                 max_t = float(_np.nanmax(temps)) if temps else None
                 min_t = float(_np.nanmin(temps)) if temps else None
@@ -6443,6 +6524,8 @@ def api_map_stream():
                     "mean_wind_speed": mean_wind,
                     "day_summaries": day_summaries,
                 }
+                if rest_indexes:
+                    tour_summary["rest_day_summaries"] = rest_day_summaries
                 try:
                     save_session_state({"tour_summary": tour_summary, "tour_day_summaries": day_summaries}, session_id=str(session_id) if session_id else None)
                     session_state = load_session_state(session_id=str(session_id) if session_id else None)
@@ -6472,7 +6555,8 @@ def api_map_stream():
                     t_use = t_day if (t_day is not None) else stats_obj.get('temperature_c', 0.0)
                     ag["temps"].append(float(t_use))
                     ag["winds"].append(float(stats_obj.get('wind_speed_ms', 0.0)))
-                    ag["precs"].append(float(stats_obj.get('precipitation_mm', 0.0)))
+                    if i not in repeated_points:
+                        ag["precs"].append(float(stats_obj.get('precipitation_mm', 0.0)))
                     ag["weather_sources"].append(str(stats_obj.get('_weather_source') or _effective_tour_weather_mode(tour_weather_mode, assigned_date_value)))
                     import math as _m
                     seg_head = float(day_headings.get(dkey, 0.0))
@@ -6503,7 +6587,7 @@ def api_map_stream():
                         day_idx_by_dist = None
                         try:
                             import bisect as _bisect
-                            marks = [float(segment_length) * k for k in range(1, int(tour_days))]
+                            marks = stage_marks
                             day_idx_by_dist = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks, d_km))))
                         except Exception:
                             try:
@@ -6524,7 +6608,9 @@ def api_map_stream():
                             day_idx = int(max(0, min(int(tour_days) - 1, int(day_idx))))
                         except Exception:
                             day_idx = 0
-                        assigned_date = start_date + _dt.timedelta(days=day_idx)
+                        if i >= first_rest_point:
+                            day_idx = int(tour_days) + (i - first_rest_point)
+                        assigned_date = _tour_date(day_idx)
                         log.info('[SSE][PLAN] Glyph #%d: dist=%.1f km → day %d date %s', i, d_km, day_idx, assigned_date.isoformat())
                     mm = month
                     dd = day
@@ -6791,7 +6877,7 @@ def api_map_stream():
                     use_tour_window = bool(segment_length and start_date is not None and tour_days is not None)
                     use_tour_window_for_point = bool(use_tour_window and not hybrid_hist_spec)
                     if use_tour_window_for_point:
-                        span_days = int(tour_days)
+                        span_days = int(tour_days) + len(rest_indexes)
                         window_key = f"{qlat:.4f},{qlon:.4f}:{fetch_mode}:window:{start_date.isoformat()}:{span_days}:{point_span_tag}"
                         if window_key in df_cache:
                             df = df_cache[window_key]
@@ -7073,7 +7159,19 @@ def api_map_stream():
                 winds_means = []
                 prec_sums = []
                 day_summaries = []
+                rest_day_summaries = []
                 for dkey, ag in sorted(day_aggr.items()):
+                    if rest_indexes and dkey >= int(tour_days):
+                        # One place, not a ride stage: reported but not counted below.
+                        rest_day_summaries.append({
+                            "calendar_index": int(rest_indexes[dkey - int(tour_days)]),
+                            "date": _tour_date(dkey).isoformat(),
+                            "temp_median": float(ag["temps"][0]),
+                            "wind_mean": float(ag["winds"][0]),
+                            "precip_sum": float(ag["precs"][0]),
+                            "weather_source": str(ag["weather_sources"][0]),
+                        })
+                        continue
                     t_med = float(_np.nanmedian(ag["temps"])) if ag["temps"] else float('nan')
                     w_mean = float(_np.nanmean(ag["winds"])) if ag["winds"] else float('nan')
                     p_mean = float(_np.nanmean(ag["precs"])) if ag["precs"] else float('nan')
@@ -7119,7 +7217,7 @@ def api_map_stream():
                         day_weather_source = sorted(source_counts.items(), key=lambda item: (-int(item[1]), item[0]))[0][0]
                     day_summaries.append({
                         "day_index": int(dkey),
-                        "date": ((start_date + _dt.timedelta(days=int(dkey))).isoformat() if start_date is not None else None),
+                        "date": (_tour_date(dkey).isoformat() if start_date is not None else None),
                         "temp_median": (float(t_med) if _np.isfinite(t_med) else None),
                         "wind_mean": (float(w_mean) if _np.isfinite(w_mean) else None),
                         "precip_sum": float(p_sum),
@@ -7150,6 +7248,8 @@ def api_map_stream():
                     "mean_wind_speed": mean_wind,
                     "day_summaries": day_summaries,
                 }
+                if rest_indexes:
+                    tour_summary["rest_day_summaries"] = rest_day_summaries
                 try:
                     save_session_state({"tour_summary": tour_summary, "tour_day_summaries": day_summaries}, session_id=str(session_id) if session_id else None)
                     session_state = load_session_state(session_id=str(session_id) if session_id else None)
