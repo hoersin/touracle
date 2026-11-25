@@ -6,23 +6,20 @@ Existing contracts exercised here:
                             restDayIndexes = calendar positions,
                             boundariesKm = one per transition between ride days
 
-/api/map_stream has NO contract for rest days or stage boundaries. Tests that
-need one are strict xfails: they document the gap (see README.md) and will
-turn red as soon as it is closed, so that the marker must then be removed.
+* /api/map_stream, optional: boundaries_km = km along the travelled direction,
+                            rest_days = calendar positions (0-based);
+                            total_days then still counts ride stages
 """
 import datetime as dt
 import json
 import re
 import time
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import synthetic as syn
 import tour_slot_optimizer as tso
 import route_sampling
-
-GAP = pytest.mark.xfail(strict=True, raises=AssertionError,
-                        reason='F-03 contract gap: map_stream receives neither rest days nor stage boundaries')
-
 
 def day(n):
     return syn.START + dt.timedelta(days=n)
@@ -35,7 +32,7 @@ def shown_temp(card):
 
 
 def require(condition, message):
-    """Precondition: not an AssertionError, so an xfail can never hide it."""
+    """Precondition of the scenario, reported apart from the checked invariant."""
     if not condition:
         raise RuntimeError(f'precondition failed: {message}')
 
@@ -86,7 +83,6 @@ def steep(loaded, monkeypatch):
     return loaded
 
 
-@GAP
 def test_weather_after_rest_day_belongs_to_displayed_date(steep):
     steep.add_rest_day(2)
     steep.get_weather()
@@ -117,8 +113,7 @@ def assert_rain_describes_displayed_stages(ui):
     for c, length in zip(ui.cards(), stage_lengths(ui)):
         require('Rain' in c['weather'], f'stage without weather: {c}')
         shown = float(re.search(r'Rain ([\d.]+) mm', c['weather']).group(1))
-        # Tolerance: 10 km sampling, half-open stage ends and the sampler's
-        # duplicated start point account for up to 0.8 mm on this gradient.
+        # Tolerance: 10 km sampling and half-open stage ends on this gradient.
         assert shown == pytest.approx(2.0 + 0.1 * (start + length / 2), abs=1.0), (c['key'], shown)
         start += length
 
@@ -128,12 +123,158 @@ def test_weather_follows_changed_boundary_before_refresh(uneven):
     assert_rain_describes_displayed_stages(uneven)
 
 
-@GAP
 def test_weather_follows_changed_boundary_after_refresh(uneven):
     lens = stage_lengths(uneven)
     uneven.get_weather()
     require(stage_lengths(uneven) == lens, 'stage lengths must survive weather loading (F-04)')
     assert_rain_describes_displayed_stages(uneven)
+
+
+def test_weather_after_moved_rest_day_follows_new_position(steep):
+    steep.add_rest_day(2)
+    steep.get_weather()
+    steep.page.evaluate("""() => document.querySelector("#roadbookList article[data-kind='rest'] [data-action='remove-rest'], #roadbookList article[data-kind='rest'] [data-action='delete-day']").click()""")
+    steep.page.wait_for_timeout(300)
+    require([c['kind'] for c in steep.cards()] == ['ride'] * 7, 'rest day must be removable')
+    steep.add_rest_day(5)
+    steep.get_weather()
+    cards = steep.cards()
+    require([c['kind'] for c in cards].index('rest') == 5, 'rest day at its new position')
+    assert [shown_temp(c) for c in cards] == [steep_temp(day(i)) for i in range(8)]
+
+
+def test_client_sends_schedule_only_when_the_plan_has_one(steep):
+    def last_query():
+        url = [r.url for r in steep.requests if '/api/map_stream' in r.url][-1]
+        return parse_qs(urlsplit(url).query)
+    assert not {'boundaries_km', 'rest_days'} & set(last_query())
+    steep.add_rest_day(2)
+    steep.add_rest_day(2)
+    steep.get_weather()
+    q = last_query()
+    assert q['rest_days'] == ['2,3'] and q['total_days'] == ['7']
+    steep.delete_ride_day('ride-1')
+    lens = stage_lengths(steep)
+    steep.get_weather()
+    q = last_query()
+    marks = [float(v) for v in q['boundaries_km'][0].split(',')]
+    assert len(marks) == 5 and q['total_days'] == ['6']
+    assert marks == pytest.approx([sum(lens[:i + 1]) for i in range(5)], abs=0.6)
+
+
+def test_rest_days_and_boundaries_together_survive_reload(uneven):
+    uneven.add_rest_day(2)
+    uneven.get_weather()
+    before = uneven.cards()
+    assert_rain_describes_displayed_stages(uneven)
+    uneven.page.wait_for_timeout(2600)
+    uneven.page.reload(wait_until='load')
+    uneven.page.wait_for_timeout(2000)
+    uneven.tour()
+    uneven.page.wait_for_timeout(800)
+    assert [(c['kind'], c['date'], c['tile']) for c in uneven.cards()] == [(c['kind'], c['date'], c['tile']) for c in before]
+
+
+# --- stream contract -------------------------------------------------------
+BOUNDS = [50, 150, 300]
+
+
+def schedule(r):
+    return [(d['day_index'], d['date']) for d in r.summary['day_summaries']]
+
+
+@pytest.mark.parametrize('rests,ride_days', [
+    ([], [0, 1, 2, 3]), ([2], [0, 1, 3, 4]), ([0], [1, 2, 3, 4]),
+    ([1, 2], [0, 3, 4, 5]), ([1, 4], [0, 2, 3, 5]), ([4], [0, 1, 2, 3]),
+])
+@pytest.mark.parametrize('reuse', [0, 1])
+def test_stream_assigns_calendar_dates(tmp_path, stream, rests, ride_days, reuse, backend, monkeypatch):
+    extra = {'rest_days': ','.join(map(str, rests))} if rests else {}
+    if reuse:
+        extra.update(reuse_per_day=1, offline_only=0)
+        monkeypatch.setattr(backend.module, '_offline_strict_enabled', lambda: False)
+    r = stream(syn.write_gpx(tmp_path / 'r.gpx', 400), step_km=20, days=4, **extra)
+    rides = [p for p in r.props if p['tour_day_index'] < 4]
+    for p in rides:
+        d = day(ride_days[p['tour_day_index']])
+        assert p['date'] == d.isoformat()
+        assert p['temperature_c'] == pytest.approx(syn.temp_on(d))
+    summaries = r.summary['day_summaries']
+    assert [d['day_index'] for d in summaries] == [0, 1, 2, 3]
+    assert [d['temp_median'] for d in summaries] == pytest.approx([syn.temp_on(day(n)) for n in ride_days])
+    got = r.summary.get('rest_day_summaries', [])
+    assert [(d['calendar_index'], d['date']) for d in got] == [(n, day(n).isoformat()) for n in rests]
+    assert [d['temp_median'] for d in got] == pytest.approx([syn.temp_on(day(n)) for n in rests])
+
+
+def test_rest_day_weather_describes_the_overnight_place(tmp_path, stream):
+    r = stream(syn.write_gpx(tmp_path / 'r.gpx', 400), step_km=20, days=4,
+               boundaries_km='50,150,300', rest_days='0,2,6')
+    rain = [d['precip_sum'] for d in r.summary['rest_day_summaries']]
+    assert rain == pytest.approx([2.0, 2.5, 6.0], abs=0.02)  # start, km 50, finish
+
+
+def test_rest_days_do_not_count_as_ride_days(tmp_path, stream):
+    gpx = syn.write_gpx(tmp_path / 'r.gpx', 400)
+    plain = stream(gpx, step_km=20, days=4).summary
+    rest = stream(gpx, step_km=20, days=4, rest_days='2').summary
+    for key in ('total_days', 'rain_days', 'lucky_days', 'total_precipitation'):
+        assert rest[key] == pytest.approx(plain[key])
+
+
+@pytest.mark.parametrize('reverse', [0, 1])
+def test_stream_assigns_points_to_moved_boundaries(tmp_path, stream, reverse):
+    r = stream(syn.write_gpx(tmp_path / 'r.gpx', 400), step_km=20, days=4,
+               boundaries_km='50,150,300', reverse=reverse)
+    for p in r.props:
+        km = p['distance_from_start_km']
+        assert p['tour_day_index'] == sum(km > b + 1e-6 for b in BOUNDS), km
+        assert p['date'] == day(p['tour_day_index']).isoformat()
+    assert [b['distance_km'] for b in r.profile['day_boundaries']] == BOUNDS
+    assert len(r.route['route_segments']['features']) == 4
+
+
+def test_short_custom_stage_still_gets_weather_at_its_place(tmp_path, stream):
+    r = stream(syn.write_gpx(tmp_path / 'r.gpx', 400), step_km=100, days=3, boundaries_km='110,130')
+    assert schedule(r) == [(i, day(i).isoformat()) for i in range(3)]
+    mid = [p for p in r.props if p['tour_day_index'] == 1]
+    assert [p['distance_from_start_km'] for p in mid] == pytest.approx([120])
+
+
+def test_segments_and_finish_marker_carry_calendar_dates(tmp_path, stream):
+    r = stream(syn.write_gpx(tmp_path / 'r.gpx', 400), step_km=20, days=4, rest_days='1,3')
+    assert [f['properties']['date'] for f in r.route['route_segments']['features']] == [day(n).isoformat() for n in (0, 2, 4, 5)]
+    assert r.route['end_marker']['properties']['date'] == day(5).isoformat()
+    assert [b['date'] for b in r.profile['day_boundaries']] == [day(n).isoformat() for n in (0, 2, 4)]
+
+
+@pytest.mark.parametrize('extra', [
+    {'boundaries_km': ''}, {'rest_days': ''}, {'boundaries_km': '50,150'}, {'boundaries_km': 'a,b,c'},
+    {'boundaries_km': 'nan,150,300'}, {'boundaries_km': '50,150,9000'}, {'boundaries_km': '50,50,300'},
+    {'rest_days': 'x,-1,99'},
+])
+def test_unusable_schedule_equals_no_schedule(tmp_path, stream, extra):
+    gpx = syn.write_gpx(tmp_path / 'r.gpx', 400)
+    a, b = stream(gpx, step_km=20, days=4), stream(gpx, step_km=20, days=4, **extra)
+    assert (a.stations, a.summary, a.route, a.profile['day_boundaries']) == \
+           (b.stations, b.summary, b.route, b.profile['day_boundaries'])
+
+
+def test_stream_requests_the_whole_calendar_window(tmp_path, stream, backend, monkeypatch):
+    """Forecast must cover the dates pushed back by rest days."""
+    seen = []
+
+    def forecast(lat, lon, start, span, **_k):
+        seen.append(span)
+        return None
+    monkeypatch.setattr(backend.module, 'fetch_forecast_weather_window', forecast)
+    today = dt.date.today()
+    try:
+        stream(syn.write_gpx(tmp_path / 'r.gpx', 400), step_km=100, days=4, start=today,
+               rest_days='1,2', tour_weather_mode='forecast', offline_only=0)
+    except AssertionError as exc:  # no forecast data: only the request matters
+        require('unusable stations' in str(exc), str(exc))
+    assert seen and set(seen) == {6}
 
 
 # --- simulation ------------------------------------------------------------
