@@ -7076,8 +7076,10 @@ def api_map_stream():
                 for dkey, ag in sorted(day_aggr.items()):
                     t_med = float(_np.nanmedian(ag["temps"])) if ag["temps"] else float('nan')
                     w_mean = float(_np.nanmean(ag["winds"])) if ag["winds"] else float('nan')
-                    p_sum = float(_np.nansum(ag["precs"])) if ag["precs"] else 0.0
                     p_mean = float(_np.nanmean(ag["precs"])) if ag["precs"] else float('nan')
+                    # Daily rain is the mean over the day's route points (see
+                    # docs/WEATHER_VALUE_REFERENCE.md); the payload key keeps its name.
+                    p_sum = float(p_mean) if _np.isfinite(p_mean) else 0.0
                     e_mean = float(_np.nanmean(ag["effs"])) if ag["effs"] else float('nan')
                     day_meds.append(t_med)
                     winds_means.append(w_mean)

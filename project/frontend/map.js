@@ -6099,8 +6099,12 @@
       const rainProb = _tourMean(points.map((point) => pickFinite(point && point.rainProb)));
       const tempMedian = _tourMedian(temps);
       const windMean = _tourMean(winds);
-      const precipSum = precs.map(Number).filter(Number.isFinite).reduce((sum, value) => sum + value, 0);
-      const precipMean = precs.map(Number).filter(Number.isFinite).length ? (precipSum / precs.map(Number).filter(Number.isFinite).length) : null;
+      const finitePrecs = precs.filter((value) => value !== null).map(Number).filter(Number.isFinite);
+      const precipMean = finitePrecs.length
+        ? (finitePrecs.reduce((sum, value) => sum + value, 0) / finitePrecs.length)
+        : null;
+      // Daily rain is the mean over the day's route points; the key keeps its name.
+      const precipSum = precipMean;
       const effMean = _tourMean(effs);
       let lucky = null;
       if (luckyVotes.length) {
@@ -6192,7 +6196,7 @@
           ? {
               tempMedian: _tourMedian(legacy.temps),
               windMean: _tourMean(legacy.winds),
-              precipSum: (legacy.precs || []).map(Number).filter(Number.isFinite).reduce((sum, value) => sum + value, 0),
+              precipSum: _tourMean(legacy.precs),
               precipMean: _tourMean(legacy.precs),
               effMean: _tourMean(legacy.effs),
               lucky: null,
