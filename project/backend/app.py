@@ -5317,8 +5317,12 @@ def api_map_stream():
                     marks_fill = [float(segment_length) * k for k in range(1, int(tour_days))]
                     sampled_with_dist = []
                     covered_days = set()
-                    for lat_fill, lon_fill in sampled_points:
-                        dist_fill = _nearest_route_distance_km_fill(float(lat_fill), float(lon_fill))
+                    for idx_sample, (lat_fill, lon_fill) in enumerate(sampled_points):
+                        # The sampler already knows the true along-route distance.
+                        if len(glyph_cum_km) == len(sampled_points):
+                            dist_fill = float(glyph_cum_km[idx_sample])
+                        else:
+                            dist_fill = _nearest_route_distance_km_fill(float(lat_fill), float(lon_fill))
                         day_fill = int(max(0, min(int(tour_days) - 1, _bisect.bisect_left(marks_fill, dist_fill))))
                         sampled_with_dist.append((dist_fill, (float(lat_fill), float(lon_fill))))
                         covered_days.add(day_fill)
@@ -5335,6 +5339,9 @@ def api_map_stream():
                     if added_days:
                         sampled_with_dist.sort(key=lambda item: float(item[0]))
                         sampled_points = [point for _, point in sampled_with_dist]
+                        # Keep distances and the announced total aligned with the points.
+                        glyph_cum_km = [float(dist) for dist, _ in sampled_with_dist]
+                        total = len(sampled_points)
                         try:
                             log.info('[PLAN] Added representative sampled points for missing days: %s', added_days)
                         except Exception:

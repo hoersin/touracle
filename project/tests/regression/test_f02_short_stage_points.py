@@ -1,5 +1,6 @@
 """F-02: points added for short stages keep true distance, day and date."""
 import datetime as dt
+import math
 
 import pytest
 import synthetic as syn
@@ -95,5 +96,5 @@ def test_tourbook_shows_weather_and_length_for_every_short_stage(ui):
     assert [c['stage'].split(' km')[0] for c in cards] == ['24'] * 7
     for i, c in enumerate(cards):
         t = syn.temp_on(syn.START + dt.timedelta(days=i))
-        assert c['weather'].startswith(f'{round(t)}°C'), (i, c['weather'])
+        assert c['weather'].startswith(f'{math.floor(t + 0.5)}°C'), (i, c['weather'])
         assert 'NO DATA' not in c['tile']
