@@ -7,6 +7,7 @@ Plan tours with a quick, visual “gut check” of weather comfort along your ro
 - **Simulation Run**: let the app sweep all departure windows and rank them by weather comfort — pick the best week with one click.
 - **Climatic Map**: scrub through the year and switch timescales (daily → weekly → monthly → quarterly → yearly) to see stable patterns.
 - One consistent legend: layer, year, and timescale live right on the map.
+- In-app version badge (bottom-right): always shows **Client** and **Server** version during development/debugging, now with a translucent background so underlying charts remain visible.
 
 ## Screenshots
 

@@ -1,4 +1,5 @@
 import sys
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,7 @@ def test_weather_profile_lucky_follows_displayed_daily_aggregate(monkeypatch, tm
     monkeypatch.setattr(backend_app, 'SESSION_FILE', session_file)
     monkeypatch.setattr(backend_app, 'SESSION_STORE', {})
     monkeypatch.setattr(backend_app, 'SESSION_STORE_LOADED', False)
+    monkeypatch.setattr(backend_app, '_REVERSE_GEOCODE_CACHE', {})
 
     years = [2025, 2024, 2023, 2022, 2021]
     rain_by_year = {
@@ -139,6 +141,8 @@ def test_weather_profile_uses_offline_reverse_geocode_only(monkeypatch, tmp_path
     monkeypatch.setattr(backend_app, 'SESSION_FILE', session_file)
     monkeypatch.setattr(backend_app, 'SESSION_STORE', {})
     monkeypatch.setattr(backend_app, 'SESSION_STORE_LOADED', False)
+    monkeypatch.setattr(backend_app, '_REVERSE_GEOCODE_CACHE', {})
+    monkeypatch.setattr(backend_app, '_REVERSE_GEOCODE_CACHE', {})
 
     monkeypatch.setattr(
         backend_app,
@@ -163,7 +167,7 @@ def test_weather_profile_uses_offline_reverse_geocode_only(monkeypatch, tmp_path
     monkeypatch.setattr(
         backend_app,
         '_reverse_offline_fallback',
-        lambda lat, lon: {'name': 'Munich', 'country': 'DE', 'label': 'Munich (DE)'},
+        lambda lat, lon, include_station=True: {'name': 'Munich', 'country': 'DE', 'label': 'Munich (DE)'},
     )
 
     def _unexpected_requests_get(*args, **kwargs):
@@ -189,6 +193,63 @@ def test_weather_profile_uses_offline_reverse_geocode_only(monkeypatch, tmp_path
     assert payload['meta']['location'] == 'Munich (DE)'
     assert payload['meta']['location_name'] == 'Munich'
     assert payload['meta']['location_country'] == 'DE'
+
+
+def test_weather_profile_offline_reverse_skips_station_fallback(monkeypatch, tmp_path):
+    data_dir = tmp_path / 'data'
+    session_file = data_dir / 'session_state.json'
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(backend_app, 'DATA_DIR', data_dir)
+    monkeypatch.setattr(backend_app, 'UPLOAD_DIR', data_dir)
+    monkeypatch.setattr(backend_app, 'SESSION_FILE', session_file)
+    monkeypatch.setattr(backend_app, 'SESSION_STORE', {})
+    monkeypatch.setattr(backend_app, 'SESSION_STORE_LOADED', False)
+
+    monkeypatch.setattr(
+        backend_app,
+        '_resolve_offline_store_for_year',
+        lambda year, point=None, bounds=None: _FakeStore({
+            (5, 16): {
+                'temp_day_median': 20.0,
+                'temp_day_p25': 18.0,
+                'temp_day_p75': 22.0,
+                'temperature_c': 20.0,
+                'temp_hist_p25': 18.0,
+                'temp_hist_p75': 22.0,
+                'precipitation_mm': 1.5,
+                'rain_typical_mm': 1.5,
+                'wind_speed_ms': 2.0,
+                'wind_dir_deg': 120.0,
+            }
+        }),
+    )
+    monkeypatch.setattr(backend_app, '_tile_id_for_point_or_edge', lambda store, lat, lon: 'r0_c0')
+    monkeypatch.setattr(backend_app, '_lookup_tile_center', lambda store, tile_id: (48.12, 11.58))
+    monkeypatch.setattr(backend_app, '_reverse_offline_nearest_place_fallback', lambda lat, lon: None)
+    monkeypatch.setattr(backend_app, '_reverse_offline_city_fallback', lambda lat, lon: None)
+
+    def _unexpected_station_lookup(*args, **kwargs):
+        raise AssertionError('weather_profile should not resolve station fallback when allow_online=False')
+
+    monkeypatch.setattr(backend_app, '_reverse_station_fallback', _unexpected_station_lookup)
+
+    client = backend_app.app.test_client()
+    response = client.get(
+        '/api/weather_profile',
+        query_string={
+            'lat': '48.12',
+            'lon': '11.58',
+            'years': '2025,2024',
+            'mode': 'active',
+            'start_date': '2026-05-16',
+            'end_date': '2026-05-18',
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert '48.12' in payload['meta']['location']
 
 
 def test_weather_profile_updates_progress_job(monkeypatch, tmp_path):
@@ -256,5 +317,9 @@ def test_weather_profile_updates_progress_job(monkeypatch, tmp_path):
     progress = backend_app._get_progress(job_id, session_id=session_id)
     assert progress['known'] is True
     assert progress['done'] is True
-    assert progress['total'] == 4
-    assert progress['completed'] == 4
+    selected_years = [2025, 2024]
+    total_days = 2
+    monthly_days = sum((dt.date(year + 1, 1, 1) - dt.date(year, 1, 1)).days for year in selected_years)
+    expected_total = (total_days * len(selected_years)) + monthly_days + 1
+    assert progress['total'] == expected_total
+    assert progress['completed'] == expected_total

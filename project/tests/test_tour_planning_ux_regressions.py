@@ -86,8 +86,9 @@ def test_tour_plan_popup_is_overlayed_above_roadbook_shell():
 
 def test_fit_entire_tour_action_exists_in_route_summary():
     source = _source()
+    html = _html()
     assert 'function _fitEntireTour()' in source
-    assert 'id="tourSummaryFitAll"' in source
+    assert 'id="tourSummaryFitAll"' in html
     assert "fitBtn.addEventListener('click', () => {" in source
     assert '_fitEntireTour();' in source
 
