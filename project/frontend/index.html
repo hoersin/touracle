@@ -258,6 +258,10 @@
     body[data-mode="tour"] .wm-pref-row[data-wm-scope="climate"] { display: none; }
     body[data-mode="climate"] .wm-pref-section[data-wm-scope="tour"],
     body[data-mode="climate"] .wm-pref-row[data-wm-scope="tour"] { display: none; }
+    body[data-mode="climate"] #wmSectionTour { display: none; }
+    body[data-mode="climate"] #roadbookPanel,
+    body[data-mode="climate"] #roadbookToggle,
+    body[data-mode="climate"] #roadbookResizeHandle { display: none !important; }
 
     /* Main pane shifts right of sidebar */
     #mainPane {
@@ -752,8 +756,7 @@
       box-sizing: border-box;
       font-family: system-ui, -apple-system, sans-serif;
     }
-    body[data-mode="climate"] #strategicTimeline,
-    body[data-mode="tour"] #strategicTimeline { display: block; }
+    body[data-mode="climate"] #strategicTimeline { display: none; }
     #strategicTimeline .row {
       display: flex;
       align-items: center;
@@ -1079,10 +1082,27 @@
       flex: 1 1 auto;
       min-height: 0;
     }
-    /* In Climate mode, reserve space for the fixed bottom Strategic timeline (avoid map underlay). */
-    body[data-mode="climate"] #mainPane,
-    body[data-mode="tour"] #mainPane {
-      height: calc(100vh - var(--wm-strategic-timeline-h, 0px));
+    body[data-mode="climate"] #profilePanel {
+      border-top: 0;
+      background: #fff;
+    }
+    body[data-mode="climate"] #profileCanvas,
+    body[data-mode="climate"] #profileCursorCanvas,
+    body[data-mode="climate"] #profileZoomControls {
+      display: none !important;
+    }
+    body[data-mode="climate"] #tourSummary {
+      position: static !important;
+      bottom: auto !important;
+      left: auto !important;
+      right: auto !important;
+    }
+    body[data-mode="climate"] #profileTooltip {
+      display: none !important;
+    }
+    body[data-mode="climate"] .wm-climate-profile-tooltip,
+    body[data-mode="climate"] .wm-climate-profile-cursor-line {
+      display: none !important;
     }
     #profilePanel { position: relative; height: 220px; border-top: 1px solid #ddd; background: #fafafa; font-family: system-ui, -apple-system, sans-serif; }
     #profileZoomControls {
@@ -1203,6 +1223,9 @@
     .wm-tour-summary-route {
       gap: 6px;
     }
+    .wm-tour-sidebar-route-card {
+      min-height: 0;
+    }
     .wm-tour-route-file {
       color: #475569;
       font-weight: 600;
@@ -1282,6 +1305,13 @@
     #tourSummaryLegends {
       width: 100%;
     }
+    #tourSummaryLegends:empty {
+      display: none;
+    }
+    body[data-mode="climate"] #tourSummaryBadges {
+      grid-template-columns: minmax(240px, 1fr) minmax(0, 1.8fr) minmax(0, 1.2fr);
+      gap: 10px;
+    }
     .wm-whiteband-card-empty {
       border-style: dashed;
       border-color: rgba(148, 163, 184, 0.24);
@@ -1328,6 +1358,12 @@
       #tourSummaryBadges {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+      body[data-mode="climate"] #tourSummaryBadges {
+        grid-template-columns: minmax(220px, 1fr) minmax(0, 1.3fr);
+      }
+      body[data-mode="climate"] #tourSummaryLegends {
+        grid-column: 1 / -1;
+      }
     }
     @media (max-width: 860px) {
       #tourSummaryBadges {
@@ -1343,6 +1379,16 @@
       .wm-tour-summary-metrics {
         grid-template-columns: 1fr;
       }
+      body[data-mode="climate"] #tourSummaryBadges {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    body[data-mode="climate"] #map.leaflet-container {
+      cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='2.2' fill='none' stroke='%231f2937' stroke-width='1.4'/%3E%3Cpath d='M12 0v6M12 18v6M0 12h6M18 12h6' stroke='%231f2937' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E") 12 12, crosshair;
+    }
+    body[data-mode="climate"] #map.leaflet-container.wm-map-dragging {
+      cursor: grabbing;
     }
 
     #roadbookToggle {
@@ -2172,6 +2218,237 @@
       align-items: stretch;
       min-width: 0;
     }
+    .wm-climate-monthly-chart {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 8px;
+      width: 100%;
+      min-height: 220px;
+      padding: 4px 0;
+    }
+    .wm-climate-monthly-chart-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .wm-climate-monthly-chart-svg {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      display: block;
+      border-radius: 8px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.88) 100%);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+    }
+    .wm-climate-monthly-chart-note {
+      font-size: 11px;
+      line-height: 1.25;
+      color: #64748b;
+    }
+    .wm-climate-workspace-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      padding: 2px 1px;
+    }
+    body[data-mode="climate"] #tourSummary,
+    body[data-mode="climate"] #tourSummaryBadges,
+    body[data-mode="climate"] #tourSummaryBadgesItems,
+    body[data-mode="climate"] #tourSummaryLegends,
+    body[data-mode="climate"] .wm-climate-workspace-panel {
+      height: 100%;
+      min-height: 0;
+    }
+    body[data-mode="climate"] #tourSummary {
+      display: flex;
+      flex-direction: column;
+    }
+    body[data-mode="climate"] #tourSummaryBadges {
+      box-sizing: border-box;
+      align-items: stretch;
+      grid-template-areas: "location charts wind";
+      grid-template-columns: minmax(240px, 1fr) minmax(420px, 1.8fr) minmax(210px, 0.9fr);
+      overflow: hidden;
+    }
+    body[data-mode="climate"] #tourSummaryRoute {
+      grid-area: location;
+      min-height: 0;
+      overflow: hidden;
+    }
+    body[data-mode="climate"] #tourSummaryBadgesItems {
+      grid-area: charts;
+      min-height: 0;
+      overflow: hidden;
+    }
+    body[data-mode="climate"] #tourSummaryLegends {
+      grid-area: wind;
+      min-height: 0;
+      overflow: hidden;
+    }
+    body[data-mode="climate"] #tourSummary {
+      height: 100%;
+      overflow: hidden;
+    }
+    body[data-mode="climate"] .wm-climate-wind-rose-card {
+      height: 100%;
+      overflow: hidden;
+    }
+    body[data-mode="climate"] .wm-climate-wind-grid {
+      min-height: 0;
+      height: 100%;
+    }
+    body[data-mode="climate"] .wm-climate-workspace-panel-charts {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto auto minmax(0, 1fr) auto;
+      gap: 3px 6px;
+    }
+    body[data-mode="climate"] .wm-climate-workspace-panel-charts .wm-climate-monthly-chart-svg {
+      height: 100%;
+      min-height: 0;
+    }
+    .wm-climate-workspace-panel-charts .wm-climate-monthly-chart-title {
+      margin-top: 2px;
+    }
+    .wm-climate-location-heading {
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 700;
+      color: #0f172a;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .wm-climate-annual-metrics {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .wm-climate-annual-metric {
+      display: grid;
+      gap: 2px;
+      padding: 6px 8px;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.78);
+    }
+    .wm-climate-annual-label {
+      font-size: 10px;
+      line-height: 1.2;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #64748b;
+      font-weight: 700;
+    }
+    .wm-climate-annual-value {
+      font-size: 18px;
+      line-height: 1.1;
+      color: #0f172a;
+      font-weight: 700;
+    }
+    .wm-climate-panel-placeholder {
+      margin-top: auto;
+      font-size: 10px;
+      line-height: 1.2;
+      color: #94a3b8;
+      border-top: 1px dashed rgba(148, 163, 184, 0.28);
+      padding-top: 8px;
+    }
+    .wm-climate-panel-subtitle {
+      font-size: 10px;
+      line-height: 1.2;
+      color: #64748b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .wm-climate-workspace-panel-wind {
+      min-height: 0;
+    }
+    .wm-climate-wind-meta {
+      font-size: 10px;
+      line-height: 1.2;
+      color: #64748b;
+    }
+    .wm-climate-wind-compass {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      line-height: 1;
+      color: #475569;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-top: -2px;
+    }
+    .wm-climate-wind-legend {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px 8px;
+      font-size: 10px;
+      color: #475569;
+    }
+    .wm-climate-wind-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    .wm-climate-wind-legend i {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      border: 1px solid rgba(15,23,42,0.15);
+      box-sizing: border-box;
+    }
+    .wm-climate-wind-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-rows: repeat(3, minmax(0, 1fr));
+      gap: 6px 8px;
+      align-items: stretch;
+      align-content: stretch;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .wm-climate-wind-rose-card {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: flex-start;
+      gap: 2px;
+      min-width: 0;
+      min-height: 0;
+    }
+    .wm-climate-wind-rose-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: #334155;
+      line-height: 1.1;
+      text-align: left;
+    }
+    .wm-climate-wind-rose-svg {
+      width: 100%;
+      max-width: none;
+      aspect-ratio: 1 / 1;
+      height: 0;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: block;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.88) 100%);
+      border: 1px solid rgba(148,163,184,0.2);
+      border-radius: 8px;
+    }
+    .wm-climate-wind-rose-meta {
+      font-size: 9px;
+      color: #64748b;
+      line-height: 1.1;
+    }
     .wm-climate-metric {
       display: flex;
       flex-direction: column;
@@ -2713,6 +2990,100 @@
       justify-content: flex-end;
       gap: 10px;
       width: 100%;
+    }
+    #wmPrefsGlobalSection,
+    #wmPrefsContextSection,
+    #wmPrefsAdvancedSection {
+      box-sizing: border-box;
+    }
+    #wmPrefsGlobalSection {
+      flex: 0 0 auto;
+      padding: 8px 10px;
+      border: 1px solid rgba(15,23,42,0.10);
+      border-radius: 10px;
+      background: rgba(248,250,252,0.82);
+    }
+    #wmPrefsContextSection {
+      flex: 0 0 auto;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid rgba(15,118,110,0.16);
+      border-radius: 10px;
+      background: rgba(240,253,250,0.72);
+    }
+    #wmPrefsAdvancedSection {
+      flex: 1 1 auto;
+      min-height: 120px;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      margin-top: 8px;
+      padding-right: 4px;
+      scrollbar-gutter: stable;
+    }
+    #settingsView {
+      display: flex;
+      flex-direction: column;
+      height: min(64vh, 620px);
+      max-height: calc(100vh - 180px);
+    }
+    #settingsView .wm-pref-head {
+      margin: 0;
+    }
+    #settingsView .wm-pref-head-actions {
+      display: none;
+    }
+    .wm-prefs-file-toolbar {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 5px;
+      margin-top: 8px;
+    }
+    .wm-prefs-file-toolbar button {
+      min-width: 0;
+      min-height: 30px;
+      padding: 5px 6px;
+      border: 1px solid rgba(15,23,42,0.12);
+      border-radius: 8px;
+      background: #fff;
+      color: #334155;
+      font-size: 10px;
+      font-weight: 750;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .wm-prefs-time-grid {
+      display: grid;
+      gap: 5px;
+      margin-top: 6px;
+    }
+    .wm-prefs-time-row {
+      display: grid;
+      grid-template-columns: repeat(var(--wm-time-cols, 1), minmax(0, 1fr));
+      gap: 4px;
+    }
+    .wm-prefs-time-row[data-time-row="year"] { --wm-time-cols: 1; }
+    .wm-prefs-time-row[data-time-row="quarter"] { --wm-time-cols: 4; }
+    .wm-prefs-time-row[data-time-row="month"] { --wm-time-cols: 12; }
+    .wm-prefs-time-button {
+      min-height: 28px;
+      border: 1px solid rgba(15,23,42,0.14);
+      border-radius: 7px;
+      background: #fff;
+      color: #334155;
+      font-size: 10px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .wm-prefs-time-button.is-active {
+      border-color: rgba(15,118,110,0.55);
+      background: rgba(204,251,241,0.95);
+      color: #0f766e;
+      box-shadow: inset 0 0 0 1px rgba(15,118,110,0.12);
+    }
+    .wm-prefs-time-row[data-time-row="month"] .wm-prefs-time-button {
+      min-height: 26px;
+      padding: 0 1px;
+      font-size: 9px;
     }
     .wm-pref-action-btn {
       flex: 1 1 auto;
@@ -3455,7 +3826,7 @@
   <div id="topNav">
     <div class="wm-seg" id="modeNav" role="tablist" aria-label="App mode">
       <div class="wm-seg-pill" id="modeNavPill" aria-hidden="true"></div>
-      <button class="wm-seg-btn" id="navClimate" type="button" data-mode="climate" role="tab" aria-selected="false">Climatic Map</button>
+      <button class="wm-seg-btn" id="navClimate" type="button" data-mode="climate" role="tab" aria-selected="false">Explore</button>
       <button class="wm-seg-btn" id="navTour" type="button" data-mode="tour" role="tab" aria-selected="true">Tour Planning</button>
     </div>
   </div>
@@ -3564,26 +3935,7 @@
             </div>
 
             <div id="strategicControls">
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <span class="wm-pref-note">To explore the climate map: choose a weather layer, pick a timescale, then click any place on the map. The map tooltip summarizes the selected time window, while the weather profile below lets you hover day by day.</span>
-                <span id="strategicDayLabel" style="display:none">—</span>
-                <div style="display:none" aria-hidden="true">
-                  <select id="strategicTimescale">
-                    <option value="daily" selected>Daily</option>
-                    <option value="week">Weekly</option>
-                    <option value="two_week">2 Weeks</option>
-                    <option value="month">Monthly</option>
-                    <option value="quarter">Quarter</option>
-                    <option value="year">Yearly</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                  <select id="strategicLayer">
-                    <option value="temperature_ride">Temperature</option>
-                    <option value="rain_ride">Rain</option>
-                    <option value="comfort">Lucky Days</option>
-                  </select>
-                </div>
-              </div>
+              <span id="strategicDayLabel" style="display:none">—</span>
             </div>
           </div>
         </details>
@@ -3593,6 +3945,7 @@
           <div class="wm-section-body">
             <div id="settingsView" aria-label="Settings">
               <div class="wm-card wm-pref-card">
+                <div id="wmPrefsGlobalSection" aria-label="Global settings and file management">
                 <div class="wm-pref-head">
                   <div>
                     <p class="wm-pref-kicker">Shared Preferences</p>
@@ -3607,7 +3960,52 @@
                     </div>
                   </div>
                 </div>
+                  <div class="wm-prefs-file-toolbar" aria-label="File actions">
+                    <button type="button" id="prefsSaveSettings">Save</button>
+                    <button type="button" id="prefsSaveTourAs">Save As</button>
+                    <button type="button" id="prefsLoadSettings">Load</button>
+                    <button type="button" id="prefsImportGpx">Import GPX</button>
+                    <button type="button" id="prefsExportGpx">Export GPX</button>
+                    <button type="button" id="prefsExportTourXls">Tour XLS</button>
+                    <button type="button" id="prefsExportTourCsv">Tour CSV</button>
+                    <button type="button" id="prefsPrintTourPdf">Print PDF</button>
+                    <button type="button" id="prefsShareSnapshot">Snapshot</button>
+                  </div>
+                </div>
 
+                <div id="wmPrefsContextSection" aria-label="Contextual controls">
+                  <div class="wm-prefs-time-grid" aria-label="Explore time selection">
+                    <div class="wm-prefs-time-row" data-time-row="year">
+                      <button type="button" class="wm-prefs-time-button is-active" data-time-kind="year" data-time-value="year">YEAR</button>
+                    </div>
+                    <div class="wm-prefs-time-row" data-time-row="quarter">
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="1">Q1</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="2">Q2</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="3">Q3</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="4">Q4</button>
+                    </div>
+                    <div class="wm-prefs-time-row" data-time-row="month">
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="1">Jan</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="2">Feb</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="3">Mar</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="4">Apr</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="5">May</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="6">Jun</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="7">Jul</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="8">Aug</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="9">Sep</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="10">Oct</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="11">Nov</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="12">Dec</button>
+                    </div>
+                  </div>
+                  <div id="exploreContextStatus" style="font-size:10px;color:#64748b;margin-top:6px;">Year · 24h</div>
+                  <div id="exploreContextProgress" role="progressbar" aria-label="Explore overlay calculation" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="height:6px;margin-top:5px;border-radius:999px;background:#e2e8f0;overflow:hidden;">
+                    <div id="exploreContextProgressBar" style="height:100%;width:0%;background:#0f766e;transition:width .18s linear;"></div>
+                  </div>
+                </div>
+
+                <div id="wmPrefsAdvancedSection" aria-label="Advanced preferences">
                 <div class="wm-pref-sections">
                   <section class="wm-pref-section" data-wm-scope="tour">
                     <div class="wm-pref-section-head">
@@ -3653,6 +4051,29 @@
                         </div>
                       </div>
 
+                      <div class="wm-pref-row" data-wm-scope="tour">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Route information</span>
+                          <span class="wm-pref-sub">Route endpoints and totals from the loaded GPX.</span>
+                        </div>
+                        <div class="wm-pref-control">
+                          <div id="tourSidebarRouteSummary" class="wm-tour-band-card wm-tour-summary-route wm-tour-sidebar-route-card">
+                            <div class="wm-tour-route-kicker">GPX Route Info</div>
+                            <div class="wm-tour-route-title"><span id="tourSidebarRouteStart">Start location</span> → <span id="tourSidebarRouteEnd">End location</span></div>
+                            <div class="wm-tour-route-file" id="tourSidebarRouteFile">No GPX route loaded.</div>
+                            <div class="wm-tour-route-meta"><strong>Distance:</strong> <span id="tourSidebarRouteDistance">—</span> km</div>
+                            <div class="wm-tour-route-meta"><strong>Elevation:</strong> <span id="tourSidebarRouteElevation">—</span> hm</div>
+                            <label class="wm-tour-route-meta" for="reverse" style="display:flex; align-items:center; gap:8px;">
+                              <span style="font-weight:600; color:#334155;">Reverse Tour</span>
+                              <input type="checkbox" id="reverse" class="wm-toggle" aria-label="Reverse tour" />
+                            </label>
+                            <div class="wm-tour-route-actions">
+                              <button id="tourSummaryFitAll" class="wm-tour-inline-toggle" type="button">Fit Entire Tour</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
                       <div class="wm-pref-row">
                         <label class="wm-pref-label" for="tourWeatherMode">
                           <span class="wm-pref-name">Weather source</span>
@@ -3671,15 +4092,6 @@
                         </div>
                       </div>
 
-                      <div class="wm-pref-row">
-                        <div class="wm-pref-label">
-                          <span class="wm-pref-name">Reverse tour</span>
-                          <span class="wm-pref-sub">Evaluate the route in reverse direction.</span>
-                        </div>
-                        <div class="wm-pref-control wm-pref-toggle-wrap">
-                          <input type="checkbox" id="reverse" class="wm-toggle" aria-label="Reverse tour" />
-                        </div>
-                      </div>
                     </div>
                   </section>
 
@@ -3807,55 +4219,41 @@
 
                   <section class="wm-pref-section" data-wm-scope="both">
                     <div class="wm-pref-section-head">
-                      <h4 class="wm-pref-section-title">Activity Window</h4>
-                      <p class="wm-pref-section-note">Hours used for climatic and tactical evaluation.</p>
-                    </div>
-                    <div class="wm-pref-section-body">
-                      <div class="wm-pref-row">
-                        <div class="wm-pref-label">
-                          <span class="wm-pref-name">Active time</span>
-                          <span class="wm-pref-sub">Daily riding or activity hours.</span>
-                        </div>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field wm-slider-field-range" data-slider-field="range">
-                            <div class="wm-slider-shell" data-range-shell data-track="season">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <div class="wm-range-thumb" data-range-thumb="start" aria-hidden="true"></div>
-                              <div class="wm-range-thumb" data-range-thumb="end" aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-range-badge="start" aria-label="Edit start hour"></button>
-                              <button type="button" class="wm-slider-badge" data-range-badge="end" aria-label="Edit end hour"></button>
-                              <div class="wm-slider-badge wm-slider-merge-badge" data-range-merge-badge aria-hidden="true"></div>
-                              <input type="number" class="wm-slider-editor" data-range-editor="start" aria-label="Start hour" />
-                              <input type="number" class="wm-slider-editor" data-range-editor="end" aria-label="End hour" />
-                              <input type="range" id="setActiveHourStart" min="0" max="23" step="1" value="10" class="wm-slider-native" data-range-role="start" data-format="hour" data-unit=" h" data-snap="int" data-min-gap="1" aria-label="Start hour" />
-                              <input type="range" id="setActiveHourEnd" min="0" max="23" step="1" value="18" class="wm-slider-native" data-range-role="end" data-format="hour" data-unit=" h" data-snap="int" data-min-gap="1" aria-label="End hour" />
-                            </div>
-                            <div class="wm-slider-ticks" aria-hidden="true">
-                              <span style="left:0%">00</span>
-                              <span style="left:34.78%">08</span>
-                              <span style="left:52.17%">12</span>
-                              <span style="left:78.26%">18</span>
-                              <span style="left:100%">23</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section class="wm-pref-section" data-wm-scope="both">
-                    <div class="wm-pref-section-head">
                       <h4 class="wm-pref-section-title">Data Selection</h4>
                       <p class="wm-pref-section-note">Choose the historical window behind the visible values.</p>
                     </div>
                     <div class="wm-pref-section-body">
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <label class="wm-pref-label" for="exploreOverlaySelect">
+                          <span class="wm-pref-name">Map Overlay</span>
+                          <span class="wm-pref-sub">Select the historical weather field displayed on the Explore map.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="exploreOverlaySelect" class="wm-pref-select" aria-label="Explore map overlay">
+                            <option value="temperature">Temperature</option>
+                            <option value="precipitation">Precipitation</option>
+                            <option value="wind_absolute">Wind</option>
+                            <option value="none">None</option>
+                          </select>
+                        </div>
+                      </div>
                       <div class="wm-pref-row" data-wm-scope="climate">
                         <div class="wm-pref-label">
                           <span class="wm-pref-name">Strategic years</span>
                           <span class="wm-pref-sub">Climate map year blend for the selected location.</span>
                         </div>
                         <div id="setStrategicYears" class="wm-pref-years" aria-label="Strategic years"></div>
+                      </div>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Overlay calculation</span>
+                          <span class="wm-pref-sub" id="exploreOverlayProgressText">No calculation running.</span>
+                        </div>
+                        <div class="wm-pref-control">
+                          <div id="exploreOverlayProgress" role="progressbar" aria-label="Explore overlay calculation" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width:100%;height:8px;border-radius:999px;background:#e2e8f0;overflow:hidden;">
+                            <div id="exploreOverlayProgressBar" style="height:100%;width:0%;background:#0f766e;transition:width .18s linear;"></div>
+                          </div>
+                        </div>
                       </div>
 
 
@@ -4095,8 +4493,7 @@
 
                     </div>
                   </section>
-                    </div>
-                  </details>
+                </div>
                 </div>
               </div>
             </div>
@@ -4109,10 +4506,10 @@
             <p class="wm-calc-intro">Use this as the quick reference for what the app is actually showing. Start with the window, then the selected years, then the mode where applicable.</p>
 
             <div class="wm-calc-card" data-wm-mode="climate">
-              <div class="wm-calc-title">Climatic Map</div>
+              <div class="wm-calc-title">Explore</div>
               <p class="wm-calc-note">The climate raster and the climate cursor tooltip read from the same aggregated tile payload. In this view, <strong>Rain</strong> means <strong>mm/day</strong>, and <strong>Rain sum</strong> is the visible-period total derived from that daily value.</p>
               <div class="wm-calc-table-wrap">
-                <table class="wm-calc-table" aria-label="Climatic Map value reference">
+                <table class="wm-calc-table" aria-label="Explore value reference">
                   <thead>
                     <tr>
                       <th>Years</th>
@@ -4137,16 +4534,6 @@
                       <td>Climate raster + climate cursor tooltip.</td>
                     </tr>
                     <tr>
-                      <td>Single year</td>
-                      <td>Active</td>
-                      <td><strong>temp_day_median</strong> from the selected yearly store, aggregated over the chosen window.</td>
-                      <td><strong>precipitation_mm</strong> averaged over valid sample-days in the selected window.</td>
-                      <td><strong>precipitation_mm × visible days</strong>.</td>
-                      <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean.</td>
-                      <td><strong>lucky_ride_count / sample_days</strong>.</td>
-                      <td>Climate raster + climate cursor tooltip.</td>
-                    </tr>
-                    <tr>
                       <td>Multiple years</td>
                       <td>24h</td>
                       <td>Median of full-day samples across <strong>selected years × selected calendar days</strong>. Uses <strong>temp_24h_c</strong> when available, otherwise <strong>temperature_c</strong>.</td>
@@ -4154,16 +4541,6 @@
                       <td><strong>precipitation_mm × visible days</strong>.</td>
                       <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean across all samples.</td>
                       <td><strong>lucky_day_count / sample_days</strong>.</td>
-                      <td>Climate raster + climate cursor tooltip.</td>
-                    </tr>
-                    <tr>
-                      <td>Multiple years</td>
-                      <td>Active</td>
-                      <td>Median of active-hour samples across <strong>selected years × selected calendar days</strong>. Uses <strong>temp_day_median</strong> when available, otherwise <strong>temperature_c</strong>.</td>
-                      <td><strong>precipitation_mm</strong> mean across valid samples. <strong>rain_probability</strong> is recomputed from precipitation samples.</td>
-                      <td><strong>precipitation_mm × visible days</strong>.</td>
-                      <td><strong>wind_speed_ms</strong> mean, <strong>wind_dir_deg</strong> circular mean, <strong>wind_var_deg</strong> mean across all samples.</td>
-                      <td><strong>lucky_ride_count / sample_days</strong>.</td>
                       <td>Climate raster + climate cursor tooltip.</td>
                     </tr>
                   </tbody>
@@ -4174,7 +4551,7 @@
 
             <div class="wm-calc-card" data-wm-mode="tour">
               <div class="wm-calc-title">Tour Planning</div>
-              <p class="wm-calc-note">Tour Planning has no single 24h/Active switch. The station payload carries historical and daytime fields in parallel, and the tooltip, glyph, and profile each use different subsets of that same payload.</p>
+              <p class="wm-calc-note">Tour Planning uses the 24h historical weather payload for climatic evaluation.</p>
               <div class="wm-calc-table-wrap">
                 <table class="wm-calc-table" aria-label="Tour Planning value reference">
                   <thead>
@@ -4288,14 +4665,6 @@
 
     <main id="mainPane" aria-label="Main content">
       <div id="map"></div>
-      <div class="wm-map-quicklayer" aria-label="Strategic quick layer">
-        <select id="strategicQuickLayerSelect" aria-label="Strategic quick layer" title="Quick layer">
-          <option value="temperature_ride">Temperature (Active)</option>
-          <option value="rain_ride">Rain (total 24h)</option>
-          <option value="comfort_day">Lucky Days (24h)</option>
-          <option value="comfort_ride">Lucky Days (Active)</option>
-        </select>
-      </div>
       <button id="roadbookToggle" type="button" aria-label="Show TourBook" aria-pressed="false" hidden>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 7h16" />
@@ -4763,8 +5132,29 @@
         } catch (_) {}
       }
 
+      async function resolveMapVersion(){
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => {
+            try { ctrl.abort(); } catch (_) {}
+          }, 2500);
+          try {
+            const resp = await fetch('/api/frontend_version', { cache: 'no-store', signal: ctrl.signal });
+            if (resp.ok) {
+              const payload = await resp.json();
+              const version = String((payload && payload.version) || '').trim();
+              if (version) return version;
+            }
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch (_) {}
+        return String(Date.now());
+      }
+
       async function bootMap(){
-          const mapSrc = '/map.js?v=176';
+        const mapVersion = await resolveMapVersion();
+        const mapSrc = `/map.js?v=${encodeURIComponent(mapVersion)}`;
         const zoomSrc = '/frontend/profile_zoom.js?v=1';
         try {
           const ok = await ensureLeaflet();

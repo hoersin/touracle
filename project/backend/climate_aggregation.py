@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
@@ -356,20 +357,10 @@ def aggregate_range(
         "ORDER BY t.row, t.col"
     )
 
-    lock = getattr(store, "_lock", None)
-    conn = getattr(store, "_conn", None)
-    if conn is None:
-        raise RuntimeError("Offline store connection unavailable")
-
     params: List[Any] = []
     params.extend(md_params)
     params.extend([float(lat_min), float(lat_max), float(lon_min), float(lon_max)])
-
-    if lock is None:
-        rows = conn.execute(sql, tuple(params)).fetchall()
-    else:
-        with lock:
-            rows = conn.execute(sql, tuple(params)).fetchall()
+    rows = _store_readonly_fetchall(store, sql, params)
 
     order: List[str] = []
     base: Dict[str, Dict[str, Any]] = {}
@@ -627,21 +618,10 @@ def aggregate_climate(
         "ORDER BY t.row, t.col"
     )
 
-    # Use store lock/connection for thread-safety.
-    lock = getattr(store, "_lock", None)
-    conn = getattr(store, "_conn", None)
-    if conn is None:
-        raise RuntimeError("Offline store connection unavailable")
-
     params: List[Any] = []
     params.extend(md_params)
     params.extend([float(lat_min), float(lat_max), float(lon_min), float(lon_max)])
-
-    if lock is None:
-        rows = conn.execute(sql, tuple(params)).fetchall()
-    else:
-        with lock:
-            rows = conn.execute(sql, tuple(params)).fetchall()
+    rows = _store_readonly_fetchall(store, sql, params)
 
     # Aggregate per tile.
     order: List[str] = []
@@ -821,6 +801,34 @@ def _store_has_temp_24h(store: Any) -> bool:
         return False
 
 
+def _store_readonly_fetchall(store: Any, sql: str, params: List[Any] | Tuple[Any, ...]) -> List[tuple]:
+    """Run a read-only query using a short-lived SQLite connection.
+
+    This avoids serializing all requests on the store's shared connection lock.
+    """
+    cfg = getattr(store, "cfg", None)
+    db_path = getattr(cfg, "db_path", None) if cfg is not None else None
+    if db_path is None:
+        raise RuntimeError("Offline store db path unavailable")
+    conn = sqlite3.connect(
+        f"file:{db_path}?mode=ro",
+        uri=True,
+        check_same_thread=False,
+        timeout=30.0,
+    )
+    try:
+        try:
+            conn.execute("PRAGMA query_only = ON")
+        except Exception:
+            pass
+        return conn.execute(sql, tuple(params)).fetchall()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _fetch_rows_for_mmdd_multi(
     *,
     store: Any,
@@ -858,19 +866,10 @@ def _fetch_rows_for_mmdd_multi(
         "ORDER BY t.row, t.col"
     )
 
-    lock = getattr(store, "_lock", None)
-    conn = getattr(store, "_conn", None)
-    if conn is None:
-        raise RuntimeError("Offline store connection unavailable")
-
     params: List[Any] = []
     params.extend(md_params)
     params.extend([float(lat_min), float(lat_max), float(lon_min), float(lon_max)])
-
-    if lock is None:
-        return conn.execute(sql, tuple(params)).fetchall()
-    with lock:
-        return conn.execute(sql, tuple(params)).fetchall()
+    return _store_readonly_fetchall(store, sql, params)
 
 
 def _aggregate_multi_for_mmdd(

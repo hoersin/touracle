@@ -6,10 +6,14 @@ import time
 import threading
 import uuid
 import json
+import sqlite3
+import subprocess
 import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as _dt
 import math
+import calendar
+import re
 import requests
 try:
     import geonamescache
@@ -121,6 +125,110 @@ DEBUG_DIR = BASE_DIR / 'debug_output'
 DEBUG_DIR.mkdir(exist_ok=True)
 STATS_CACHE_DIR = BASE_DIR / 'cache' / 'stats'
 STATS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+_STRATEGIC_GRID_ADMISSION_LOCK = threading.Lock()
+_STRATEGIC_GRID_ACTIVE_KEY: str | None = None
+_STRATEGIC_GRID_IN_FLIGHT: dict[str, dict[str, Any]] = {}
+_STRATEGIC_GRID_ACTIVE_COUNT = 0
+_STRATEGIC_GRID_PEAK_CONCURRENCY = 0
+_STRATEGIC_GRID_COALESCE_WAIT_SECONDS = 90.0
+_STRATEGIC_GRID_MAX_WAITERS = 5
+
+
+def _strategic_grid_request_key() -> str:
+    items = sorted(
+        (str(key), tuple(sorted(str(value) for value in values)))
+        for key, values in request.args.lists()
+    )
+    return json.dumps(items, ensure_ascii=False, separators=(',', ':'))
+
+
+def _strategic_grid_response_payload(response: Any) -> tuple[bytes, int, str]:
+    status = 200
+    mimetype = 'application/json'
+    if isinstance(response, tuple):
+        response, status = response
+    if hasattr(response, 'status_code'):
+        status = int(response.status_code)
+    if hasattr(response, 'mimetype'):
+        mimetype = str(response.mimetype or mimetype)
+    if hasattr(response, 'get_data'):
+        body = response.get_data()
+    else:
+        body = json.dumps(response, default=_json_default).encode('utf-8')
+    return body, status, mimetype
+
+
+def _strategic_grid_rebuild_response(record: dict[str, Any]) -> Response:
+    return Response(
+        record['body'],
+        status=int(record['status']),
+        mimetype=str(record['mimetype']),
+    )
+
+def _detect_app_version() -> str:
+    override = str(os.environ.get('TOURACLE_APP_VERSION') or '').strip()
+    if override:
+        return override
+    repo_root = BASE_DIR.parent
+
+    def _git_head_from_files() -> str:
+        git_dir = repo_root / '.git'
+        head_path = git_dir / 'HEAD'
+        if not head_path.exists():
+            return ''
+        head_raw = head_path.read_text(encoding='utf-8', errors='replace').strip()
+        if not head_raw:
+            return ''
+        if head_raw.startswith('ref:'):
+            ref_name = head_raw.split(':', 1)[1].strip()
+            if not ref_name:
+                return ''
+            ref_path = git_dir / ref_name
+            if ref_path.exists():
+                ref_sha = ref_path.read_text(encoding='utf-8', errors='replace').strip()
+                return ref_sha[:8] if ref_sha else ''
+            packed_refs = git_dir / 'packed-refs'
+            if packed_refs.exists():
+                for line in packed_refs.read_text(encoding='utf-8', errors='replace').splitlines():
+                    row = line.strip()
+                    if not row or row.startswith('#') or row.startswith('^'):
+                        continue
+                    parts = row.split(' ', 1)
+                    if len(parts) == 2 and parts[1].strip() == ref_name:
+                        return parts[0].strip()[:8]
+            return ''
+        return head_raw[:8]
+
+    try:
+        sha = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=str(repo_root),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+        ).strip()
+        if not sha:
+            sha = _git_head_from_files()
+            if not sha:
+                return 'unknown'
+        dirty = subprocess.check_output(
+            ['git', 'status', '--porcelain', '--untracked-files=no'],
+            cwd=str(repo_root),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+        ).strip()
+        return f'{sha}-dirty' if dirty else sha
+    except Exception:
+        try:
+            sha = _git_head_from_files()
+            return sha or 'unknown'
+        except Exception:
+            return 'unknown'
+
+
+APP_VERSION = _detect_app_version()
 
 
 def _stats_has_rain_percentiles(stats: Any) -> bool:
@@ -809,10 +917,7 @@ def _normalize_requested_years(
 
 
 def _normalize_climate_mode(raw: str | None) -> str:
-    mode_raw = str(raw or 'active').strip().lower()
-    if mode_raw in ('24h', 'full', 'full-day', 'full_day', 'day'):
-        return 'full_day'
-    return 'active'
+    return 'full_day'
 
 
 def _parse_active_hours(raw: Any) -> tuple[int, int]:
@@ -917,6 +1022,591 @@ def _lookup_tile_center(store: Any, tile_id: str) -> tuple[float | None, float |
         return (_finite_float(row[0]), _finite_float(row[1]))
     except Exception:
         return (None, None)
+
+
+_OFFLINE_YEAR_DB_RE = re.compile(r'^offline_weather_(\d{4})\.sqlite$')
+_OFFLINE_REFERENCE_YEARS_CACHE_LOCK = threading.Lock()
+_OFFLINE_REFERENCE_YEARS_CACHE: dict[
+    tuple[tuple[int, str, int, int, int], ...],
+    tuple[list[int], list[dict[str, Any]]],
+] = {}
+_OFFLINE_REFERENCE_YEARS_CACHE_IN_FLIGHT: set[tuple[tuple[int, str, int, int, int], ...]] = set()
+_OFFLINE_REFERENCE_YEARS_CACHE_COND = threading.Condition(_OFFLINE_REFERENCE_YEARS_CACHE_LOCK)
+
+
+def _discover_offline_year_databases() -> dict[int, Path]:
+    out: dict[int, Path] = {}
+    cache_dir = BASE_DIR / 'cache'
+    try:
+        for entry in cache_dir.glob('offline_weather_*.sqlite'):
+            m = _OFFLINE_YEAR_DB_RE.match(entry.name)
+            if not m:
+                continue
+            year = int(m.group(1))
+            out[year] = entry
+    except Exception:
+        return {}
+    return out
+
+
+def _is_placeholder_leap_row(
+    month: int,
+    day: int,
+    *,
+    samples_daily: Any = None,
+    samples_rain: Any = None,
+    samples_wind: Any = None,
+    temp_day_median: Any = None,
+    precipitation_mm: Any = None,
+    wind_speed_ms: Any = None,
+) -> bool:
+    if int(month) != 2 or int(day) != 29:
+        return False
+    return (
+        int(samples_daily or 0) <= 0
+        and int(samples_rain or 0) <= 0
+        and int(samples_wind or 0) <= 0
+        and temp_day_median is None
+        and precipitation_mm is None
+        and wind_speed_ms is None
+    )
+
+
+def _evaluate_offline_year_database(path: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        'path': str(path),
+        'year': None,
+        'exists': bool(path.exists()),
+        'complete': False,
+        'reason': 'unknown',
+        'total_tiles': 0,
+        'done_tiles': 0,
+        'error_tiles': 0,
+        'usable_tiles': 0,
+        'min_usable_rows_per_tile': 0,
+        'max_usable_rows_per_tile': 0,
+        'distinct_usable_mmdd': 0,
+        'usable_row_count': 0,
+    }
+    m = _OFFLINE_YEAR_DB_RE.match(path.name)
+    if m:
+        result['year'] = int(m.group(1))
+    if not path.exists():
+        result['reason'] = 'database-missing'
+        return result
+
+    try:
+        conn = sqlite3.connect(str(path))
+    except Exception as e:
+        result['reason'] = f'open-failed:{e}'
+        return result
+
+    try:
+        cur = conn.cursor()
+        table_names = {str(r[0]) for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'climatology' not in table_names or 'tiles' not in table_names:
+            result['reason'] = 'required-tables-missing'
+            return result
+
+        result['total_tiles'] = int(cur.execute('SELECT COUNT(*) FROM tiles').fetchone()[0] or 0)
+        if 'build_state' in table_names:
+            result['done_tiles'] = int(cur.execute("SELECT COUNT(*) FROM build_state WHERE status='done'").fetchone()[0] or 0)
+            result['error_tiles'] = int(cur.execute("SELECT COUNT(*) FROM build_state WHERE status='error'").fetchone()[0] or 0)
+        else:
+            result['done_tiles'] = result['total_tiles']
+            result['error_tiles'] = 0
+
+        usable_where = """
+            NOT (
+              month = 2 AND day = 29
+              AND COALESCE(samples_daily, 0) <= 0
+              AND COALESCE(samples_rain, 0) <= 0
+              AND COALESCE(samples_wind, 0) <= 0
+              AND temp_day_median IS NULL
+              AND precipitation_mm IS NULL
+              AND wind_speed_ms IS NULL
+            ) AND (
+              COALESCE(samples_daily, 0) > 0
+              OR COALESCE(samples_rain, 0) > 0
+              OR COALESCE(samples_wind, 0) > 0
+              OR temp_day_median IS NOT NULL
+              OR precipitation_mm IS NOT NULL
+              OR wind_speed_ms IS NOT NULL
+            )
+        """
+        result['usable_row_count'] = int(cur.execute(f'SELECT COUNT(*) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
+        result['usable_tiles'] = int(cur.execute(f'SELECT COUNT(DISTINCT tile_id) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
+        result['distinct_usable_mmdd'] = int(cur.execute(f'SELECT COUNT(DISTINCT printf("%02d-%02d", month, day)) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
+        per_tile = cur.execute(
+            f"""
+            SELECT MIN(c), MAX(c)
+            FROM (
+              SELECT tile_id, COUNT(*) AS c
+              FROM climatology
+              WHERE {usable_where}
+              GROUP BY tile_id
+            )
+            """
+        ).fetchone()
+        result['min_usable_rows_per_tile'] = int(per_tile[0] or 0) if per_tile else 0
+        result['max_usable_rows_per_tile'] = int(per_tile[1] or 0) if per_tile else 0
+
+        complete = (
+            result['total_tiles'] > 0
+            and result['usable_tiles'] == result['total_tiles']
+            and result['min_usable_rows_per_tile'] >= 365
+            and result['distinct_usable_mmdd'] >= 365
+            and result['error_tiles'] == 0
+        )
+        result['complete'] = bool(complete)
+        result['reason'] = 'complete' if complete else 'incomplete'
+        return result
+    except Exception as e:
+        result['reason'] = f'evaluation-failed:{e}'
+        return result
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _resolve_complete_reference_years(reference_year_count: int = 3) -> tuple[list[int], list[dict[str, Any]]]:
+    wanted = int(reference_year_count)
+    if wanted < 1:
+        wanted = 1
+    year_paths = _discover_offline_year_databases()
+    signature_parts: list[tuple[int, str, int, int, int]] = []
+    for year, path in sorted(year_paths.items()):
+        try:
+            st = path.stat()
+            signature_parts.append((
+                int(year),
+                str(path),
+                int(getattr(st, 'st_mtime_ns', int(st.st_mtime * 1_000_000_000))),
+                int(getattr(st, 'st_ctime_ns', int(st.st_ctime * 1_000_000_000))),
+                int(st.st_size),
+            ))
+        except Exception:
+            signature_parts.append((int(year), str(path), 0, 0, 0))
+    signature = tuple(signature_parts)
+    with _OFFLINE_REFERENCE_YEARS_CACHE_COND:
+        while signature in _OFFLINE_REFERENCE_YEARS_CACHE_IN_FLIGHT and signature not in _OFFLINE_REFERENCE_YEARS_CACHE:
+            _OFFLINE_REFERENCE_YEARS_CACHE_COND.wait(timeout=0.1)
+        cached = _OFFLINE_REFERENCE_YEARS_CACHE.get(signature)
+        if cached is not None:
+            complete_years_cached, audits_cached = cached
+            years_selected = complete_years_cached[:wanted] if len(complete_years_cached) >= wanted else []
+            return (list(years_selected), [dict(a) for a in audits_cached])
+        _OFFLINE_REFERENCE_YEARS_CACHE_IN_FLIGHT.add(signature)
+
+    try:
+        audits: list[dict[str, Any]] = []
+        for year, path in sorted(year_paths.items()):
+            audit = _evaluate_offline_year_database(path)
+            audit['year'] = int(year)
+            audits.append(audit)
+        complete_years = sorted(
+            [int(a.get('year')) for a in audits if a.get('complete') and a.get('year') is not None],
+            reverse=True,
+        )
+        with _OFFLINE_REFERENCE_YEARS_CACHE_COND:
+            _OFFLINE_REFERENCE_YEARS_CACHE[signature] = (list(complete_years), [dict(a) for a in audits])
+            _OFFLINE_REFERENCE_YEARS_CACHE_IN_FLIGHT.discard(signature)
+            _OFFLINE_REFERENCE_YEARS_CACHE_COND.notify_all()
+        years_selected = complete_years[:wanted] if len(complete_years) >= wanted else []
+        return (years_selected, audits)
+    except Exception:
+        with _OFFLINE_REFERENCE_YEARS_CACHE_COND:
+            _OFFLINE_REFERENCE_YEARS_CACHE_IN_FLIGHT.discard(signature)
+            _OFFLINE_REFERENCE_YEARS_CACHE_COND.notify_all()
+        raise
+
+
+def _store_has_tile(store: Any, tile_id: str) -> bool:
+    try:
+        cfg = getattr(store, 'cfg', None)
+        db_path = getattr(cfg, 'db_path', None) if cfg is not None else None
+        if db_path is None:
+            return False
+        sql = 'SELECT 1 FROM tiles WHERE tile_id = ? LIMIT 1'
+        conn = sqlite3.connect(
+            f'file:{db_path}?mode=ro',
+            uri=True,
+            check_same_thread=False,
+            timeout=30.0,
+        )
+        try:
+            try:
+                conn.execute('PRAGMA query_only = ON')
+            except Exception:
+                pass
+            row = conn.execute(sql, (str(tile_id),)).fetchone()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return bool(row)
+    except Exception:
+        return False
+
+
+def _fetch_tile_climatology_rows(store: Any, tile_id: str) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+          month,
+          day,
+          temp_day_median,
+          temp_day_p25,
+          temp_day_p75,
+          precipitation_mm,
+          wind_speed_ms,
+          wind_dir_deg,
+          samples_daily,
+          samples_rain,
+          samples_wind,
+          samples_day_means,
+          samples_day_hours
+        FROM climatology
+        WHERE tile_id = ?
+        ORDER BY month, day
+    """
+    try:
+        cfg = getattr(store, 'cfg', None)
+        db_path = getattr(cfg, 'db_path', None) if cfg is not None else None
+        if db_path is None:
+            return []
+        conn = sqlite3.connect(
+            f'file:{db_path}?mode=ro',
+            uri=True,
+            check_same_thread=False,
+            timeout=30.0,
+        )
+        try:
+            try:
+                conn.execute('PRAGMA query_only = ON')
+            except Exception:
+                pass
+            rows = conn.execute(sql, (str(tile_id),)).fetchall()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            month = int(row[0])
+            day = int(row[1])
+            item = {
+                'month': month,
+                'day': day,
+                'temp_day_median': _finite_float(row[2]),
+                'temp_day_p25': _finite_float(row[3]),
+                'temp_day_p75': _finite_float(row[4]),
+                'precipitation_mm': _finite_float(row[5]),
+                'wind_speed_ms': _finite_float(row[6]),
+                'wind_dir_deg': _finite_float(row[7]),
+                'samples_daily': int(row[8] or 0),
+                'samples_rain': int(row[9] or 0),
+                'samples_wind': int(row[10] or 0),
+                'samples_day_means': int(row[11] or 0),
+                'samples_day_hours': int(row[12] or 0),
+            }
+            out.append(item)
+        return out
+    except Exception:
+        return []
+
+
+def _month_third_periods(year: int, month: int) -> list[tuple[str, int, int]]:
+    last_day = int(calendar.monthrange(int(year), int(month))[1])
+    return [
+        ('early', 1, min(10, last_day)),
+        ('mid', 11, min(20, last_day)),
+        ('late', 21, last_day),
+    ]
+
+
+def _group_rows_by_month_day(rows: list[dict[str, Any]]) -> dict[tuple[int, int], dict[str, Any]]:
+    out: dict[tuple[int, int], dict[str, Any]] = {}
+    for row in rows:
+        try:
+            key = (int(row.get('month')), int(row.get('day')))
+        except Exception:
+            continue
+        out[key] = row
+    return out
+
+
+def _aggregate_temperature_thirds(rows_by_year: dict[int, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    months: list[dict[str, Any]] = []
+    for month in range(1, 13):
+        period_records: list[dict[str, Any]] = []
+        for period_index, (period_name, day_start, day_end) in enumerate(_month_third_periods(2024, month), start=1):
+            year_mean_values: list[float] = []
+            year_p25_values: list[float] = []
+            year_p75_values: list[float] = []
+            valid_days_mean = 0
+            valid_days_p25 = 0
+            valid_days_p75 = 0
+            valid_years_mean = 0
+            valid_years_p25 = 0
+            valid_years_p75 = 0
+            represented_years: list[int] = []
+
+            for year in sorted(rows_by_year.keys()):
+                rows_map = _group_rows_by_month_day(rows_by_year.get(year) or [])
+                mean_days: list[float] = []
+                p25_days: list[float] = []
+                p75_days: list[float] = []
+                for day in range(int(day_start), int(day_end) + 1):
+                    row = rows_map.get((month, day))
+                    if not row:
+                        continue
+                    if _is_placeholder_leap_row(
+                        month,
+                        day,
+                        samples_daily=row.get('samples_daily'),
+                        samples_rain=row.get('samples_rain'),
+                        samples_wind=row.get('samples_wind'),
+                        temp_day_median=row.get('temp_day_median'),
+                        precipitation_mm=row.get('precipitation_mm'),
+                        wind_speed_ms=row.get('wind_speed_ms'),
+                    ):
+                        continue
+                    if int(row.get('samples_day_means') or 0) > 0 and row.get('temp_day_median') is not None:
+                        mean_days.append(float(row['temp_day_median']))
+                    if int(row.get('samples_day_hours') or 0) > 0 and row.get('temp_day_p25') is not None:
+                        p25_days.append(float(row['temp_day_p25']))
+                    if int(row.get('samples_day_hours') or 0) > 0 and row.get('temp_day_p75') is not None:
+                        p75_days.append(float(row['temp_day_p75']))
+
+                year_had_data = False
+                if mean_days:
+                    valid_years_mean += 1
+                    valid_days_mean += len(mean_days)
+                    year_mean_values.append(float(sum(mean_days) / len(mean_days)))
+                    year_had_data = True
+                if p25_days:
+                    valid_years_p25 += 1
+                    valid_days_p25 += len(p25_days)
+                    year_p25_values.append(float(sum(p25_days) / len(p25_days)))
+                    year_had_data = True
+                if p75_days:
+                    valid_years_p75 += 1
+                    valid_days_p75 += len(p75_days)
+                    year_p75_values.append(float(sum(p75_days) / len(p75_days)))
+                    year_had_data = True
+                if year_had_data:
+                    represented_years.append(int(year))
+
+            period_records.append({
+                'period_index': int(period_index),
+                'period': str(period_name),
+                'day_start': int(day_start),
+                'day_end': int(day_end),
+                'mean_c': _mean_value(year_mean_values),
+                'p25_c': _mean_value(year_p25_values),
+                'p75_c': _mean_value(year_p75_values),
+                'valid_years': int(valid_years_mean),
+                'valid_days': int(valid_days_mean),
+                'valid_years_p25': int(valid_years_p25),
+                'valid_days_p25': int(valid_days_p25),
+                'valid_years_p75': int(valid_years_p75),
+                'valid_days_p75': int(valid_days_p75),
+                'represented_years': represented_years,
+            })
+        months.append({
+            'month': int(month),
+            'periods': period_records,
+        })
+    return months
+
+
+def _aggregate_precipitation_thirds(rows_by_year: dict[int, list[dict[str, Any]]]) -> dict[str, Any]:
+    months: list[dict[str, Any]] = []
+    annual_total_mm = 0.0
+    annual_has_gap = False
+    for month in range(1, 13):
+        periods: list[dict[str, Any]] = []
+        monthly_total = 0.0
+        monthly_has_gap = False
+        for period_index, (period_name, day_start, day_end) in enumerate(_month_third_periods(2024, month), start=1):
+            year_period_sums: list[float] = []
+            valid_days = 0
+            represented_years: list[int] = []
+            for year in sorted(rows_by_year.keys()):
+                rows_map = _group_rows_by_month_day(rows_by_year.get(year) or [])
+                vals: list[float] = []
+                for day in range(int(day_start), int(day_end) + 1):
+                    row = rows_map.get((month, day))
+                    if not row:
+                        continue
+                    if _is_placeholder_leap_row(
+                        month,
+                        day,
+                        samples_daily=row.get('samples_daily'),
+                        samples_rain=row.get('samples_rain'),
+                        samples_wind=row.get('samples_wind'),
+                        temp_day_median=row.get('temp_day_median'),
+                        precipitation_mm=row.get('precipitation_mm'),
+                        wind_speed_ms=row.get('wind_speed_ms'),
+                    ):
+                        continue
+                    if int(row.get('samples_rain') or 0) > 0 and row.get('precipitation_mm') is not None:
+                        vals.append(max(0.0, float(row['precipitation_mm'])))
+                if vals:
+                    year_period_sums.append(float(sum(vals)))
+                    valid_days += len(vals)
+                    represented_years.append(int(year))
+            period_mm = _mean_value(year_period_sums)
+            if period_mm is None:
+                monthly_has_gap = True
+            else:
+                monthly_total += float(period_mm)
+            periods.append({
+                'period_index': int(period_index),
+                'period': str(period_name),
+                'day_start': int(day_start),
+                'day_end': int(day_end),
+                'period_mm': period_mm,
+                'valid_years': int(len(year_period_sums)),
+                'valid_days': int(valid_days),
+                'represented_years': represented_years,
+            })
+
+        month_total_mm = None if monthly_has_gap else float(monthly_total)
+        if month_total_mm is None:
+            annual_has_gap = True
+        else:
+            annual_total_mm += month_total_mm
+        months.append({
+            'month': int(month),
+            'periods': periods,
+            'monthly_total_mm': month_total_mm,
+        })
+    return {
+        'months': months,
+        'annual_total_mm': None if annual_has_gap else float(annual_total_mm),
+    }
+
+
+def _sector_index_16(direction_deg: float) -> int:
+    deg = float(direction_deg) % 360.0
+    return int(((deg + 11.25) % 360.0) // 22.5)
+
+
+def _aggregate_wind_monthly_roses(rows_by_year: dict[int, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    sector_labels = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
+    speed_classes = [
+        {'key': '0.5-<2', 'label': '0.5–<2 m/s', 'min_ms': 0.5, 'max_ms': 2.0},
+        {'key': '2-<5', 'label': '2–<5 m/s', 'min_ms': 2.0, 'max_ms': 5.0},
+        {'key': '5-<8', 'label': '5–<8 m/s', 'min_ms': 5.0, 'max_ms': 8.0},
+        {'key': '>=8', 'label': '>=8 m/s', 'min_ms': 8.0, 'max_ms': None},
+    ]
+
+    out: list[dict[str, Any]] = []
+    for month in range(1, 13):
+        sectors = [{'count': 0, 'speed_counts': [0, 0, 0, 0]} for _ in range(16)]
+        total_valid = 0
+        calm_count = 0
+        represented_years: set[int] = set()
+
+        for year in sorted(rows_by_year.keys()):
+            rows_map = _group_rows_by_month_day(rows_by_year.get(year) or [])
+            for day in range(1, 32):
+                row = rows_map.get((month, day))
+                if not row:
+                    continue
+                if _is_placeholder_leap_row(
+                    month,
+                    day,
+                    samples_daily=row.get('samples_daily'),
+                    samples_rain=row.get('samples_rain'),
+                    samples_wind=row.get('samples_wind'),
+                    temp_day_median=row.get('temp_day_median'),
+                    precipitation_mm=row.get('precipitation_mm'),
+                    wind_speed_ms=row.get('wind_speed_ms'),
+                ):
+                    continue
+                if int(row.get('samples_wind') or 0) <= 0:
+                    continue
+                speed = row.get('wind_speed_ms')
+                direction = row.get('wind_dir_deg')
+                if speed is None:
+                    continue
+                speed_f = float(speed)
+                if speed_f < 0.5:
+                    total_valid += 1
+                    represented_years.add(int(year))
+                    calm_count += 1
+                    continue
+                if direction is None:
+                    continue
+                total_valid += 1
+                represented_years.add(int(year))
+                sector = _sector_index_16(float(direction))
+                sectors[sector]['count'] += 1
+                if speed_f < 2.0:
+                    speed_idx = 0
+                elif speed_f < 5.0:
+                    speed_idx = 1
+                elif speed_f < 8.0:
+                    speed_idx = 2
+                else:
+                    speed_idx = 3
+                sectors[sector]['speed_counts'][speed_idx] += 1
+
+        sector_rows: list[dict[str, Any]] = []
+        for idx in range(16):
+            start_deg = (idx * 22.5 - 11.25) % 360.0
+            end_deg = (idx * 22.5 + 11.25) % 360.0
+            sector_count = int(sectors[idx]['count'])
+            class_rows: list[dict[str, Any]] = []
+            for sidx, cls in enumerate(speed_classes):
+                class_count = int(sectors[idx]['speed_counts'][sidx])
+                class_rows.append({
+                    'key': cls['key'],
+                    'label': cls['label'],
+                    'min_ms': cls['min_ms'],
+                    'max_ms': cls['max_ms'],
+                    'count': class_count,
+                    'pct_total': (class_count / total_valid * 100.0) if total_valid > 0 else None,
+                    'pct_sector': (class_count / sector_count * 100.0) if sector_count > 0 else None,
+                })
+            sector_rows.append({
+                'sector_index': int(idx),
+                'label': sector_labels[idx],
+                'start_deg': float(start_deg),
+                'end_deg': float(end_deg),
+                'count': sector_count,
+                'pct_total': (sector_count / total_valid * 100.0) if total_valid > 0 else None,
+                'speed_classes': class_rows,
+            })
+
+        out.append({
+            'month': int(month),
+            'total_valid_observations': int(total_valid),
+            'calm_threshold_ms': 0.5,
+            'calm_count': int(calm_count),
+            'calm_pct': (calm_count / total_valid * 100.0) if total_valid > 0 else None,
+            'represented_years': sorted(represented_years, reverse=True),
+            'sectors': sector_rows,
+        })
+    return out
+
+
+def _api_error_response(status: int, code: str, message: str, *, details: dict[str, Any] | None = None):
+    payload: dict[str, Any] = {
+        'error': {
+            'code': str(code),
+            'message': str(message),
+        }
+    }
+    if details:
+        payload['error']['details'] = details
+    return jsonify(payload), int(status)
 
 
 def _format_location_label(lat: float | None, lon: float | None) -> str:
@@ -1057,6 +1747,16 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
             return None
         address = payload.get('address') if isinstance(payload.get('address'), dict) else {}
+        region = (
+            str(
+                address.get('state_district')
+                or address.get('state')
+                or address.get('region')
+                or address.get('province')
+                or address.get('county')
+                or ''
+            ).strip()
+        )
         # Prefer local administrative/place names before broad city labels.
         primary_keys = (
             'municipality',
@@ -1084,6 +1784,7 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
                 if name:
                     candidate = {
                         'name': name,
+                        'region': region,
                         'country': _normalize_location_country(address.get('country_code')),
                         'admin_importance': _location_admin_importance(key),
                         'population': 0,
@@ -1102,6 +1803,7 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
                 if name:
                     candidate = {
                         'name': name,
+                        'region': region,
                         'country': _normalize_location_country(address.get('country_code')),
                         'admin_importance': _location_admin_importance(key),
                         'population': 0,
@@ -1119,6 +1821,7 @@ def _pick_reverse_geocode_name(payload: Any) -> dict[str, Any] | None:
             if first:
                 candidate = {
                     'name': first,
+                    'region': region,
                     'country': _normalize_location_country(address.get('country_code')),
                     'admin_importance': 1,
                     'population': 0,
@@ -1306,12 +2009,16 @@ def _reverse_offline_nearest_place_fallback(lat: float, lon: float) -> dict[str,
     }
 
 
-def _reverse_offline_fallback(lat: float, lon: float) -> dict[str, str] | None:
-    return (
+def _reverse_offline_fallback(lat: float, lon: float, *, include_station: bool = True) -> dict[str, str] | None:
+    local_match = (
         _reverse_offline_nearest_place_fallback(lat, lon)
         or _reverse_offline_city_fallback(lat, lon)
-        or _reverse_station_fallback(lat, lon)
     )
+    if local_match:
+        return local_match
+    if include_station:
+        return _reverse_station_fallback(lat, lon)
+    return None
 
 
 def _reverse_geocode_cache_key(lat: float, lon: float) -> tuple[float, float]:
@@ -1336,7 +2043,8 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
             return dict(cached)
 
     if not allow_online:
-        fallback = _reverse_offline_fallback(lat_f, lon_f)
+        # Keep climate profile requests strictly offline and non-networked.
+        fallback = _reverse_offline_fallback(lat_f, lon_f, include_station=False)
         if fallback:
             with _REVERSE_GEOCODE_CACHE_LOCK:
                 if len(_REVERSE_GEOCODE_CACHE) >= 512:
@@ -1420,13 +2128,19 @@ def _reverse_geocode_location(lat: float | None, lon: float | None, *, allow_onl
             }
         if chosen and chosen.get('name'):
             chosen_name = str(chosen.get('name') or '').strip()
+            chosen_region = str(chosen.get('region') or '').strip()
             chosen_country = str(chosen.get('country') or '').strip()
             chosen_source = str(chosen.get('source') or 'online-reverse').strip()
             chosen_distance = chosen.get('distance_km')
+            if chosen_region:
+                label_core = f'{chosen_name}, {chosen_region}'
+            else:
+                label_core = chosen_name
             out = {
                 'name': str(chosen_name),
+                'region': str(chosen_region),
                 'country': str(chosen_country or ''),
-                'label': f'{chosen_name} ({chosen_country})' if chosen_country else str(chosen_name),
+                'label': f'{label_core}, {chosen_country}' if chosen_country else label_core,
                 'source': chosen_source,
             }
             if chosen_distance is not None:
@@ -1514,13 +2228,16 @@ def api_location_label():
     except Exception:
         return jsonify({'error': 'Invalid lat/lon'}), 400
 
-    resolved = _reverse_geocode_location(lat, lon)
+    # Explore/Tour map labels must stay offline-first and never block on
+    # external geocoding/network availability.
+    resolved = _reverse_geocode_location(lat, lon, allow_online=False)
     if not resolved:
         return jsonify({
             'lat': lat,
             'lon': lon,
             'location': None,
             'location_name': None,
+            'location_region': None,
             'location_country': None,
         })
 
@@ -1529,6 +2246,7 @@ def api_location_label():
         'lon': lon,
         'location': str(resolved.get('label') or ''),
         'location_name': str(resolved.get('name') or ''),
+        'location_region': str(resolved.get('region') or ''),
         'location_country': str(resolved.get('country') or ''),
         'location_source': str(resolved.get('source') or ''),
         'location_distance_km': str(resolved.get('distance_km') or ''),
@@ -1637,6 +2355,110 @@ def api_stage_names():
 
 @app.route('/api/strategic_grid')
 def api_strategic_grid():
+    global _STRATEGIC_GRID_ACTIVE_KEY
+    global _STRATEGIC_GRID_ACTIVE_COUNT
+    global _STRATEGIC_GRID_PEAK_CONCURRENCY
+
+    key = _strategic_grid_request_key()
+    wait_record: dict[str, Any] | None = None
+
+    with _STRATEGIC_GRID_ADMISSION_LOCK:
+        existing = _STRATEGIC_GRID_IN_FLIGHT.get(key)
+        if existing is not None:
+            waiters = int(existing.get('coalesced', 0))
+            if waiters >= _STRATEGIC_GRID_MAX_WAITERS:
+                app.logger.warning(
+                    'Strategic Grid identical request rejected: waiter_limit=%s key=%s',
+                    _STRATEGIC_GRID_MAX_WAITERS,
+                    key,
+                )
+                response = jsonify({
+                    'error': 'Strategic Grid is busy',
+                    'code': 'strategic-grid-busy',
+                })
+                response.headers['Retry-After'] = '1'
+                return response, 429
+            existing['coalesced'] = waiters + 1
+            wait_record = existing
+            app.logger.info(
+                'Strategic Grid request coalesced: key=%s waiters=%s',
+                key,
+                existing['coalesced'],
+            )
+        elif _STRATEGIC_GRID_ACTIVE_KEY is not None:
+            app.logger.warning(
+                'Strategic Grid request rejected: key=%s active_key=%s',
+                key,
+                _STRATEGIC_GRID_ACTIVE_KEY,
+            )
+            response = jsonify({
+                'error': 'Strategic Grid is busy',
+                'code': 'strategic-grid-busy',
+            })
+            response.headers['Retry-After'] = '1'
+            return response, 429
+        else:
+            wait_record = {
+                'event': threading.Event(),
+                'coalesced': 0,
+                'body': None,
+                'status': 503,
+                'mimetype': 'application/json',
+            }
+            _STRATEGIC_GRID_IN_FLIGHT[key] = wait_record
+            _STRATEGIC_GRID_ACTIVE_KEY = key
+            _STRATEGIC_GRID_ACTIVE_COUNT = 1
+            _STRATEGIC_GRID_PEAK_CONCURRENCY = max(
+                _STRATEGIC_GRID_PEAK_CONCURRENCY,
+                _STRATEGIC_GRID_ACTIVE_COUNT,
+            )
+            app.logger.info('Strategic Grid computation active: key=%s', key)
+
+    if existing is not None:
+        if not wait_record['event'].wait(timeout=_STRATEGIC_GRID_COALESCE_WAIT_SECONDS):
+            app.logger.warning(
+                'Strategic Grid coalesced request timed out: key=%s',
+                key,
+            )
+            return jsonify({
+                'error': 'Strategic Grid computation did not complete in time',
+                'code': 'strategic-grid-coalesce-timeout',
+            }), 503
+        return _strategic_grid_rebuild_response(wait_record)
+
+    started = time.perf_counter()
+    try:
+        impl_response = _api_strategic_grid_impl()
+        body, status, mimetype = _strategic_grid_response_payload(impl_response)
+        wait_record['body'] = body
+        wait_record['status'] = int(status)
+        wait_record['mimetype'] = mimetype
+        return Response(body, status=status, mimetype=mimetype)
+    except Exception as exc:
+        body = json.dumps({
+            'error': f'Strategic Grid aggregation failed: {exc}',
+        }, default=_json_default).encode('utf-8')
+        wait_record['body'] = body
+        wait_record['status'] = 500
+        wait_record['mimetype'] = 'application/json'
+        app.logger.exception('Strategic Grid computation failed')
+        return Response(body, status=500, mimetype='application/json')
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        with _STRATEGIC_GRID_ADMISSION_LOCK:
+            wait_record['event'].set()
+            _STRATEGIC_GRID_IN_FLIGHT.pop(key, None)
+            _STRATEGIC_GRID_ACTIVE_KEY = None
+            _STRATEGIC_GRID_ACTIVE_COUNT = 0
+        app.logger.info(
+            'Strategic Grid computation finished: key=%s duration_ms=%.2f peak_concurrency=%s',
+            key,
+            duration_ms,
+            _STRATEGIC_GRID_PEAK_CONCURRENCY,
+        )
+
+
+def _api_strategic_grid_impl():
     """Strategic/Climatic map: return offline grid nodes + climatology for a day.
 
         Query params (backward compatible):
@@ -1702,11 +2524,7 @@ def api_strategic_grid():
     except Exception:
         year = int(year)
 
-    mode_raw = str(request.args.get('mode') or 'active').strip().lower()
-    if mode_raw in ('24h', 'full', 'full-day', 'full_day', 'day'):
-        mode = 'full_day'
-    else:
-        mode = 'active'
+    mode = 'full_day'
 
     month = None
     day = None
@@ -2094,8 +2912,21 @@ def api_weather_profile():
         return jsonify({"error": "Selected point is outside offline weather coverage"}), 400
 
     total_days = (end_date - start_date).days + 1
+    monthly_total_steps = 0
+    for sample_year, _store, _tile_id in stores_by_year:
+        for month in range(1, 13):
+            try:
+                if int(month) == 12:
+                    month_end = _dt.date(int(sample_year) + 1, 1, 1) - _dt.timedelta(days=1)
+                else:
+                    month_end = _dt.date(int(sample_year), int(month) + 1, 1) - _dt.timedelta(days=1)
+            except Exception:
+                continue
+            monthly_total_steps += int(month_end.day)
+    finalize_steps = 1
     if job_id:
-        progress_init(job_id, total_days * len(stores_by_year), session_id=progress_session_id)
+        progress_total = (total_days * len(stores_by_year)) + monthly_total_steps + finalize_steps
+        progress_init(job_id, progress_total, session_id=progress_session_id)
         progress_active = True
     series: list[dict[str, Any]] = []
     summary_temps: list[float] = []
@@ -2232,30 +3063,266 @@ def api_weather_profile():
             "typical_temp_max": _mean_value(summary_temp_p75s),
             "typical_rain": _median_value(summary_rains),
         }
+        monthly_temp_means: list[float | None] = []
+        monthly_rain_totals: list[float | None] = []
+        for month in range(1, 13):
+            month_temp_per_year: list[float] = []
+            month_rain_per_year: list[float] = []
+            for sample_year, store, tile_id in stores_by_year:
+                try:
+                    if int(month) == 12:
+                        month_end = _dt.date(int(sample_year) + 1, 1, 1) - _dt.timedelta(days=1)
+                    else:
+                        month_end = _dt.date(int(sample_year), int(month) + 1, 1) - _dt.timedelta(days=1)
+                except Exception:
+                    continue
 
-        return jsonify(
-            {
-                "meta": {
-                    "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
-                    "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
-                    "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
-                    "point": {"lat": float(lat), "lon": float(lon)},
-                    "tile_center": {
-                        "lat": tile_center_lat,
-                        "lon": tile_center_lon,
-                    },
-                    "years": [int(y) for (y, _store, _tile) in stores_by_year],
-                    "mode": str(mode),
-                    "start": start_date.isoformat(),
-                    "end": end_date.isoformat(),
+                year_temp_vals: list[float] = []
+                year_rain_vals: list[float] = []
+                for day in range(1, int(month_end.day) + 1):
+                    try:
+                        stats = store.get_stats_for_tile(tile_id, int(month), int(day))
+                    except Exception:
+                        stats = None
+                    if progress_active:
+                        progress_tick(job_id, 1, session_id=progress_session_id)
+                    if not stats:
+                        continue
+
+                    if mode == 'full_day':
+                        temp_val = _finite_float(stats.get('temperature_c'))
+                    else:
+                        temp_val = _finite_float(stats.get('temp_day_median'))
+                        if temp_val is None:
+                            low_val = _finite_float(stats.get('temp_day_p25'))
+                            high_val = _finite_float(stats.get('temp_day_p75'))
+                            if low_val is not None and high_val is not None:
+                                temp_val = 0.5 * (low_val + high_val)
+                    rain_val = _finite_float(stats.get('precipitation_mm'))
+                    if rain_val is None:
+                        rain_val = _finite_float(stats.get('rain_typical_mm'))
+
+                    if temp_val is not None:
+                        year_temp_vals.append(float(temp_val))
+                    if rain_val is not None:
+                        year_rain_vals.append(max(0.0, float(rain_val)))
+
+                if year_temp_vals:
+                    month_temp_per_year.append(float(sum(year_temp_vals) / len(year_temp_vals)))
+                if year_rain_vals:
+                    month_rain_per_year.append(float(sum(year_rain_vals)))
+
+            monthly_temp_means.append(_mean_value(month_temp_per_year))
+            monthly_rain_totals.append(_mean_value(month_rain_per_year))
+
+        response_payload = {
+            "meta": {
+                "location": str(resolved_label or _format_location_label(tile_center_lat, tile_center_lon)),
+                "location_name": str(resolved_location.get('name')) if isinstance(resolved_location, dict) and resolved_location.get('name') else None,
+                "location_country": str(resolved_location.get('country')) if isinstance(resolved_location, dict) and resolved_location.get('country') else None,
+                "app_version": APP_VERSION,
+                "point": {"lat": float(lat), "lon": float(lon)},
+                "tile_center": {
+                    "lat": tile_center_lat,
+                    "lon": tile_center_lon,
                 },
-                "summary": summary,
-                "series": series,
-            }
-        )
+                "years": [int(y) for (y, _store, _tile) in stores_by_year],
+                "mode": str(mode),
+                "start": start_date.isoformat(),
+                "end": end_date.isoformat(),
+            },
+            "summary": summary,
+            "monthly": {
+                "month_labels": ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+                "temp_mean_c": monthly_temp_means,
+                "rain_total_mm": monthly_rain_totals,
+            },
+            "series": series,
+        }
+        if progress_active:
+            progress_tick(job_id, finalize_steps, session_id=progress_session_id)
+        return jsonify(response_payload)
     finally:
         if progress_active:
             progress_done(job_id, session_id=progress_session_id)
+
+
+@app.route('/api/explore/climate_profile')
+def api_explore_climate_profile():
+    req_started = time.perf_counter()
+    timings_ms: dict[str, float] = {}
+    if OfflineWeatherStore is None:
+        return _api_error_response(400, 'offline-store-unavailable', 'Offline store unavailable')
+
+    try:
+        t_ref0 = time.perf_counter()
+        ref_count_raw = request.args.get('reference_years')
+        ref_count = int(ref_count_raw) if ref_count_raw is not None else 3
+    except Exception:
+        ref_count = 3
+    ref_count = max(1, min(5, int(ref_count)))
+
+    reference_years, audits = _resolve_complete_reference_years(ref_count)
+    timings_ms['reference_year_resolver'] = max(0.0, (time.perf_counter() - t_ref0) * 1000.0)
+    if not reference_years:
+        complete_years = sorted([int(a.get('year')) for a in audits if a.get('complete') and a.get('year') is not None], reverse=True)
+        return _api_error_response(
+            422,
+            'insufficient-complete-reference-years',
+            f'Need {ref_count} complete years, found {len(complete_years)}',
+            details={
+                'required_years': ref_count,
+                'available_complete_years': complete_years,
+                'year_audit': audits,
+            },
+        )
+
+    tile_id_raw = str(request.args.get('tile_id') or '').strip()
+    lat_raw = request.args.get('lat')
+    lon_raw = request.args.get('lon')
+    point_lat = None
+    point_lon = None
+    if lat_raw is not None or lon_raw is not None:
+        try:
+            point_lat = float(lat_raw)
+            point_lon = float(lon_raw)
+        except Exception:
+            return _api_error_response(400, 'invalid-coordinates', 'Missing or invalid lat/lon')
+
+    if not tile_id_raw and (point_lat is None or point_lon is None):
+        return _api_error_response(400, 'missing-location', 'Provide lat/lon or tile_id')
+
+    year_rows: dict[int, list[dict[str, Any]]] = {}
+    tile_ids_by_year: dict[int, str] = {}
+    stores_by_year: dict[int, Any] = {}
+    tile_id = str(tile_id_raw) if tile_id_raw else ''
+
+    t_tile0 = time.perf_counter()
+    for year in reference_years:
+        store = _resolve_offline_store_for_year(int(year), point=(point_lat, point_lon) if point_lat is not None and point_lon is not None else None)
+        if store is None:
+            return _api_error_response(
+                422,
+                'missing-database',
+                f'Missing offline database for year {year}',
+                details={'year': int(year)},
+            )
+        stores_by_year[int(year)] = store
+        if tile_id:
+            if not _store_has_tile(store, tile_id):
+                return _api_error_response(
+                    404,
+                    'tile-not-found',
+                    f'Tile {tile_id} not found for year {year}',
+                    details={'tile_id': tile_id, 'year': int(year)},
+                )
+            tile_ids_by_year[int(year)] = tile_id
+        else:
+            candidate = _tile_id_for_point_or_edge(store, float(point_lat), float(point_lon))
+            if not candidate:
+                return _api_error_response(
+                    404,
+                    'tile-not-found',
+                    f'No tile found for selected coordinates in year {year}',
+                    details={'year': int(year), 'lat': float(point_lat), 'lon': float(point_lon)},
+                )
+            tile_ids_by_year[int(year)] = str(candidate)
+    timings_ms['tile_resolution'] = max(0.0, (time.perf_counter() - t_tile0) * 1000.0)
+
+    if not tile_id:
+        all_tiles = sorted(set(tile_ids_by_year.values()))
+        if len(all_tiles) != 1:
+            return _api_error_response(
+                422,
+                'tile-mismatch-across-years',
+                'Selected location resolves to different tile ids across reference years',
+                details={'tile_ids_by_year': {str(y): t for y, t in tile_ids_by_year.items()}},
+            )
+        tile_id = all_tiles[0]
+
+    t_rows0 = time.perf_counter()
+    for year in reference_years:
+        rows = _fetch_tile_climatology_rows(stores_by_year[int(year)], tile_id)
+        if not rows:
+            return _api_error_response(
+                422,
+                'missing-climatology-data',
+                f'No climatology data for tile {tile_id} in year {year}',
+                details={'tile_id': tile_id, 'year': int(year)},
+            )
+        year_rows[int(year)] = rows
+    timings_ms['sqlite_row_fetch'] = max(0.0, (time.perf_counter() - t_rows0) * 1000.0)
+
+    try:
+        t_agg0 = time.perf_counter()
+        temp_months = _aggregate_temperature_thirds(year_rows)
+        precip = _aggregate_precipitation_thirds(year_rows)
+        wind_months = _aggregate_wind_monthly_roses(year_rows)
+        timings_ms['aggregation'] = max(0.0, (time.perf_counter() - t_agg0) * 1000.0)
+    except Exception as e:
+        return _api_error_response(
+            500,
+            'aggregation-failed',
+            'Failed to aggregate climate profile',
+            details={'error': str(e)},
+        )
+
+    center_lat = None
+    center_lon = None
+    try:
+        newest_year = int(reference_years[0])
+        center_lat, center_lon = _lookup_tile_center(stores_by_year[newest_year], tile_id)
+    except Exception:
+        center_lat, center_lon = (None, None)
+
+    timings_ms['total_backend'] = max(0.0, (time.perf_counter() - req_started) * 1000.0)
+    return jsonify(
+        {
+            'meta': {
+                'tile_id': str(tile_id),
+                'point': {
+                    'lat': _finite_float(point_lat) if point_lat is not None else center_lat,
+                    'lon': _finite_float(point_lon) if point_lon is not None else center_lon,
+                },
+                'tile_center': {
+                    'lat': center_lat,
+                    'lon': center_lon,
+                },
+                'reference_years': [int(y) for y in reference_years],
+                'reference_year_count': int(len(reference_years)),
+                'reference_year_rule': f'latest_{int(ref_count)}_complete_years',
+                'timings_ms': {k: round(float(v), 2) for k, v in timings_ms.items()},
+                'units': {
+                    'temperature': '°C',
+                    'precipitation': 'mm',
+                    'wind_speed': 'm/s',
+                    'wind_direction': 'deg',
+                },
+                'wind_note': 'Wind rose is computed from daily dominant directions and daily mean speeds.',
+            },
+            'temperature': {
+                'months': temp_months,
+            },
+            'precipitation': {
+                'months': precip['months'],
+                'annual_total_mm': precip['annual_total_mm'],
+            },
+            'wind': {
+                'sector_count': 16,
+                'sector_width_deg': 22.5,
+                'direction_frequency_denominator': 'all_valid_wind_observations_including_calm',
+                'speed_distribution_denominator': 'observations_in_direction_sector',
+                'empty_sector_pct_representation': None,
+                'speed_classes': [
+                    {'key': '0.5-<2', 'label': '0.5–<2 m/s', 'min_ms': 0.5, 'max_ms': 2.0},
+                    {'key': '2-<5', 'label': '2–<5 m/s', 'min_ms': 2.0, 'max_ms': 5.0},
+                    {'key': '5-<8', 'label': '5–<8 m/s', 'min_ms': 5.0, 'max_ms': 8.0},
+                    {'key': '>=8', 'label': '>=8 m/s', 'min_ms': 8.0, 'max_ms': None},
+                ],
+                'months': wind_months,
+            },
+        }
+    )
 
 
 @app.route('/api/strategy_map')
@@ -2873,6 +3940,26 @@ def map_js():
     return resp
 
 
+def _frontend_bundle_version() -> str:
+    try:
+        map_path = Path(app.static_folder) / 'map.js'
+        st = map_path.stat()
+        return f'{APP_VERSION}:{int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))}'
+    except Exception:
+        return str(APP_VERSION)
+
+
+@app.route('/api/frontend_version')
+def api_frontend_version():
+    resp = jsonify({'version': _frontend_bundle_version(), 'app_version': APP_VERSION})
+    try:
+        resp.headers['Cache-Control'] = 'no-store, max-age=0'
+        resp.headers['Pragma'] = 'no-cache'
+    except Exception:
+        pass
+    return resp
+
+
 @app.route('/assets/<path:filename>')
 def shared_assets(filename):
     resp = send_from_directory(str(ASSETS_DIR), filename)
@@ -3423,7 +4510,7 @@ def api_session():
             save_session_state({'last_gpx_path': '', 'last_gpx_name': ''}, session_id=str(session_id) if session_id else None)
             st['last_gpx_path'] = ''
             st['last_gpx_name'] = ''
-        st_out = {**st, 'gpx_exists': exists, 'session_id': session_id}
+        st_out = {**st, 'gpx_exists': exists, 'session_id': session_id, 'app_version': APP_VERSION}
         return Response(json.dumps(st_out), mimetype='application/json')
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -6284,6 +7371,6 @@ if __name__ == '__main__':
     # Attempt restoring session on startup
     restore_gpx_on_start()
     if use_ssl_adhoc:
-        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False, ssl_context='adhoc')
+        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False, ssl_context='adhoc', threaded=True)
     else:
-        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
+        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False, threaded=True)
