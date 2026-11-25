@@ -9338,7 +9338,8 @@
     const restDayIndexes = days
       .filter((day) => String(day && day.type || '') === 'rest')
       .map((day) => Math.max(0, Math.round(Number(day && day.logicalIdx) || 0)));
-    const totalDays = Math.max(1, Math.round(Number(tourDaysInput && tourDaysInput.value) || (days.length || 1)));
+    // The API counts calendar days including rest days; the input counts ride days.
+    const totalDays = Math.max(1, days.length || Math.round(Number(tourDaysInput && tourDaysInput.value) || 1));
     const boundariesKm = (() => {
       try {
         const fromPlan = Array.isArray(TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.boundariesKm)

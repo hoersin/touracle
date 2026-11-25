@@ -95,23 +95,45 @@ def test_weather_after_rest_day_belongs_to_displayed_date(steep):
     assert [shown_temp(c) for c in cards] == [steep_temp(day(i)) for i in range(8)]
 
 
-@GAP
-def test_weather_after_changed_boundary_belongs_to_displayed_stage(steep):
-    """Deleting a ride day merges stages, so stage lengths become uneven."""
-    steep.delete_ride_day('ride-1')
-    cards = steep.cards()
-    lens = [float(c['stage'].split(' km')[0]) for c in cards]
-    require(len(set(lens)) > 1, f'uneven stages expected, got {lens}')
-    steep.get_weather()
-    cards = steep.cards()
-    require([float(c['stage'].split(' km')[0]) for c in cards] == lens, 'stage lengths must survive weather loading (F-04)')
-    require(all('Rain' in c['weather'] for c in cards), 'all stages must show weather')
+@pytest.fixture
+def uneven(loaded):
+    """Dense sampling, steep spatial rain (0.1 mm/km), merged stage => uneven stages."""
+    loaded.backend.weather.rain_fn = lambda lon: 2.0 + 0.1 * syn.km_at_lon(lon)
+    for f in (loaded.backend.tmp / 'stats').glob('*.json'):
+        f.unlink()
+    loaded.page.evaluate("() => { const e=document.getElementById('setStepKm'); e.value='10'; for (const t of ['input','change']) e.dispatchEvent(new Event(t,{bubbles:true})); }")
+    loaded.get_weather()
+    loaded.delete_ride_day('ride-1')
+    require(len(set(stage_lengths(loaded))) > 1, f'uneven stages expected, got {stage_lengths(loaded)}')
+    return loaded
+
+
+def stage_lengths(ui):
+    return [float(c['stage'].split(' km')[0]) for c in ui.cards()]
+
+
+def assert_rain_describes_displayed_stages(ui):
     start = 0.0
-    for c, length in zip(cards, lens):
-        expected = syn.rain_at_lon(syn.lon_at_km(start + length / 2))
+    for c, length in zip(ui.cards(), stage_lengths(ui)):
+        require('Rain' in c['weather'], f'stage without weather: {c}')
         shown = float(re.search(r'Rain ([\d.]+) mm', c['weather']).group(1))
-        assert shown == pytest.approx(expected, abs=0.15), (c['key'], shown, expected)
+        # Tolerance: 10 km sampling, half-open stage ends and the sampler's
+        # duplicated start point account for up to 0.8 mm on this gradient.
+        assert shown == pytest.approx(2.0 + 0.1 * (start + length / 2), abs=1.0), (c['key'], shown)
         start += length
+
+
+def test_weather_follows_changed_boundary_before_refresh(uneven):
+    """Control: the client aggregates by displayed stage."""
+    assert_rain_describes_displayed_stages(uneven)
+
+
+@GAP
+def test_weather_follows_changed_boundary_after_refresh(uneven):
+    lens = stage_lengths(uneven)
+    uneven.get_weather()
+    require(stage_lengths(uneven) == lens, 'stage lengths must survive weather loading (F-04)')
+    assert_rain_describes_displayed_stages(uneven)
 
 
 # --- simulation ------------------------------------------------------------
