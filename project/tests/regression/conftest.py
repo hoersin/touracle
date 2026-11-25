@@ -159,6 +159,11 @@ class TourPage:
             "on => { const e=document.getElementById('reverse'); e.checked=on; e.dispatchEvent(new Event('change',{bubbles:true})); }", on)
         self.page.wait_for_timeout(300)
 
+    def set_start_date(self, iso):
+        self.page.evaluate(
+            "v => { const e=document.getElementById('startDate'); e.value=v; e.dispatchEvent(new Event('change',{bubbles:true})); }", iso)
+        self.page.wait_for_timeout(300)
+
     def delete_ride_day(self, day_key):
         """User action that changes stage boundaries (and the ride-day count)."""
         self.page.evaluate(
@@ -192,7 +197,8 @@ class TourPage:
             'overnight': [(o['id'], o['name'], o['linkedStageId']) for o in rb['overnightStops']],
             'start': plan['settings']['startDate'],
             'reverse': self.page.evaluate("document.getElementById('reverse').checked"),
-            'days': [(c['kind'], c['key'], c['date'], c['stage']) for c in self.cards()],
+            # Ascent ('hm') is derived from the route direction, not authored.
+            'days': [(c['kind'], c['key'], c['date'], c['stage'].split(' •')[0]) for c in self.cards()],
         }
 
 

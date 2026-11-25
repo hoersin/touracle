@@ -3616,6 +3616,17 @@
     }
   }
 
+  // The ride-day input must match the plan; otherwise boundaries are cut or padded.
+  function _tourSyncRideCountInputFromPlan() {
+    try {
+      const boundaries = TOUR_PLAN && TOUR_PLAN.roadbook && TOUR_PLAN.roadbook.boundariesKm;
+      if (!tourDaysInput || !Array.isArray(boundaries) || !boundaries.length) return;
+      tourDaysInput.value = String(boundaries.length + 1);
+      const field = tourDaysInput.closest('[data-slider-field="single"]');
+      _syncSingleSliderField(field);
+    } catch (_) {}
+  }
+
   function _tourPlanApplyLoadedEntry(entry) {
     try {
       if (!entry || !entry.plan) return false;
@@ -3631,6 +3642,7 @@
       TOUR_SEGMENTATION_STATE.boundariesKm = Array.isArray(loaded && loaded.roadbook && loaded.roadbook.boundariesKm)
         ? loaded.roadbook.boundariesKm.slice()
         : null;
+      _tourSyncRideCountInputFromPlan();
       SELECTED_TOUR_DAY_KEY = null;
       ROADBOOK_STATE.activeDayId = null;
       ROADBOOK_STATE.selectedDayId = null;
@@ -3862,6 +3874,11 @@
         ACTIVE_TOUR_PLAN_ID = String(entry.id || loadId || ACTIVE_TOUR_PLAN_ID || '');
       }
 
+      const projectPrefs = projectPayload && projectPayload.preferences;
+      if (projectPrefs && typeof projectPrefs.reverse === 'boolean') {
+        _applyReverseTourState(projectPrefs.reverse, { refresh: false });
+      }
+
       // Global weather context fallback from project payload.
       if (projectPayload && projectPayload.weatherContext && typeof projectPayload.weatherContext === 'object') {
         WEATHER_CONTEXT = {
@@ -3877,7 +3894,7 @@
       }
 
       ROADBOOK_CACHE = null;
-      _roadbookResetState();
+      _roadbookResetViewState();
       _tourBookRefreshAll({ skipDirtyClear: true });
       _setTourPlanDirty(false);
       _tourPlanSetActiveFileContext(handle, file.name || 'tour.tour');
@@ -5141,7 +5158,11 @@
       TOUR_SEGMENTATION_STATE.boundariesKm = Array.isArray(snapshot.segmentationBoundariesKm)
         ? snapshot.segmentationBoundariesKm.slice()
         : null;
-      if (snapshot.tourPlan && typeof snapshot.tourPlan === 'object') {
+      const storedEntry = TourPlanStorageService.loadTourPlan(ACTIVE_TOUR_PLAN_ID);
+      const storedPlanIsNewer = !!storedEntry && Number(storedEntry.updatedAt || 0) > Number(snapshot.savedAt || 0);
+      if (storedPlanIsNewer) {
+        // Keep the plan restored from the plan store; the snapshot predates it.
+      } else if (snapshot.tourPlan && typeof snapshot.tourPlan === 'object') {
         TOUR_PLAN = deserializeTourPlan(snapshot.tourPlan);
       } else {
         updateTourPlan((plan) => ({
@@ -11228,7 +11249,7 @@
     });
   }
 
-  function _resetTourRouteDisplay(message) {
+  function _resetTourRouteDisplay(message, opts) {
     try {
       if (routeLayer && map) map.removeLayer(routeLayer);
     } catch (_) {}
@@ -11257,7 +11278,7 @@
     LAST_TOUR_SUMMARY = null;
     LAST_TOUR_DAY_SUMMARIES = null;
     LAST_TOUR_PROVENANCE = null;
-    _tourResetSegmentationState();
+    if (!(opts && opts.keepPlan)) _tourResetSegmentationState();
     TOUR_HOVER_POINTS_DIRTY = true;
     try { _setTourBandsData(null, []); } catch (_) {}
     try { _renderTourEmptyState(message || 'Loading route + profile…'); } catch (_) {}
@@ -11414,7 +11435,8 @@
     }
   }
 
-  function _roadbookResetState() {
+  // View state only. Weather loading uses this and must never touch TOUR_PLAN.
+  function _roadbookResetViewState() {
     const visible = (ROADBOOK_STATE && ROADBOOK_STATE.visible !== false);
     SELECTED_TOUR_DAY_KEY = null;
     ROADBOOK_STATE = {
@@ -11423,6 +11445,12 @@
       selectedDayId: null,
       hoverDayId: null,
     };
+    ROADBOOK_CACHE = null;
+  }
+
+  // Also discards the roadbook itself; only for starting a new plan.
+  function _roadbookResetState() {
+    _roadbookResetViewState();
     updateTourPlan((plan) => ({
       ...plan,
       roadbook: {
@@ -11435,7 +11463,6 @@
         nextRestId: 1,
       },
     }));
-    ROADBOOK_CACHE = null;
   }
 
   function _roadbookNormalizeRestStops(rideCount) {
@@ -24365,7 +24392,7 @@
     LAST_TOUR_DAY_SUMMARIES = null;
     LAST_TOUR_PROVENANCE = null;
     LAST_ELEVATION_DIAGNOSTICS = null;
-    _roadbookResetState();
+    _roadbookResetViewState();
     TOUR_HOVER_POINTS_DIRTY = true;
     try { _clearRouteWindRibbons(); } catch (_) {}
     if (!weatherOnly) {
@@ -24549,7 +24576,7 @@
         if (errorCode === 'route_setup_failed') {
           try { _clearActiveGpxSelection(); } catch (_) {}
         }
-        try { _resetTourRouteDisplay(message); } catch (_) {}
+        try { _resetTourRouteDisplay(message, { keepPlan: true }); } catch (_) {}
         try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
         try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
         try { if (sseStatus) sseStatus.textContent = `Stream: ${message}`; } catch (_) {}
@@ -25718,7 +25745,11 @@
         }
         _persistLastGpxSelection();
         updateDropZoneLabel();
-        if (typeof st.reverse === 'boolean') REVERSED = st.reverse;
+        // The server only knows the direction of the last stream; a locally
+        // saved choice is the user's own and may be newer.
+        const locallySaved = loadSavedSettings();
+        if (locallySaved && typeof locallySaved.reverse === 'boolean') REVERSED = locallySaved.reverse;
+        else if (typeof st.reverse === 'boolean') REVERSED = st.reverse;
         // Sync reverse checkbox state
         try {
           const rc = document.getElementById('reverse');
@@ -25736,6 +25767,11 @@
     }
     updateDropZoneLabel();
     try {
+      // Same for the schedule: the plan is authoritative over the last stream.
+      const planStart = String(TOUR_PLAN && TOUR_PLAN.settings && TOUR_PLAN.settings.startDate || '');
+      if (planStart && startDateInput && LAST_GPX_PATH) startDateInput.value = planStart;
+      if (LAST_GPX_PATH) _tourSyncRideCountInputFromPlan();
+      _tourSyncArrivalInputFromInputs();
       if (sessionRestoreOk) {
         ACTIVE_TOUR_SNAPSHOT_KEY = _currentTourSnapshotKey();
         if (_restoreTourSnapshotIfCurrent() && sseStatus) {

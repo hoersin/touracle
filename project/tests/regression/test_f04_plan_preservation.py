@@ -16,11 +16,14 @@ def authored(loaded):
     loaded.add_rest_day(4)
     loaded.set_note('ride-1', 'meet friends')
     loaded.set_note('rest-r1', 'museum')
+    loaded.set_start_date('2026-07-10')
     loaded.set_reverse(True)
+    loaded.page.wait_for_timeout(1500)  # a date change may refresh weather by itself
     s = loaded.structure()
     assert s['rest'] == [('r1', 2), ('r2', 4)]
     assert len(s['boundaries']) == 5 and s['notes'] == {'ride-1': 'meet friends', 'rest-r1': 'museum'}
     assert s['reverse'] is True and len(s['days']) == 8
+    assert s['start'] == '2026-07-10' and s['days'][0][2].endswith('Jul 10')
     return loaded, s
 
 
@@ -128,3 +131,14 @@ def test_round_trip_preserves_overnight_stops(authored):
     s = ui.structure()
     assert s['overnight'] == [('o1', 'Camp Test', 'ride-1')]
     assert s['rest'] == [('r1', 2), ('r2', 4)]
+
+
+def test_importing_another_route_still_starts_a_fresh_plan(authored):
+    """Guard against over-preserving: a new GPX is a new tour."""
+    ui, _ = authored
+    ui.import_gpx(syn.write_gpx(ui.backend.tmp / 'other.gpx', 350))
+    cards = ui.cards()
+    assert [c['kind'] for c in cards] == ['ride'] * 7
+    s = ui.structure()
+    assert s['rest'] == [] and s['notes'] == {}
+    assert s['boundaries'] == [] or s['boundaries'] == pytest.approx([50 * i for i in range(1, 7)], abs=0.5)
