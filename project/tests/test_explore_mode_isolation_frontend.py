@@ -65,7 +65,8 @@ def test_strategic_grid_429_is_retried_while_the_request_is_current():
     assert "resp.status !== 429" in source[source.find("async function _strategicFetchBusyAware"):]
     assert "StrategicGridBusyError" in source
     assert "async function _strategicRequestGrid" in source
-    assert "_prefetchStrategicNeighbor" in source
+    # Phase 3: neighbour prefetch (daily/range timeline only) was unreachable and is removed.
+    assert "_prefetchStrategicNeighbor" not in source
 
 
 def test_explore_overlay_lifecycle_keeps_canvas_layers_and_clears_wind():

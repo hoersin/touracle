@@ -175,17 +175,6 @@
       }
       return;
     }
-    try {
-      if (strategicLayerSelect && strategicLayerSelect.options && strategicLayerSelect.options.length) {
-        for (const opt of Array.from(strategicLayerSelect.options)) {
-          const o = document.createElement('option');
-          o.value = String(opt.value);
-          o.textContent = String(opt.textContent || opt.value);
-          sel.appendChild(o);
-        }
-        return;
-      }
-    } catch (_) {}
     // Fallback
     const defs = [
       { v: 'temperature', t: 'Temperature' },
@@ -322,7 +311,6 @@
   const setInterpolation = document.getElementById('setInterpolation');
   const setWindDensity = document.getElementById('setWindDensity');
   const setAnimSpeed = document.getElementById('setAnimSpeed');
-  const setGridKm = document.getElementById('setGridKm');
   const setActiveHourStart = document.getElementById('setActiveHourStart');
   const setActiveHourEnd = document.getElementById('setActiveHourEnd');
   const setWindWeighting = document.getElementById('setWindWeighting');
@@ -343,7 +331,6 @@
   // Phase 2 (range): preset buttons and step/speed selects were removed intentionally.
 
   // Legacy (Phase 1): single day slider.
-  const strategicDaySlider = document.getElementById('strategicDaySlider');
   const strategicStepBackBtn = document.getElementById('strategicStepBack');
   const strategicPlayBtn = document.getElementById('strategicPlay');
   const strategicStepForwardBtn = document.getElementById('strategicStepForward');
@@ -352,13 +339,7 @@
   const strategicMonthTicks = document.getElementById('strategicMonthTicks');
   const strategicTimeline = document.getElementById('strategicTimeline');
   const strategicRangeToday = document.getElementById('strategicRangeToday');
-  const strategicLayerSelect = document.getElementById('strategicLayer');
-  const strategicTimescaleSelect = document.getElementById('strategicTimescale');
-  const strategicTemporalPeriodSelect = document.getElementById('strategicTemporalPeriod');
-  const exploreTimescaleSelect = document.getElementById('exploreTimescaleSelect');
-  const explorePeriodSelect = document.getElementById('explorePeriodSelect');
   const strategicWindOn = document.getElementById('strategicWindOn');
-  const strategicWindMode = document.getElementById('strategicWindMode');
   const settingsCancel = document.getElementById('settingsCancel');
   const settingsSave = document.getElementById('settingsSave');
   const settingsLoad = document.getElementById('settingsLoad');
@@ -13998,7 +13979,6 @@
       saveSettings(SETTINGS);
     } catch (_) {}
     try { _strategicSetYear(Number(years[0] || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
-    try { _strategicSyncTemporalPeriodSelect(); } catch (_) {}
     try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears, { includeAll: true }); } catch (_) {}
     try { _updateStrategicLegend(); } catch (_) {}
     try {
@@ -14047,48 +14027,6 @@
         rangeEnd: Number(STRATEGIC_STATE.rangeEndDoy || 14),
         mode: '24h',
       });
-    } catch (_) {
-      return '';
-    }
-  }
-
-  function _strategicLuckyVariant() {
-    try {
-      // Always include Lucky Days thresholds in the cache key because the
-      // strategic tooltip shows Lucky Days even on Temp/Rain/Wind layers.
-      // Use defaults while settings are still initializing to avoid NaN→0 bugs.
-      const tColdRaw = Number(SETTINGS && SETTINGS.tempCold);
-      const tHotRaw = Number(SETTINGS && SETTINGS.tempHot);
-      const rMaxRaw = Number(SETTINGS && SETTINGS.rainHigh);
-      const wMaxRaw = Number(SETTINGS && SETTINGS.windHeadComfort);
-      const tCold = Number.isFinite(tColdRaw) ? tColdRaw : 5;
-      const tHot = Number.isFinite(tHotRaw) ? tHotRaw : 30;
-      const rMax = Number.isFinite(rMaxRaw) ? rMaxRaw : 10;
-      const wMax = Number.isFinite(wMaxRaw) ? wMaxRaw : 4;
-      // Quantize to stabilize caching on small slider changes.
-      const q1 = (x) => (Number.isFinite(Number(x)) ? (Math.round(Number(x) * 10) / 10).toFixed(1) : 'nan');
-      return `lucky:t${q1(tCold)}..${q1(tHot)}|r${q1(rMax)}|w${q1(wMax)}`;
-    } catch (_) {
-      return 'lucky:err';
-    }
-  }
-
-  function _strategicLuckyQueryParams() {
-    try {
-      // Always request Lucky Days counts (used in tooltip for all layers).
-      // Use defaults while settings are still initializing to avoid NaN params.
-      const tColdRaw = Number(SETTINGS && SETTINGS.tempCold);
-      const tHotRaw = Number(SETTINGS && SETTINGS.tempHot);
-      const rMaxRaw = Number(SETTINGS && SETTINGS.rainHigh);
-      const wMaxRaw = Number(SETTINGS && SETTINGS.windHeadComfort);
-      const tCold = Number.isFinite(tColdRaw) ? tColdRaw : 5;
-      const tHot = Number.isFinite(tHotRaw) ? tHotRaw : 30;
-      const rMax = Number.isFinite(rMaxRaw) ? rMaxRaw : 10;
-      const wMax = Number.isFinite(wMaxRaw) ? wMaxRaw : 4;
-      return `&lucky_temp_cold=${encodeURIComponent(String(tCold))}`
-        + `&lucky_temp_hot=${encodeURIComponent(String(tHot))}`
-        + `&lucky_rain_max=${encodeURIComponent(String(rMax))}`
-        + `&lucky_wind_max=${encodeURIComponent(String(wMax))}`;
     } catch (_) {
       return '';
     }
@@ -14479,7 +14417,7 @@
     // Keep legend's layer select in sync (and keep its options current).
     try {
       if (STRATEGIC_LEGEND_LAYER_SELECT) {
-        if (_tourIsActive() || (strategicLayerSelect && strategicLayerSelect.options && STRATEGIC_LEGEND_LAYER_SELECT.options.length !== strategicLayerSelect.options.length)) {
+        if (_tourIsActive()) {
           _populateLayerOptions(STRATEGIC_LEGEND_LAYER_SELECT);
         }
         STRATEGIC_LEGEND_LAYER_SELECT.value = String(layer || 'temperature');
@@ -14697,7 +14635,6 @@
       } catch (_) {}
     }
     try {
-      if (strategicLayerSelect) strategicLayerSelect.value = STRATEGIC_STATE.layer;
     } catch (_) {}
     try {
       if (exploreOverlaySelect) exploreOverlaySelect.value = STRATEGIC_STATE.layer;
@@ -18069,12 +18006,10 @@
     rangeEndDoy: 14,
     // Keep a representative DOY for legacy helpers (we keep it as rangeStart).
     doy: 1.0,
-    timescale: (strategicTimescaleSelect && strategicTimescaleSelect.value)
-      ? strategicTimescaleSelect.value
-      : String((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily'),
-    layer: (strategicLayerSelect && strategicLayerSelect.value) ? strategicLayerSelect.value : 'temperature_ride',
+    timescale: String((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily'),
+    layer: 'temperature_ride',
     windOn: false,
-    windMode: (strategicWindMode && strategicWindMode.value) ? strategicWindMode.value : 'flow',
+    windMode: 'flow',
     playing: false,
     playTimer: null,
     lastResp: null,
@@ -18201,83 +18136,11 @@
         const month = Number(md.month) || 1;
         _updateExploreTimeButtons('month', String(month));
       }
-      if (exploreTimescaleSelect) exploreTimescaleSelect.value = ts;
-      if (explorePeriodSelect) {
-        const md = _doyToMonthDay(_clampDOYInt(STRATEGIC_STATE.doy || 1));
-        const month = Math.max(1, Math.min(12, Number(md.month) || 1));
-        const quarter = 1 + Math.floor((month - 1) / 3);
-        const opts = [];
-        if (ts === 'year') opts.push({ value: 'year', label: 'Full year' });
-        if (ts === 'quarter') {
-          opts.push({ value: '1', label: 'Q1 (Jan–Mar)' });
-          opts.push({ value: '2', label: 'Q2 (Apr–Jun)' });
-          opts.push({ value: '3', label: 'Q3 (Jul–Sep)' });
-          opts.push({ value: '4', label: 'Q4 (Oct–Dec)' });
-        }
-        if (ts === 'month') {
-          for (let i = 0; i < _DOY_MONTHS.length; i++) opts.push({ value: String(i + 1), label: String(_DOY_MONTHS[i].name) });
-        }
-        const prev = String(explorePeriodSelect.value || '');
-        explorePeriodSelect.innerHTML = '';
-        for (const o of opts) {
-          const node = document.createElement('option');
-          node.value = o.value;
-          node.textContent = o.label;
-          explorePeriodSelect.appendChild(node);
-        }
-        const next = opts.some(o => o.value === prev) ? prev : (ts === 'year' ? 'year' : (ts === 'quarter' ? String(quarter) : String(month)));
-        explorePeriodSelect.value = next;
-      }
     } catch (_) {}
-  }
-
-  function _strategicSyncTemporalPeriodSelect() {
-    if (!strategicTemporalPeriodSelect) return;
-    const ts = _strategicNormalizeClimateTimescale(STRATEGIC_STATE.timescale || 'year');
-    const doy = _clampDOYInt(STRATEGIC_STATE.doy || 1);
-    const md = _doyToMonthDay(doy);
-    const month = Math.max(1, Math.min(12, Number(md.month) || 1));
-    const quarter = 1 + Math.floor((month - 1) / 3);
-
-    const opts = [];
-    if (ts === 'year') {
-      opts.push({ value: 'year', label: 'Full year' });
-    } else if (ts === 'quarter') {
-      opts.push({ value: '1', label: 'Q1 (Jan–Mar)' });
-      opts.push({ value: '2', label: 'Q2 (Apr–Jun)' });
-      opts.push({ value: '3', label: 'Q3 (Jul–Sep)' });
-      opts.push({ value: '4', label: 'Q4 (Oct–Dec)' });
-    } else {
-      for (let i = 0; i < _DOY_MONTHS.length; i++) {
-        opts.push({ value: String(i + 1), label: String(_DOY_MONTHS[i].name) });
-      }
-    }
-
-    try {
-      const prev = String(strategicTemporalPeriodSelect.value || '').trim();
-      strategicTemporalPeriodSelect.innerHTML = '';
-      for (const o of opts) {
-        const node = document.createElement('option');
-        node.value = String(o.value);
-        node.textContent = String(o.label);
-        strategicTemporalPeriodSelect.appendChild(node);
-      }
-      let nextValue = prev;
-      if (!opts.some((o) => String(o.value) === nextValue)) {
-        nextValue = (ts === 'year')
-          ? 'year'
-          : (ts === 'quarter' ? String(quarter) : String(month));
-      }
-      strategicTemporalPeriodSelect.value = nextValue;
-      strategicTemporalPeriodSelect.disabled = (ts === 'year');
-    } catch (_) {}
-    _syncExplorePreferencesTimescale();
   }
 
   function _strategicApplyTemporalSelection(opts) {
-    const ts = _strategicNormalizeClimateTimescale(
-      strategicTimescaleSelect ? strategicTimescaleSelect.value : STRATEGIC_STATE.timescale
-    );
+    const ts = _strategicNormalizeClimateTimescale(STRATEGIC_STATE.timescale);
     try { STRATEGIC_STATE.timescale = ts; } catch (_) {}
     try {
       SETTINGS.climateTimescale = ts;
@@ -18285,12 +18148,9 @@
     } catch (_) {}
 
     let doy = _clampDOYInt(STRATEGIC_STATE.doy || 1);
-    // Without the (removed) period select, keep the current period instead of
-    // falling back to Q1 / January.
+    // Keep the current period (snapped to its first day), never fall back to Q1 / January.
     const curMonth = Number(_doyToMonthDay(doy).month) || 1;
-    const periodVal = strategicTemporalPeriodSelect
-      ? String(strategicTemporalPeriodSelect.value || '').trim()
-      : String(ts === 'quarter' ? (1 + Math.floor((curMonth - 1) / 3)) : curMonth);
+    const periodVal = String(ts === 'quarter' ? (1 + Math.floor((curMonth - 1) / 3)) : curMonth);
     if (ts === 'year') {
       doy = 1;
     } else if (ts === 'quarter') {
@@ -18300,7 +18160,6 @@
     }
     try { STRATEGIC_STATE.doy = doy; } catch (_) {}
 
-    _strategicSyncTemporalPeriodSelect();
     try { _strategicApplyTimescaleUI(); } catch (_) {}
     if (!(opts && opts.skipFetch)) _scheduleStrategicFetch('timescale');
   }
@@ -18358,12 +18217,8 @@
     const inferred = _strategicDetectStandardTimescaleForCurrentRange();
     try { STRATEGIC_STATE.timescale = inferred; } catch (_) {}
 
-    _strategicUpdateCustomOptionLabel(strategicTimescaleSelect);
     _strategicUpdateCustomOptionLabel(STRATEGIC_LEGEND_TIMESCALE_SELECT);
 
-    try {
-      if (strategicTimescaleSelect && strategicTimescaleSelect.value !== inferred) strategicTimescaleSelect.value = inferred;
-    } catch (_) {}
     try {
       if (STRATEGIC_LEGEND_TIMESCALE_SELECT && STRATEGIC_LEGEND_TIMESCALE_SELECT.value !== inferred) STRATEGIC_LEGEND_TIMESCALE_SELECT.value = inferred;
     } catch (_) {}
@@ -18375,6 +18230,7 @@
         const matches = (String(btn.dataset.timeKind) === kind
           && String(btn.dataset.timeValue) === String(value));
         btn.classList.toggle('is-active', matches);
+        btn.setAttribute('aria-pressed', matches ? 'true' : 'false');
       });
     } catch (_) {}
   }
@@ -18419,7 +18275,6 @@
 
     // Non-range mode (Explore climate map)
     try { STRATEGIC_STATE.timescale = _strategicNormalizeClimateTimescale(value); } catch (_) {}
-    _strategicSyncTemporalPeriodSelect();
     _strategicApplyTemporalSelection({ skipFetch: false });
   }
 
@@ -18698,11 +18553,6 @@
       return;
     }
     STRATEGIC_STATE.doy = _clampDOY(doyVal);
-    if (strategicDaySlider) {
-      const ts = String(STRATEGIC_STATE.timescale || 'daily');
-      const v = _strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts);
-      strategicDaySlider.value = String(v);
-    }
     _strategicSetLabels();
     _updateStrategicLegend();
   }
@@ -18875,15 +18725,6 @@
 
     const ts = String(STRATEGIC_STATE.timescale || 'daily');
     const spec = _strategicSliderSpec(ts);
-    try {
-      if (strategicDaySlider) {
-        strategicDaySlider.min = String(spec.min);
-        strategicDaySlider.max = String(spec.max);
-        strategicDaySlider.step = String(spec.step);
-        // Re-map current state.doy into the new slider coordinate.
-        strategicDaySlider.value = String(_strategicDOYToSliderValue(STRATEGIC_STATE.doy, ts));
-      }
-    } catch (_) {}
     try {
       if (strategicMonthTicks) {
         strategicMonthTicks.style.display = (ts === 'year') ? 'none' : '';
@@ -19608,93 +19449,6 @@
       points: (b && b.points) ? _blendStrategicPoints(a.points, b.points, frac) : a.points,
     };
     return accept(blended);
-  }
-
-  function _prefetchStrategicNeighbor(offsetDays) {
-    try {
-      if (!STRATEGIC_STATE.active) return;
-      if (_strategicUsingRangeUI()) return;
-      const years = _strategicGetSelectedYears();
-      const yearsKey = _strategicYearsKey(years);
-      const mode = _strategicGetMode();
-      const base = Math.floor(_clampDOY(STRATEGIC_STATE.doy));
-      let d = base + Number(offsetDays || 0);
-      while (d < 1) d += 365;
-      while (d > 365) d -= 365;
-      const mmdd = _mmddFromDOY(d);
-      const { latMin, latMax, lonMin, lonMax } = _strategicRequestBounds();
-      const cacheKey = _strategicCacheKey(
-        yearsKey,
-        mode,
-        STRATEGIC_STATE.timescale,
-        mmdd,
-        latMin,
-        latMax,
-        lonMin,
-        lonMax,
-        '',
-      );
-      if (_strategicCacheGet(cacheKey)) return;
-      const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
-      const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
-        + `&years=${encodeURIComponent(String(yearsKey))}`
-        + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
-        + `&date=${encodeURIComponent(String(mmdd))}`
-        + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
-      fetch(url)
-        .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
-        .then(({ ok, status, j }) => {
-          if (!ok) throw new Error((j && j.error) ? j.error : `HTTP ${status}`);
-          _strategicCacheSet(cacheKey, j);
-        })
-        .catch(() => {});
-    } catch (_) {}
-  }
-
-  function _prefetchStrategicRangeNeighbor(offsetDays) {
-    try {
-      if (!STRATEGIC_STATE.active) return;
-      if (!_strategicUsingRangeUI()) return;
-      const years = _strategicGetSelectedYears();
-      const yearsKey = _strategicYearsKey(years);
-      const mode = _strategicGetMode();
-      const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
-      const { startDoy, durationDays } = _strategicGetRangeDOY();
-      const maxStart = Math.max(1, 365 - durationDays + 1);
-      let s2 = _clampDOYInt(startDoy + Number(offsetDays || 0));
-      s2 = Math.max(1, Math.min(maxStart, s2));
-      const startIso = _isoDateFromDOY(s2, y);
-
-      const { latMin, latMax, lonMin, lonMax } = _strategicRequestBounds();
-      const cacheKey = _strategicCacheKey(
-        yearsKey,
-        mode,
-        'range',
-        `${startIso}|${durationDays}`,
-        latMin,
-        latMax,
-        lonMin,
-        lonMax,
-        '',
-      );
-      if (_strategicCacheGet(cacheKey)) return;
-
-      const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
-      const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
-        + `&years=${encodeURIComponent(String(yearsKey))}`
-        + `&start_date=${encodeURIComponent(startIso)}`
-        + `&duration_days=${encodeURIComponent(String(durationDays))}`
-        + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
-      fetch(url)
-        .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
-        .then(({ ok, status, j }) => {
-          if (!ok) throw new Error((j && j.error) ? j.error : `HTTP ${status}`);
-          _strategicCacheSet(cacheKey, j);
-        })
-        .catch(() => {});
-    } catch (_) {}
   }
 
   function _gridFromPoints(points, valueKey) {
@@ -21111,22 +20865,6 @@
         if (!same && _strategicViewNeedsFetch()) _scheduleStrategicFetch('viewport');
       } catch (_) {}
 
-      // Best-effort prefetch only for timeline scrubbing (not for pan/zoom).
-      if (why === 'doy' || why === 'range') {
-        setTimeout(() => {
-          try {
-            if (_strategicUsingRangeUI()) {
-              _prefetchStrategicRangeNeighbor(-1);
-              _prefetchStrategicRangeNeighbor(+1);
-              return;
-            }
-            const ts = String(S.timescale || 'daily');
-            if (ts !== 'daily') return;
-            _prefetchStrategicNeighbor(-1);
-            _prefetchStrategicNeighbor(+1);
-          } catch (_) {}
-        }, 0);
-      }
     } catch (e) {
       if (ticket !== S.loadTicket || !S.active) return;
       S.loadingReq = null;
@@ -21314,10 +21052,8 @@
           (SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : (STRATEGIC_STATE.timescale || 'year')
         );
         STRATEGIC_STATE.timescale = ts;
-        if (strategicTimescaleSelect) strategicTimescaleSelect.value = ts;
       } catch (_) {
         STRATEGIC_STATE.timescale = 'year';
-        try { if (strategicTimescaleSelect) strategicTimescaleSelect.value = 'year'; } catch (_) {}
       }
 
       try { _strategicApplyTimescaleUI(); } catch (_) {}
@@ -21352,21 +21088,12 @@
         }
       }
       try {
-        _strategicSyncTemporalPeriodSelect();
         _strategicApplyTemporalSelection({ skipFetch: true });
       } catch (_) {}
       try { _syncExplorePreferencesTimescale(); } catch (_) {}
       STRATEGIC_STATE.layer = _strategicNormalizeLayer((SETTINGS && SETTINGS.exploreOverlay) || STRATEGIC_STATE.layer);
       try { if (exploreOverlaySelect) exploreOverlaySelect.value = STRATEGIC_STATE.layer; } catch (_) {}
-      if (strategicLayerSelect) {
-        STRATEGIC_STATE.layer = _strategicNormalizeLayer(strategicLayerSelect.value);
-        try { strategicLayerSelect.value = STRATEGIC_STATE.layer; } catch (_) {}
-      }
-      if (strategicWindMode) {
-        const windModeSetting = String((SETTINGS && SETTINGS.strategicWindMode) || strategicWindMode.value || 'flow');
-        strategicWindMode.value = windModeSetting;
-        STRATEGIC_STATE.windMode = windModeSetting;
-      }
+      STRATEGIC_STATE.windMode = String((SETTINGS && SETTINGS.strategicWindMode) || 'flow');
       if (strategicWindOn) {
         const windPref = Boolean(SETTINGS && SETTINGS.strategicWindOn);
         const want = windPref;
@@ -21500,44 +21227,11 @@
   } catch (_) {}
 
   // UI wiring
-  if (strategicTimescaleSelect) {
-    strategicTimescaleSelect.addEventListener('change', () => {
-      _strategicApplyTimescaleSelection(String(strategicTimescaleSelect.value || 'year'));
-    });
-  }
-  if (strategicTemporalPeriodSelect) {
-    strategicTemporalPeriodSelect.addEventListener('change', () => {
-      _strategicApplyTemporalSelection({ skipFetch: false });
-    });
-  }
   document.querySelectorAll('.wm-prefs-time-button').forEach((btn) => {
     btn.addEventListener('click', () => {
       _applyExploreTimeButton(String(btn.dataset.timeKind || 'year'), String(btn.dataset.timeValue || 'year'));
     });
   });
-  if (exploreTimescaleSelect) {
-    exploreTimescaleSelect.addEventListener('change', () => {
-      const ts = String(exploreTimescaleSelect.value || 'year');
-      if (strategicTimescaleSelect) strategicTimescaleSelect.value = ts;
-      _strategicApplyTimescaleSelection(ts);
-      _syncExplorePreferencesTimescale();
-    });
-  }
-  if (explorePeriodSelect) {
-    explorePeriodSelect.addEventListener('change', () => {
-      const ts = String(exploreTimescaleSelect ? exploreTimescaleSelect.value : STRATEGIC_STATE.timescale);
-      if (strategicTemporalPeriodSelect) {
-        strategicTemporalPeriodSelect.value = String(explorePeriodSelect.value || (ts === 'year' ? 'year' : '1'));
-      }
-      _strategicApplyTemporalSelection({ skipFetch: false });
-      _syncExplorePreferencesTimescale();
-    });
-  }
-  if (strategicLayerSelect) {
-    strategicLayerSelect.addEventListener('change', () => {
-      _setStrategicLayer(String(strategicLayerSelect.value || 'temperature'));
-    });
-  }
   if (exploreOverlaySelect) {
     exploreOverlaySelect.addEventListener('change', () => {
       _setStrategicLayer(String(exploreOverlaySelect.value || 'temperature'));
@@ -21548,21 +21242,6 @@
       STRATEGIC_STATE.windOn = Boolean(strategicWindOn.checked);
       try { SETTINGS.strategicWindOn = Boolean(strategicWindOn.checked); } catch (_) {}
       _renderStrategic();
-    });
-  }
-  if (strategicWindMode) {
-    strategicWindMode.addEventListener('change', () => {
-      STRATEGIC_STATE.windMode = strategicWindMode.value;
-      try { SETTINGS.strategicWindMode = String(strategicWindMode.value || 'flow'); } catch (_) {}
-      _renderStrategic();
-    });
-  }
-  if (strategicDaySlider) {
-    strategicDaySlider.addEventListener('input', () => {
-      const ts = String(STRATEGIC_STATE.timescale || 'daily');
-      const doy = _strategicSliderValueToDOY(strategicDaySlider.value, ts);
-      _strategicSetDOY(doy);
-      _scheduleStrategicFetch('doy');
     });
   }
 
@@ -21822,10 +21501,8 @@
     if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
     if (setInterpolation) setInterpolation.checked = Boolean(s.interpolation);
     if (strategicWindOn) strategicWindOn.checked = Boolean(s.strategicWindOn);
-    if (strategicWindMode) strategicWindMode.value = String(s.strategicWindMode || 'flow');
     if (setWindDensity) setWindDensity.value = String(Number(s.windDensity || 40));
     if (setAnimSpeed) setAnimSpeed.value = String(Number(s.animSpeed || 1.0));
-    if (setGridKm) setGridKm.value = String(Number(s.gridKm || 50));
     const activeHours = _parseActiveHoursRange(_getActiveHoursValue(s));
     if (setActiveHourStart) setActiveHourStart.value = String(activeHours.start);
     if (setActiveHourEnd) setActiveHourEnd.value = String(activeHours.end);
@@ -21886,10 +21563,9 @@
     base.includeSea = Boolean(setIncludeSea && setIncludeSea.checked);
     base.interpolation = Boolean(setInterpolation && setInterpolation.checked);
     base.strategicWindOn = Boolean(strategicWindOn && strategicWindOn.checked);
-    base.strategicWindMode = String(strategicWindMode && strategicWindMode.value ? strategicWindMode.value : 'flow');
+    base.strategicWindMode = String(base.strategicWindMode || 'flow');
     base.windDensity = Number(setWindDensity && setWindDensity.value) || 40;
     base.animSpeed = Number(setAnimSpeed && setAnimSpeed.value) || 1.0;
-    base.gridKm = Number(setGridKm && setGridKm.value) || 50;
     base.activeHours = _formatActiveHoursRange(
       Number(setActiveHourStart && setActiveHourStart.value),
       Number(setActiveHourEnd && setActiveHourEnd.value)

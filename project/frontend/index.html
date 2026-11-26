@@ -3063,7 +3063,8 @@
     }
     .wm-prefs-time-row[data-time-row="year"] { --wm-time-cols: 1; }
     .wm-prefs-time-row[data-time-row="quarter"] { --wm-time-cols: 4; }
-    .wm-prefs-time-row[data-time-row="month"] { --wm-time-cols: 12; }
+    /* Months: 2 x 6 grid (design requirement), legible in the sidebar width. */
+    .wm-prefs-time-row[data-time-row="month"] { --wm-time-cols: 6; }
     .wm-prefs-time-button {
       min-height: 28px;
       border: 1px solid rgba(15,23,42,0.14);
@@ -3075,26 +3076,58 @@
       cursor: pointer;
     }
     .wm-prefs-time-button.is-active {
-      border-color: rgba(15,118,110,0.55);
-      background: rgba(204,251,241,0.95);
-      color: #0f766e;
-      box-shadow: inset 0 0 0 1px rgba(15,118,110,0.12);
+      border-color: #0f766e;
+      background: #0f766e;
+      color: #ffffff;
+      box-shadow: 0 1px 2px rgba(15,118,110,0.35);
     }
-    /* Explore overlay controls (moved out of Advanced in Phase 2). */
-    body[data-mode="tour"] .wm-explore-overlay-controls { display: none; }
-    .wm-explore-overlay-controls {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 6px 8px;
-      align-items: center;
-      margin-top: 8px;
+    /* ---- Explore Controls (Phase 3) ---------------------------------------- */
+    .wm-mode-climate-only { display: none; }
+    body[data-mode="climate"] .wm-mode-climate-only { display: inline; }
+    body[data-mode="climate"] .wm-mode-tour-only { display: none; }
+    /* Explore shows only its own controls; Tour keeps its Preferences unchanged. */
+    body[data-mode="climate"] #wmPrefsGlobalSection,
+    body[data-mode="climate"] #wmPrefsAdvancedSection { display: none !important; }
+    body[data-mode="tour"] #wmPrefsContextSection { display: none !important; }
+    body[data-mode="climate"] #settingsView { height: auto; max-height: none; }
+    #wmPrefsContextSection.wm-explore-controls {
+      margin-top: 0;
+      padding: 10px 10px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
     }
-    .wm-explore-ctl { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-    .wm-explore-ctl-name { font-size: 10px; font-weight: 750; color: #334155; }
-    .wm-explore-ctl .wm-pref-select { width: 100%; min-width: 0; }
-    .wm-explore-ctl-toggle { align-items: flex-start; }
-    .wm-explore-ctl-years { grid-column: 1 / -1; }
+    .wm-explore-group { display: flex; flex-direction: column; gap: 7px; }
+    .wm-explore-group-title,
+    .wm-explore-fold > summary {
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .02em;
+      color: #0f3d3a;
+    }
+    .wm-explore-fold {
+      border-top: 1px solid rgba(15,118,110,0.16);
+      padding-top: 8px;
+    }
+    .wm-explore-fold > summary { cursor: pointer; list-style-position: inside; }
+    .wm-explore-fold-body { display: flex; flex-direction: column; gap: 9px; margin-top: 8px; }
+    .wm-explore-ctl { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .wm-explore-ctl-name { font-size: 11px; font-weight: 750; color: #334155; }
+    .wm-explore-ctl-note { font-size: 10px; line-height: 1.35; color: #64748b; margin: 0; }
+    .wm-explore-ctl .wm-pref-select { width: 100%; min-width: 0; min-height: 32px; font-size: 12px; }
+    .wm-explore-ctl-toggle { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; }
+    .wm-explore-ctl-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .wm-explore-hint { padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,0.7); }
+    .wm-explore-status { display: flex; flex-direction: column; gap: 4px; }
+    #exploreContextStatus { font-size: 11px; color: #475569; min-height: 15px; }
     #exploreContextStatus[data-state="error"] { color: #9f1239 !important; font-weight: 700; }
+    #exploreContextProgress { height: 4px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    #exploreContextProgressBar { height: 100%; width: 0%; background: #0f766e; transition: width .18s linear; }
+    #exploreAdvanced { margin-top: 8px; padding: 8px 10px; border: 1px solid rgba(15,23,42,0.10); border-radius: 10px; background: rgba(248,250,252,0.82); }
+    #exploreAdvanced .wm-pref-row { padding: 6px 0; }
+    .wm-explore-adv-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: #64748b; margin-top: 4px; }
+    body[data-mode="tour"] .wm-explore-adv-title[data-wm-scope="climate"] { display: none; }
+    .wm-explore-snapshot { display: flex; gap: 6px; flex-wrap: wrap; }
     #exploreContextProgress.is-indeterminate #exploreContextProgressBar {
       width: 35% !important;
       animation: wm-explore-indeterminate 1.1s ease-in-out infinite;
@@ -3107,10 +3140,12 @@
       #exploreContextProgress.is-indeterminate #exploreContextProgressBar { animation: none; width: 100% !important; opacity: .45; }
     }
     body.wm-explore-overlay-stale .wm-strategic-heat { opacity: .35; transition: opacity .15s; }
+    .wm-prefs-time-button { min-height: 34px; font-size: 12px; font-weight: 750; }
+    .wm-prefs-time-button:focus-visible { outline: 2px solid rgba(14,165,233,0.45); outline-offset: 1px; }
     .wm-prefs-time-row[data-time-row="month"] .wm-prefs-time-button {
-      min-height: 26px;
-      padding: 0 1px;
-      font-size: 9px;
+      min-height: 34px;
+      padding: 0 2px;
+      font-size: 12px;
     }
     .wm-pref-action-btn {
       flex: 1 1 auto;
@@ -3968,7 +4003,7 @@
         </details>
 
         <details class="wm-section" id="wmSectionPrefs" open>
-          <summary>Preferences</summary>
+          <summary><span class="wm-mode-tour-only">Preferences</span><span class="wm-mode-climate-only">Explore Controls</span></summary>
           <div class="wm-section-body">
             <div id="settingsView" aria-label="Settings">
               <div class="wm-card wm-pref-card">
@@ -3981,10 +4016,6 @@
                   </div>
                   <div class="wm-pref-head-actions">
                     <button type="button" class="wm-pref-live" id="settingsLiveStatus" aria-live="polite" data-state="idle" aria-label="Live updates enabled" title="Live updates enabled" aria-pressed="true"><span class="wm-pref-live-ico" aria-hidden="true">&#9889;</span><span class="wm-pref-live-text">Live updates on</span></button>
-                    <div class="wm-pref-actions" aria-label="Saved settings actions">
-                      <button type="button" class="wm-pref-action-btn" id="settingsSave">Save Settings</button>
-                      <button type="button" class="wm-pref-action-btn" id="settingsLoad">Load Settings</button>
-                    </div>
                   </div>
                 </div>
                   <div class="wm-prefs-file-toolbar" aria-label="File actions">
@@ -4000,55 +4031,69 @@
                   </div>
                 </div>
 
-                <div id="wmPrefsContextSection" aria-label="Contextual controls">
-                  <div class="wm-prefs-time-grid" aria-label="Explore time selection">
-                    <div class="wm-prefs-time-row" data-time-row="year">
-                      <button type="button" class="wm-prefs-time-button is-active" data-time-kind="year" data-time-value="year">YEAR</button>
+                <div id="wmPrefsContextSection" class="wm-explore-controls" aria-label="Explore controls">
+                  <div class="wm-explore-group" data-explore-level="always">
+                    <div class="wm-explore-group-title">Period</div>
+                    <div class="wm-prefs-time-grid" role="group" aria-label="Explore time selection">
+                      <div class="wm-prefs-time-row" data-time-row="year">
+                        <button type="button" class="wm-prefs-time-button is-active" data-time-kind="year" data-time-value="year" aria-label="Whole year">Year</button>
+                      </div>
+                      <div class="wm-prefs-time-row" data-time-row="quarter">
+                        <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="1" aria-label="Quarter 1, January to March">Q1</button>
+                        <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="2" aria-label="Quarter 2, April to June">Q2</button>
+                        <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="3" aria-label="Quarter 3, July to September">Q3</button>
+                        <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="4" aria-label="Quarter 4, October to December">Q4</button>
+                      </div>
+                      <div class="wm-prefs-time-row" data-time-row="month">
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="1" aria-label="January">Jan</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="2" aria-label="February">Feb</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="3" aria-label="March">Mar</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="4" aria-label="April">Apr</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="5" aria-label="May">May</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="6" aria-label="June">Jun</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="7" aria-label="July">Jul</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="8" aria-label="August">Aug</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="9" aria-label="September">Sep</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="10" aria-label="October">Oct</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="11" aria-label="November">Nov</button>
+                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="12" aria-label="December">Dec</button>
+                      </div>
                     </div>
-                    <div class="wm-prefs-time-row" data-time-row="quarter">
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="1">Q1</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="2">Q2</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="3">Q3</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="4">Q4</button>
-                    </div>
-                    <div class="wm-prefs-time-row" data-time-row="month">
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="1">Jan</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="2">Feb</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="3">Mar</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="4">Apr</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="5">May</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="6">Jun</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="7">Jul</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="8">Aug</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="9">Sep</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="10">Oct</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="11">Nov</button>
-                      <button type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="12">Dec</button>
-                    </div>
-                  </div>
-                  <div class="wm-explore-overlay-controls" aria-label="Explore map overlay">
                     <label class="wm-explore-ctl" for="exploreOverlaySelect">
-                      <span class="wm-explore-ctl-name">Map overlay</span>
+                      <span class="wm-explore-group-title">Map overlay</span>
                       <select id="exploreOverlaySelect" class="wm-pref-select" aria-label="Explore map overlay">
                         <option value="temperature">Temperature</option>
                         <option value="precipitation">Precipitation</option>
-                        <option value="wind_absolute">Wind</option>
+                        <option value="wind_absolute">Wind (speed and dominant directions)</option>
                         <option value="none">None</option>
                       </select>
                     </label>
-                    <label class="wm-explore-ctl wm-explore-ctl-toggle" for="strategicWindOn">
-                      <span class="wm-explore-ctl-name">Wind field</span>
-                      <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind field" />
-                    </label>
-                    <div class="wm-explore-ctl wm-explore-ctl-years">
-                      <span class="wm-explore-ctl-name">Strategic years</span>
-                      <div id="setStrategicYears" class="wm-pref-years" aria-label="Strategic years"></div>
+                    <div class="wm-explore-status">
+                      <div id="exploreContextStatus" role="status" aria-live="polite" data-state="idle">No overlay loaded yet.</div>
+                      <div id="exploreContextProgress" role="progressbar" aria-label="Explore overlay calculation" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-state="idle">
+                        <div id="exploreContextProgressBar"></div>
+                      </div>
                     </div>
                   </div>
-                  <div id="exploreContextStatus" role="status" aria-live="polite" data-state="idle" style="font-size:10px;color:#64748b;margin-top:6px;">No overlay loaded yet.</div>
-                  <div id="exploreContextProgress" role="progressbar" aria-label="Explore overlay calculation" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-state="idle" style="height:6px;margin-top:5px;border-radius:999px;background:#e2e8f0;overflow:hidden;">
-                    <div id="exploreContextProgressBar" style="height:100%;width:0%;background:#0f766e;transition:width .18s linear;"></div>
-                  </div>
+
+                  <details class="wm-explore-group wm-explore-fold" id="exploreWhenNeeded" data-explore-level="when-needed" open>
+                    <summary>Layers and reference years</summary>
+                    <div class="wm-explore-fold-body">
+                      <div class="wm-explore-ctl">
+                        <span class="wm-explore-ctl-name">Reference years</span>
+                        <span class="wm-explore-ctl-note">Years averaged for the map. More years: steadier climate picture.</span>
+                        <div id="setStrategicYears" class="wm-pref-years" aria-label="Reference years"></div>
+                      </div>
+                      <label class="wm-explore-ctl wm-explore-ctl-toggle" for="strategicWindOn">
+                        <span class="wm-explore-ctl-copy">
+                          <span class="wm-explore-ctl-name">Wind field</span>
+                          <span class="wm-explore-ctl-note">Animated flow lines on top of any overlay. Independent of the Wind overlay.</span>
+                        </span>
+                        <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind field" />
+                      </label>
+                      <p class="wm-explore-ctl-note wm-explore-hint">Wind roses appear with the Wind overlay: arrows show where the wind pushes (downwind), at most two per place.</p>
+                    </div>
+                  </details>
                 </div>
 
                 <div id="wmPrefsAdvancedSection" aria-label="Advanced preferences">
@@ -4313,98 +4358,8 @@
                       <p class="wm-pref-section-note">Resolution, interpolation, basemap evaluation, and visual output controls.</p>
                     </div>
                     <div class="wm-pref-section-body">
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="setBasemap">
-                          <span class="wm-pref-name">Basemap</span>
-                          <span class="wm-pref-sub">Developer evaluation only. Changes apply immediately and stay in the current session.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <select id="setBasemap" class="wm-pref-select" aria-label="Basemap" title="Switch the Leaflet basemap for evaluation">
-                            <option value="osm-standard">OpenStreetMap Standard</option>
-                            <option value="carto-positron">CARTO Positron</option>
-                            <option value="opentopomap">OpenTopoMap</option>
-                            <option value="cyclosm">CyclOSM</option>
-                          </select>
-                        </div>
-                      </div>
 
-                      <div class="wm-pref-row">
-                        <div class="wm-pref-label">
-                          <span class="wm-pref-name">Developer Tools</span>
-                          <span class="wm-pref-sub">Engineering diagnostics and performance instrumentation. Hidden from normal workflows.</span>
-                        </div>
-                        <div class="wm-pref-control">
-                          <div class="wm-devtools-grid">
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Diagnostics</span>
-                                <span class="wm-devtools-item-note">Enable structured log console and live status bar.</span>
-                              </span>
-                              <input type="checkbox" id="devDiagnosticsEnabled" class="wm-toggle" aria-label="Diagnostics" />
-                            </label>
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Performance</span>
-                                <span class="wm-devtools-item-note">Enable timing measurements and performance summaries.</span>
-                              </span>
-                              <input type="checkbox" id="devPerformanceEnabled" class="wm-toggle" aria-label="Performance" checked />
-                            </label>
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Debug Overlay</span>
-                                <span class="wm-devtools-item-note">Placeholder for future map overlay diagnostics.</span>
-                              </span>
-                              <input type="checkbox" id="devDebugOverlayEnabled" class="wm-toggle" aria-label="Debug Overlay" disabled />
-                            </label>
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Weather Samples</span>
-                                <span class="wm-devtools-item-note">Placeholder for future sampling visualization.</span>
-                              </span>
-                              <input type="checkbox" id="devWeatherSamplesEnabled" class="wm-toggle" aria-label="Weather Samples" disabled />
-                            </label>
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Route Samples</span>
-                                <span class="wm-devtools-item-note">Placeholder for route point debug rendering.</span>
-                              </span>
-                              <input type="checkbox" id="devRouteSamplesEnabled" class="wm-toggle" aria-label="Route Samples" disabled />
-                            </label>
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Reverse Geocoding</span>
-                                <span class="wm-devtools-item-note">Placeholder for reverse-geocoder request traces.</span>
-                              </span>
-                              <input type="checkbox" id="devReverseGeoEnabled" class="wm-toggle" aria-label="Reverse Geocoding" disabled />
-                            </label>
-                            <label class="wm-devtools-item">
-                              <span class="wm-devtools-item-copy">
-                                <span class="wm-devtools-item-title">Cache Information</span>
-                                <span class="wm-devtools-item-note">Placeholder for cache internals and hit maps.</span>
-                              </span>
-                              <input type="checkbox" id="devCacheInfoEnabled" class="wm-toggle" aria-label="Cache Information" disabled />
-                            </label>
-                          </div>
-                        </div>
-                      </div>
 
-                      <div class="wm-pref-row" data-wm-scope="climate">
-                        <label class="wm-pref-label" for="setGridKm">
-                          <span class="wm-pref-name">Grid resolution</span>
-                          <span class="wm-pref-sub">Climate-map sampling spacing.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="neutral">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit grid resolution"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Grid resolution" />
-                              <input type="range" id="setGridKm" min="25" max="100" step="25" value="50" class="wm-slider-native" data-unit=" km" data-snap="int" aria-label="Grid resolution in kilometers" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
 
                       <div class="wm-pref-row" data-wm-scope="tour">
                         <label class="wm-pref-label" for="setStepKm">
@@ -4424,61 +4379,9 @@
                         </div>
                       </div>
 
-                      <div class="wm-pref-row" data-wm-scope="climate">
-                        <label class="wm-pref-label" for="setWindDensity">
-                          <span class="wm-pref-name">Wind density</span>
-                          <span class="wm-pref-sub">Density of rendered wind stream lines.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="wind">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit wind density"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Wind density" />
-                              <input type="range" id="setWindDensity" min="1" max="200" step="1" value="40" class="wm-slider-native" data-snap="int" aria-label="Wind density" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
 
-                      <div class="wm-pref-row" data-wm-scope="climate">
-                        <label class="wm-pref-label" for="setAnimSpeed">
-                          <span class="wm-pref-name">Animation speed</span>
-                          <span class="wm-pref-sub">Playback speed for animated wind visuals.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="wind">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit animation speed"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Animation speed" />
-                              <input type="range" id="setAnimSpeed" min="0.1" max="10" step="0.1" value="1.0" class="wm-slider-native" data-unit="x" data-decimals="1" aria-label="Animation speed" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
 
-                      <div class="wm-pref-row" data-wm-scope="climate">
-                        <div class="wm-pref-label">
-                          <span class="wm-pref-name">Interpolation</span>
-                          <span class="wm-pref-sub">Blend nearby climatic cells for smoother transitions.</span>
-                        </div>
-                        <div class="wm-pref-control wm-pref-toggle-wrap">
-                          <input type="checkbox" id="setInterpolation" class="wm-toggle" aria-label="Interpolation" />
-                        </div>
-                      </div>
 
-                      <div class="wm-pref-row" data-wm-scope="climate">
-                        <div class="wm-pref-label">
-                          <span class="wm-pref-name">Include sea areas</span>
-                          <span class="wm-pref-sub">Allow climatic interpolation over coastal water cells.</span>
-                        </div>
-                        <div class="wm-pref-control wm-pref-toggle-wrap">
-                          <input type="checkbox" id="setIncludeSea" class="wm-toggle" aria-label="Include sea areas" />
-                        </div>
-                      </div>
 
                       <div class="wm-pref-row" data-wm-scope="tour" style="display:none;" aria-hidden="true">
                         <label class="wm-pref-label" for="setOverlayMode">
@@ -4500,6 +4403,114 @@
                 </div>
                 </div>
               </div>
+
+                <details class="wm-explore-group wm-explore-fold" id="exploreAdvanced" data-explore-level="advanced">
+                  <summary>Advanced</summary>
+                  <div class="wm-explore-fold-body wm-explore-adv">
+                    <div class="wm-explore-adv-title" data-wm-scope="climate">Wind field look</div>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <label class="wm-pref-label" for="setWindDensity">
+                          <span class="wm-pref-name">Wind density</span>
+                          <span class="wm-pref-sub">Density of rendered wind stream lines.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="wind">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit wind density"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Wind density" />
+                              <input type="range" id="setWindDensity" min="1" max="200" step="1" value="40" class="wm-slider-native" data-snap="int" aria-label="Wind density" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <label class="wm-pref-label" for="setAnimSpeed">
+                          <span class="wm-pref-name">Animation speed</span>
+                          <span class="wm-pref-sub">Playback speed for animated wind visuals.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="wind">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit animation speed"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Animation speed" />
+                              <input type="range" id="setAnimSpeed" min="0.1" max="10" step="0.1" value="1.0" class="wm-slider-native" data-unit="x" data-decimals="1" aria-label="Animation speed" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    <div class="wm-explore-adv-title" data-wm-scope="climate">Map drawing</div>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Interpolation</span>
+                          <span class="wm-pref-sub">Blend nearby climatic cells for smoother transitions.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="setInterpolation" class="wm-toggle" aria-label="Interpolation" />
+                        </div>
+                      </div>
+                      <div class="wm-pref-row" data-wm-scope="climate">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Include sea areas</span>
+                          <span class="wm-pref-sub">Allow climatic interpolation over coastal water cells.</span>
+                        </div>
+                        <div class="wm-pref-control wm-pref-toggle-wrap">
+                          <input type="checkbox" id="setIncludeSea" class="wm-toggle" aria-label="Include sea areas" />
+                        </div>
+                      </div>
+                      <div class="wm-pref-row">
+                        <label class="wm-pref-label" for="setBasemap">
+                          <span class="wm-pref-name">Basemap</span>
+                          <span class="wm-pref-sub">Developer evaluation only. Changes apply immediately and stay in the current session.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <select id="setBasemap" class="wm-pref-select" aria-label="Basemap" title="Switch the Leaflet basemap for evaluation">
+                            <option value="osm-standard">OpenStreetMap Standard</option>
+                            <option value="carto-positron">CARTO Positron</option>
+                            <option value="opentopomap">OpenTopoMap</option>
+                            <option value="cyclosm">CyclOSM</option>
+                          </select>
+                        </div>
+                      </div>
+                    <div class="wm-pref-row">
+                      <div class="wm-pref-label">
+                        <span class="wm-pref-name">Settings snapshot</span>
+                        <span class="wm-pref-sub">All changes are saved automatically. A snapshot keeps one set you can restore later.</span>
+                      </div>
+                      <div class="wm-pref-control wm-explore-snapshot">
+                        <button type="button" class="wm-pref-action-btn" id="settingsSave">Save snapshot</button>
+                        <button type="button" class="wm-pref-action-btn" id="settingsLoad">Restore snapshot</button>
+                      </div>
+                    </div>
+                      <div class="wm-pref-row">
+                        <div class="wm-pref-label">
+                          <span class="wm-pref-name">Developer Tools</span>
+                          <span class="wm-pref-sub">Engineering diagnostics and performance instrumentation. Hidden from normal workflows.</span>
+                        </div>
+                        <div class="wm-pref-control">
+                          <div class="wm-devtools-grid">
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Diagnostics</span>
+                                <span class="wm-devtools-item-note">Enable structured log console and live status bar.</span>
+                              </span>
+                              <input type="checkbox" id="devDiagnosticsEnabled" class="wm-toggle" aria-label="Diagnostics" />
+                            </label>
+                            <label class="wm-devtools-item">
+                              <span class="wm-devtools-item-copy">
+                                <span class="wm-devtools-item-title">Performance</span>
+                                <span class="wm-devtools-item-note">Enable timing measurements and performance summaries.</span>
+                              </span>
+                              <input type="checkbox" id="devPerformanceEnabled" class="wm-toggle" aria-label="Performance" checked />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                  </div>
+                </details>
             </div>
           </div>
         </details>
