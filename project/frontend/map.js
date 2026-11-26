@@ -20148,49 +20148,85 @@
     // choice is stable while panning. Sea roses only fill the gaps between land roses.
     cands.sort((a, b) => ((b.land ? 1 : 0) - (a.land ? 1 : 0)) || (b.score - a.score) || (a.lat - b.lat) || (a.lon - b.lon));
     const out = [];
+    // Land roses may use the adaptive spacing (one per tile when zoomed in); sea roses
+    // keep the full 220 px among themselves so offshore symbols never dominate.
     const spacing = _windRoseMinSpacingPx(resp && resp.tile_km);
     const d2 = spacing * spacing;
+    const seaD2 = WIND_ROSE_MIN_SPACING_PX * WIND_ROSE_MIN_SPACING_PX;
     for (const c of cands) {
       if (out.length >= WIND_ROSE_MAX) break;
-      if (out.every((o) => ((o.x - c.x) * (o.x - c.x) + (o.y - c.y) * (o.y - c.y)) >= d2)) out.push(c);
+      const ok = out.every((o) => {
+        const dd = (o.x - c.x) * (o.x - c.x) + (o.y - c.y) * (o.y - c.y);
+        return dd >= ((!c.land && !o.land) ? seaD2 : d2);
+      });
+      if (ok) out.push(c);
     }
     EXPLORE_DIAG.roseSpacingPx = spacing;
+    EXPLORE_DIAG.roseSeaSpacingPx = WIND_ROSE_MIN_SPACING_PX;
     return out;
   }
 
-  function _drawWindArrow(ctx, x, y, toDeg, len, width, alpha) {
-    const a = Number(toDeg) * Math.PI / 180;         // compass bearing: 0 = north, 90 = east
-    const dx = Math.sin(a);
-    const dy = -Math.cos(a);
-    const x1 = x + dx * len;
-    const y1 = y + dy * len;
-    const head = 4 + width * 1.6;
-    const px = -dy;
-    const py = dx;
-    const path = () => {
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x1 - dx * head * 0.6, y1 - dy * head * 0.6);
-    };
-    const tip = () => {
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x1 - dx * head + px * head * 0.55, y1 - dy * head + py * head * 0.55);
-      ctx.lineTo(x1 - dx * head - px * head * 0.55, y1 - dy * head - py * head * 0.55);
-      ctx.closePath();
-    };
+  // Arrow style (Touracle concepts B + E): one tapered, slightly organic arrow shape.
+  // Primary direction: deep indigo, long and broad. Secondary: the same shape in a
+  // lighter steel blue, visibly shorter and thinner. Length and weight grow with the
+  // direction's share. A very light bluish halo behind the arrows aids readability.
+  const WIND_ARROW_STYLE = {
+    primary: { len0: 22, lenK: 30, width: 10, rgb: [39, 55, 143], alpha: 0.95, edge: 0.8 },
+    secondary: { len0: 15, lenK: 22, width: 6.5, rgb: [56, 128, 196], alpha: 0.9, edge: 0.75 },
+  };
+
+  function _drawWindArrow(ctx, x, y, toDeg, len, width, rgb, alpha, edgeAlpha) {
+    // Tapered arrow from (x, y) towards toDeg (compass bearing: 0 = north, 90 = east).
+    const a = Number(toDeg) * Math.PI / 180;
+    const ux = Math.sin(a);
+    const uy = -Math.cos(a);
+    const px = -uy;                              // perpendicular
+    const py = ux;
+    const P = (along, side) => [x + ux * along + px * side, y + uy * along + py * side];
+    const headLen = Math.min(len * 0.42, width * 1.55);
+    const neck = len - headLen;                  // where the head starts
+    const tailW = width * 0.07;
+    const neckW = width * 0.27;
+    const barbW = width * 0.56;
     ctx.save();
-    ctx.lineCap = 'round';
-    ctx.globalAlpha = alpha;
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';      // halo for any basemap
-    ctx.lineWidth = width + 3;
-    path(); ctx.stroke();
-    tip(); ctx.lineWidth = 3; ctx.stroke();
-    ctx.strokeStyle = '#1e293b';
-    ctx.fillStyle = '#1e293b';
-    ctx.lineWidth = width;
-    path(); ctx.stroke();
-    tip(); ctx.fill();
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let q = P(0, tailW); ctx.moveTo(q[0], q[1]);
+    // shaft widens gently (slightly convex sides) towards the head
+    let c = P(neck * 0.55, neckW * 0.85); q = P(neck, neckW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
+    // swept-back barb, curved flank to the tip
+    q = P(neck - headLen * 0.22, barbW); ctx.lineTo(q[0], q[1]);
+    c = P(neck + headLen * 0.55, barbW * 0.62); q = P(len, 0); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
+    c = P(neck + headLen * 0.55, -barbW * 0.62); q = P(neck - headLen * 0.22, -barbW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
+    q = P(neck, -neckW); ctx.lineTo(q[0], q[1]);
+    c = P(neck * 0.55, -neckW * 0.85); q = P(0, -tailW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
+    // rounded tail
+    c = P(-tailW * 1.6, 0); q = P(0, tailW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
+    ctx.closePath();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = `rgba(255,255,255,${edgeAlpha})`;   // thin light edge for dark/sea basemaps
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function _windArrowLen(style, share) {
+    return style.len0 + style.lenK * Math.max(0, Math.min(1, Number(share) || 0));
+  }
+
+  function _drawWindRoseHalo(ctx, x, y, r) {
+    // Very light, soft-edged bluish disc: readability only, no marker or button look.
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, 'rgba(240,243,255,0.5)');
+    g.addColorStop(0.65, 'rgba(234,238,253,0.3)');
+    g.addColorStop(1, 'rgba(232,236,252,0)');
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -20198,21 +20234,27 @@
     // Reusable on top of any overlay; Phase 3 draws it with the Wind overlay only.
     const roses = _selectWindRoses(resp, w, h);
     for (const r of roses) {
-      r.modes.forEach((m, i) => {
+      const arrows = r.modes.map((m, i) => {
+        const st = i === 0 ? WIND_ARROW_STYLE.primary : WIND_ARROW_STYLE.secondary;
         const share = Math.max(0, Math.min(1, Number(m.share) || 0));
-        const len = 14 + 30 * share;
-        _drawWindArrow(ctx, r.x, r.y, Number(m.to_deg), len, i === 0 ? 3.2 : 2, i === 0 ? 0.9 : 0.55);
+        const a = Number(m.to_deg) * Math.PI / 180;
+        return { st, deg: Number(m.to_deg), len: _windArrowLen(st, share), width: st.width * (0.85 + 0.3 * share),
+          ux: Math.sin(a), uy: -Math.cos(a) };
       });
-      ctx.save();
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = '#1e293b';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(r.x, r.y, 3.2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+      // Halo centred on the arrows (not on their origin), as in the reference concepts.
+      let hx = 0, hy = 0, wsum = 0;
+      for (const [i, ar] of arrows.entries()) {
+        const wt = i === 0 ? 2 : 1;
+        hx += wt * (r.x + ar.ux * ar.len * 0.5); hy += wt * (r.y + ar.uy * ar.len * 0.5); wsum += wt;
+      }
+      hx /= wsum; hy /= wsum;
+      const hr = Math.max(...arrows.map((ar) => Math.hypot(r.x + ar.ux * ar.len - hx, r.y + ar.uy * ar.len - hy)),
+        Math.hypot(r.x - hx, r.y - hy)) + 7;
+      _drawWindRoseHalo(ctx, hx, hy, hr);
+      // secondary first so the primary sits on top where they meet
+      for (const ar of arrows.slice().reverse()) {
+        _drawWindArrow(ctx, r.x, r.y, ar.deg, ar.len, ar.width, ar.st.rgb, ar.st.alpha, ar.st.edge);
+      }
     }
     EXPLORE_DIAG.roses = roses.map((r) => ({ lat: r.lat, lon: r.lon, x: r.x, y: r.y, land: r.land,
       modes: r.modes.map((m) => ({ from_deg: m.from_deg, to_deg: m.to_deg, share: m.share, mean_speed_ms: m.mean_speed_ms })) }));
@@ -20237,13 +20279,14 @@
       Boolean(STRATEGIC_STATE.windOn), view, settings].join('|');
   }
 
-  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [], roseSpacingPx: null };
+  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [], roseSpacingPx: null, roseSeaSpacingPx: null };
   try {
     window.__WM_EXPLORE_DIAG__ = Object.defineProperties({}, {
       renders: { get: () => EXPLORE_DIAG.renders },
       lastRenderMs: { get: () => EXPLORE_DIAG.lastRenderMs },
       roses: { get: () => EXPLORE_DIAG.roses.slice() },
       roseSpacingPx: { get: () => EXPLORE_DIAG.roseSpacingPx },
+      roseSeaSpacingPx: { get: () => EXPLORE_DIAG.roseSeaSpacingPx },
       sampleAt: { value: (lat, lon) => _strategicSampleAt(Number(lat), Number(lon)) },
     });
   } catch (_) {}

@@ -515,9 +515,37 @@ def test_wind_rose_arrows_are_drawn_downwind_on_the_map(explore):
         const at = (dx, dy) => Array.from(ctx.getImageData(Math.round((x + dx) * k), Math.round((y + dy) * k), 1, 1).data);
         const s = Math.SQRT1_2 * 14;
         return { downwind: at(s, s), upwind: at(-s, -s) }; }""", [r['x'], r['y']])
-    is_dark = lambda px: px[3] > 150 and max(px[:3]) < 110
-    assert is_dark(dark['downwind']), dark            # arrow body towards SE (screen +x, +y)
-    assert not is_dark(dark['upwind']), dark          # nothing towards NW
+    assert is_primary_ink(dark['downwind']), dark     # arrow body towards SE (screen +x, +y)
+    assert not is_primary_ink(dark['upwind']), dark   # nothing towards NW
+
+
+def is_primary_ink(px):            # deep indigo primary arrow
+    return px[3] > 150 and px[0] < 90 and px[2] - px[0] > 60 and px[2] < 190
+
+
+def is_secondary_ink(px):          # lighter steel-blue secondary arrow
+    return px[3] > 150 and 30 <= px[0] < 140 and px[2] > 170 and px[2] - px[0] > 60
+
+
+def canvas_px(page, x, y):
+    return page.evaluate("""([x, y]) => { const c = document.querySelector('.wm-strategic-heat canvas');
+        const k = c.width / c.clientWidth;
+        return Array.from(c.getContext('2d').getImageData(Math.round(x * k), Math.round(y * k), 1, 1).data); }""", [x, y])
+
+
+def test_secondary_arrow_is_lighter_and_shorter_than_the_primary(explore):
+    page = explore()
+    wait_ready(page)
+    roses = show_wind(page)
+    r = next(r for r in roses if 5 <= r['lon'] < 15)     # primary pushes S, secondary pushes E
+    prim = [canvas_px(page, r['x'], r['y'] + d) for d in (12, 22)]
+    sec = [canvas_px(page, r['x'] + d, r['y']) for d in (8, 14)]
+    assert all(is_primary_ink(px) for px in prim), prim
+    assert all(is_secondary_ink(px) for px in sec), sec
+    # length: primary still drawn where the secondary has already ended
+    p_len = max(d for d in range(4, 70) if is_primary_ink(canvas_px(page, r['x'], r['y'] + d)))
+    s_len = max(d for d in range(4, 70) if is_secondary_ink(canvas_px(page, r['x'] + d, r['y'])))
+    assert s_len < 0.8 * p_len, (p_len, s_len)
 
 
 def test_germany_at_country_zoom_shows_at_most_five_roses(explore):
@@ -579,6 +607,8 @@ def test_neighbouring_land_tiles_both_get_a_rose_at_zoom_9(explore):
     assert len(island) == 2 and all(r['land'] for r in island), roses
     assert all(30 <= r['modes'][0]['to_deg'] <= 60 for r in island), island
     assert min_gap(roses) >= spacing - 1                                          # one rose per tile, no overlap
+    assert min_gap([r for r in roses if not r['land']]) >= 219                    # sea roses stay sparse
+    assert page.evaluate("window.__WM_EXPLORE_DIAG__.roseSeaSpacingPx") == 220
     assert len(roses) <= 14
 
 
