@@ -56,13 +56,15 @@ def test_explore_climate_request_key_no_longer_depends_on_map_period_controls():
     assert "_scheduleClimateProfileForPoint(CLIMATE_PROFILE_STATE.selectedPoint, { force: true });" not in source
 
 
-def test_strategic_grid_429_has_single_delayed_retry():
+def test_strategic_grid_429_is_retried_while_the_request_is_current():
+    # Phase 2: a single retry gave up while the server was still busy with the page's
+    # own earlier request (no overlay after start). Behaviour is covered by
+    # regression/test_explore_overlays.py (initial load, busy server).
     source = _source()
-    assert "async function _strategicFetchJsonWithSingleBusyRetry" in source
-    assert "resp.status === 429" in source
+    assert "async function _strategicFetchBusyAware" in source
+    assert "resp.status !== 429" in source[source.find("async function _strategicFetchBusyAware"):]
     assert "StrategicGridBusyError" in source
-    assert "resp.status === 429" in source[source.find("async function _strategicFetchJsonWithSingleBusyRetry"):]
-    assert "requestSerial" in source
+    assert "async function _strategicRequestGrid" in source
     assert "_prefetchStrategicNeighbor" in source
 
 
@@ -124,7 +126,10 @@ def test_explore_uses_24h_only_and_preferences_overlay_control():
     assert 'id="setActiveHourStart"' not in html
     assert 'id="setActiveHourEnd"' not in html
     assert "return 'full_day';" in source
-    assert "const directPoints = Array.isArray(tileMap.__points)" in source
+    # Phase 2: the per-pixel nearest-point search was replaced by an indexed bilinear
+    # lookup (performance and correctness: regression/test_explore_overlays.py).
+    assert "const directPoints = Array.isArray(tileMap.__points)" not in source
+    assert "m.__byRC = byRC;" in source
     assert "_strategicSelectionIdentity()" in source
 
 
