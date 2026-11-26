@@ -7651,6 +7651,17 @@
     return `M ${x0.toFixed(2)} ${y0.toFixed(2)} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r1.toFixed(2)} ${r1.toFixed(2)} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${x3.toFixed(2)} ${y3.toFixed(2)} A ${r0.toFixed(2)} ${r0.toFixed(2)} 0 ${largeArc} 0 ${x0.toFixed(2)} ${y0.toFixed(2)} Z`;
   }
 
+  // Touracle wind roses show where the wind pushes TOWARDS (downwind). The backend
+  // sectors are meteorological (FROM); every drawn angle and label is rotated by 180°.
+  const WIND_SECTOR_LABELS_16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  function _downwindDeg(fromDeg) {
+    return (((Number(fromDeg) + 180) % 360) + 360) % 360;
+  }
+  function _downwindSectorLabel(fromLabel) {
+    const i = WIND_SECTOR_LABELS_16.indexOf(String(fromLabel || ''));
+    return i < 0 ? String(fromLabel || '') : WIND_SECTOR_LABELS_16[(i + 8) % 16];
+  }
+
   function _climateWindMonthRoseMarkup(monthData) {
     const monthLabels = _climateExploreMonthLabels();
     const monthIdx = Math.max(1, Math.min(12, Number(monthData && monthData.month) || 1)) - 1;
@@ -7678,8 +7689,8 @@
     for (const sector of sectors) {
       const pctTotal = Number(sector && sector.pct_total);
       if (!Number.isFinite(pctTotal) || pctTotal <= 0) continue;
-      const start = Number(sector.start_deg);
-      const end = Number(sector.end_deg);
+      const start = _downwindDeg(sector.start_deg);
+      const end = _downwindDeg(sector.end_deg);
       const clipped = pctTotal > CLIMATE_WIND_ROSE_RADIAL_MAX_PCT;
       let r0 = 0;
       const speedClasses = Array.isArray(sector.speed_classes) ? sector.speed_classes : [];
@@ -7704,7 +7715,8 @@
           return `${label}: ${Number.isFinite(c) ? c : 0}${Number.isFinite(p) ? ` (${fmt(p, 1)}%)` : ''}`;
         }).join('\n');
         const count = Number(sector && sector.count);
-        const sectorLabel = String(sector && sector.label || '');
+        const fromLabel = String(sector && sector.label || '');
+        const sectorLabel = `wind pushes towards ${_downwindSectorLabel(fromLabel)} (from ${fromLabel})`;
         const clipText = clipped ? `\nVisual scale clipped at ${CLIMATE_WIND_ROSE_RADIAL_MAX_PCT}%` : '';
         overlays.push(`<path d="${overlayPath}" fill="rgba(255,255,255,0.001)" stroke="none">
             <title>${monthLabel} • ${sectorLabel}\nDirectional frequency: ${fmt(pctTotal, 1)}% (${Number.isFinite(count) ? count : 0}/${Number.isFinite(totalValid) ? totalValid : 0})\nSpeed distribution within sector:\n${speedDistText}\nCalm: ${Number.isFinite(Number(calmPct)) ? `${fmt(Number(calmPct), 1)}%` : '—'}${clipText}</title>
@@ -7714,8 +7726,8 @@
     let dominantMarker = '';
     if (dominantSector && Number(maxCount) > 0) {
       const domPct = Number(dominantSector.pct_total);
-      const domStart = Number(dominantSector.start_deg);
-      const domEnd = Number(dominantSector.end_deg);
+      const domStart = _downwindDeg(dominantSector.start_deg);
+      const domEnd = _downwindDeg(dominantSector.end_deg);
       const domMid = (domStart <= domEnd) ? (domStart + domEnd) * 0.5 : (((domStart + (domEnd + 360)) * 0.5) % 360);
       const domRatio = Math.min(1, Math.max(0, domPct / CLIMATE_WIND_ROSE_RADIAL_MAX_PCT));
       const domLen = rMax * domRatio;
@@ -7723,19 +7735,20 @@
       const rad = ((domMid - 90) * Math.PI) / 180;
       const x2 = cx + (domLen + 2) * Math.cos(rad);
       const y2 = cy + (domLen + 2) * Math.sin(rad);
-      dominantMarker = `<g class="wm-climate-wind-dominant-marker" data-dominant-sector="${_htmlEsc(String(dominantSector.label || ''))}" data-dominant-share-pct="${Number.isFinite(domPct) ? fmt(domPct, 1) : ''}">
+      dominantMarker = `<g class="wm-climate-wind-dominant-marker" data-dominant-sector="${_htmlEsc(_downwindSectorLabel(dominantSector.label))}" data-dominant-share-pct="${Number.isFinite(domPct) ? fmt(domPct, 1) : ''}">
         <line x1="${cx}" y1="${cy}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" stroke="${domColor}" stroke-width="2.1" stroke-linecap="round" opacity="0.88"></line>
         <circle cx="${x2.toFixed(2)}" cy="${y2.toFixed(2)}" r="1.8" fill="${domColor}" opacity="0.92"></circle>
       </g>`;
     }
-    const dominantSectorLabel = String((dominantSector && dominantSector.label) || '');
+    const dominantSectorLabel = _downwindSectorLabel((dominantSector && dominantSector.label) || '');
     const dominantPct = Number(dominantSector && dominantSector.pct_total);
     const roseClipped = sectors.some((s) => Number(s && s.pct_total) > CLIMATE_WIND_ROSE_RADIAL_MAX_PCT);
     return `
       <div class="wm-climate-wind-rose-card">
         <div class="wm-climate-wind-rose-label">${monthLabel}</div>
-        <svg class="wm-climate-wind-rose-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${monthLabel} wind rose"
+        <svg class="wm-climate-wind-rose-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${monthLabel} wind rose, direction the wind pushes towards"
              data-radial-max-pct="${CLIMATE_WIND_ROSE_RADIAL_MAX_PCT}"
+             data-direction-convention="downwind"
              data-dominant-sector="${_htmlEsc(dominantSectorLabel)}"
              data-dominant-share-pct="${Number.isFinite(dominantPct) ? fmt(dominantPct, 1) : ''}"
              data-clipped="${roseClipped ? 'true' : 'false'}">
@@ -7758,7 +7771,7 @@
     if (!windMonths.length) return '<div class="wm-climate-monthly-chart-note">No wind climatology data available.</div>';
     const roses = windMonths.slice(0, 12).map((m) => _climateWindMonthRoseMarkup(m)).join('');
     return `
-      <div class="wm-climate-wind-meta">Daily dominant wind direction / daily mean wind speed</div>
+      <div class="wm-climate-wind-meta">Wind pushes towards (downwind), from daily dominant directions; colour = daily mean speed</div>
       <div class="wm-climate-wind-legend">
         <span><i style="background:${_climateWindSpeedClassFill('0.5-<2')}"></i>0.5–&lt;2</span>
         <span><i style="background:${_climateWindSpeedClassFill('2-<5')}"></i>2–&lt;5</span>

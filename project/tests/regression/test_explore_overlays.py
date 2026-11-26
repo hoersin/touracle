@@ -565,3 +565,22 @@ def test_wind_legend_says_where_the_wind_pushes(explore):
     show_wind(page)
     text = page.evaluate("() => document.querySelector('.wm-map-legend').innerText")
     assert 'pushes towards' in text.lower(), text
+
+
+def test_climate_profile_wind_roses_show_downwind(explore, monkeypatch, tmp_path):
+    """Profile roses (12 months) follow the same rule: wind from W is drawn pushing towards E."""
+    import test_offline_tile_lookup as tl
+    srv = explore.srv
+    stores = {y: tl.make_store(tmp_path / f'offline_weather_{y}.sqlite', y, tl.NEAR_B) for y in (2025, 2024, 2023)}
+    monkeypatch.setattr(srv.module, '_resolve_complete_reference_years', lambda n=3: ([2025, 2024, 2023][:n], []))
+    monkeypatch.setattr(srv.module, '_resolve_offline_store_for_year', lambda y, **k: stores.get(int(y)))
+    page = explore()
+    page.wait_for_function("() => document.querySelectorAll('.wm-climate-wind-rose-svg').length === 12", timeout=20000)
+    roses = page.evaluate("""() => [...document.querySelectorAll('.wm-climate-wind-rose-svg')].map(s => {
+        const l = s.querySelector('.wm-climate-wind-dominant-marker line');
+        return { conv: s.dataset.directionConvention, dom: s.dataset.dominantSector,
+                 dx: Number(l.getAttribute('x2')) - Number(l.getAttribute('x1')), dy: Number(l.getAttribute('y2')) - Number(l.getAttribute('y1')) }; })""")
+    assert all(r['conv'] == 'downwind' and r['dom'] == 'E' for r in roses), roses
+    assert all(r['dx'] > 5 and abs(r['dy']) < 1 for r in roses), roses          # marker points east
+    meta = page.evaluate("() => document.querySelector('.wm-climate-wind-meta').textContent")
+    assert 'pushes towards' in meta
