@@ -295,6 +295,30 @@
 
   // Settings controls live in several sidebar zones; each settings block is marked
   // .wm-settings-scope (sliders, live apply). Queries cover all of them.
+  // i18n: all UI text through t(key, params); resources in frontend/i18n/*.js (English = reference).
+  const i18nT = (key, params) => {
+    try { return window.WM_I18N ? window.WM_I18N.t(key, params) : String(key); } catch (_) { return String(key); }
+  };
+  const fmtN = (v, digits = 0) => {
+    try { return window.WM_I18N ? window.WM_I18N.formatNumber(v, digits) : Number(v).toFixed(digits); } catch (_) { return String(v); }
+  };
+  const _fmtLocaleDate = (iso) => {
+    try { return window.WM_I18N ? window.WM_I18N.formatDate(iso) : String(iso || ''); } catch (_) { return String(iso || ''); }
+  };
+  // A status message that renders itself in the current language; setters keep
+  // key + params on the element so a language switch re-renders visible statuses.
+  const i18nMsg = (key, params) => ({ key, params, toString() { return i18nT(key, params); } });
+  function _setI18nText(el, msg) {
+    if (!el) return;
+    el.textContent = String(msg == null ? '' : msg);
+    if (msg && typeof msg === 'object' && msg.key) el.dataset.i18nDyn = JSON.stringify({ k: msg.key, p: msg.params || null });
+    else delete el.dataset.i18nDyn;
+  }
+  function _rerenderI18nTexts() {
+    for (const el of document.querySelectorAll('[data-i18n-dyn]')) {
+      try { const m = JSON.parse(el.dataset.i18nDyn); el.textContent = i18nT(m.k, m.p || undefined); } catch (_) {}
+    }
+  }
   const settingsView = {
     querySelectorAll: (sel) => {
       const out = [];
@@ -1047,7 +1071,7 @@
   function _overnightSetStatus(message, kind = 'info') {
     try {
       if (!overnightStatusEl) return;
-      overnightStatusEl.textContent = String(message || '');
+      _setI18nText(overnightStatusEl, message || '');
       overnightStatusEl.style.color = kind === 'error' ? '#b91c1c' : '#475569';
     } catch (_) {}
   }
@@ -1066,6 +1090,7 @@
           loading: progressEl ? progressEl.classList.contains('loading') : false,
           progressText: progressPercentEl ? String(progressPercentEl.textContent || '') : '',
           statusText: sseStatus ? String(sseStatus.textContent || '') : '',
+          statusI18n: sseStatus ? (sseStatus.dataset.i18nDyn || '') : '',
         };
         setProgressIndeterminate(true);
         if (progressEl) progressEl.classList.remove('wm-overnight-bounce');
@@ -1075,7 +1100,7 @@
         if (progressEl) progressEl.classList.remove('loading');
         if (progressBar) progressBar.style.width = '0%';
         if (progressPercentEl) progressPercentEl.textContent = '0% (0/0 successful)';
-        if (sseStatus) sseStatus.textContent = 'Overnight search: querying OpenStreetMap…';
+        if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.overnightSearchQueryingOpenstreetmap'));
       } else {
         if (OVERNIGHT_PROGRESS_TICK) clearInterval(OVERNIGHT_PROGRESS_TICK);
         OVERNIGHT_PROGRESS_TICK = 0;
@@ -1086,7 +1111,10 @@
           if (progressBar) progressBar.style.width = String(OVERNIGHT_PROGRESS_SNAPSHOT.width || '');
           if (progressEl) progressEl.classList.toggle('loading', !!OVERNIGHT_PROGRESS_SNAPSHOT.loading);
           if (progressPercentEl) progressPercentEl.textContent = String(OVERNIGHT_PROGRESS_SNAPSHOT.progressText || '');
-          if (sseStatus) sseStatus.textContent = String(OVERNIGHT_PROGRESS_SNAPSHOT.statusText || '');
+          if (sseStatus) {
+            _setI18nText(sseStatus, OVERNIGHT_PROGRESS_SNAPSHOT.statusText || '');
+            if (OVERNIGHT_PROGRESS_SNAPSHOT.statusI18n) { sseStatus.dataset.i18nDyn = OVERNIGHT_PROGRESS_SNAPSHOT.statusI18n; _rerenderI18nTexts(); }
+          }
         }
         OVERNIGHT_PROGRESS_SNAPSHOT = null;
         _overnightUpdateSearchButtonState();
@@ -1105,7 +1133,7 @@
       if (progressEl) progressEl.classList.remove('loading', 'wm-overnight-bounce');
       if (progressBar) progressBar.style.width = `${pct}%`;
       if (progressPercentEl) progressPercentEl.textContent = `${done}/${total} zones • ${ok} ok • ${found} found`;
-      if (sseStatus) sseStatus.textContent = `Overnight search: queried ${done}/${total} zones (${ok} successful, ${found} found)`;
+      if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.overnightSearchQueriedZonesSuccessfulFound', { done, total, ok, found }));
     } catch (_) {}
   }
 
@@ -2132,7 +2160,7 @@
         saveBtn.addEventListener('click', () => {
           const stageValue = String(getField('stage') && getField('stage').value || '');
           if (!stageValue) {
-            _overnightSetStatus('Please choose a tour day.', 'error');
+            _overnightSetStatus(i18nMsg('status.overnight.pleaseChooseATourDay'), 'error');
             return;
           }
           const originalType = String(editor && editor.getAttribute('data-overnight-original-type') || stop && stop.type || 'other');
@@ -2155,7 +2183,7 @@
             linkedStageId: stageValue,
             source: String(stop && stop.source || (persisted ? 'manual' : 'osm')),
           }, { removeDiscovered: !persisted });
-          _overnightSetStatus('Overnight option saved.');
+          _overnightSetStatus(i18nMsg('status.overnight.overnightOptionSaved'));
           _closeOvernightEditorOverlay();
         });
       }
@@ -2405,18 +2433,18 @@
   async function _runOvernightDiscovery() {
     try {
       if (!_hasActiveGpxSelection()) {
-        _overnightSetStatus('Load a GPX route first.', 'error');
+        _overnightSetStatus(i18nMsg('status.overnight.loadAGpxRouteFirst'), 'error');
         return;
       }
       _overnightRefreshPlanningZones();
       const selectedCategories = Array.from(OVERNIGHT_SEARCH_CATEGORIES_SELECTED);
       if (!selectedCategories.length) {
-        _overnightSetStatus('Select at least one accommodation category.', 'error');
+        _overnightSetStatus(i18nMsg('status.overnight.selectAtLeastOneAccommodationCategory'), 'error');
         return;
       }
       const zones = Array.isArray(OVERNIGHT_VISIBLE_ZONES) ? OVERNIGHT_VISIBLE_ZONES.slice() : [];
       if (!zones.length) {
-        _overnightSetStatus('No stage arrivals or tour start in current map view. Zoom out or move the map to include one.', 'error');
+        _overnightSetStatus(i18nMsg('status.overnight.noStageArrivalsOrTourStart'), 'error');
         return;
       }
       const zoneKey = _overnightZonesKey(zones);
@@ -2426,8 +2454,8 @@
         const filtered = _overnightFilteredDiscoveredItems();
         _overnightSetStatus(
           OVERNIGHT_DISCOVERED.length
-            ? `Loaded ${filtered.length}/${OVERNIGHT_DISCOVERED.length} cached accommodation candidates.`
-            : 'No cached accommodation candidates found for current stage arrivals.',
+            ? i18nMsg('status.overnight.loadedCached', { shown: filtered.length, total: OVERNIGHT_DISCOVERED.length })
+            : i18nMsg('status.overnight.noCached'),
         );
         try {
           console.info('[OvernightDiscovery] cache hit', {
@@ -2457,7 +2485,7 @@
         console.info('cacheKey', cacheKey);
       } catch (_) {}
       _overnightSetBusySharedProgress(true, 'Searching accommodations…');
-      _overnightSetStatus(`Searching ${zones.length} tour stage${zones.length === 1 ? '' : 's'}…`);
+      _overnightSetStatus(i18nMsg(zones.length === 1 ? 'status.overnight.searchingOne' : 'status.overnight.searchingMany', { count: zones.length }));
       const byOsmKey = new Map();
       const warnings = [];
       const maxCandidatesPerZone = 80;
@@ -2575,18 +2603,18 @@
       };
       const filteredItems = _overnightFilteredDiscoveredItems();
       if (warnings.length) {
-        _overnightSetStatus(`Overnight search degraded: ${warnings[0]}`);
+        _overnightSetStatus(i18nMsg('status.overnight.overnightSearchDegraded', { v1: warnings[0] }));
       } else {
         _overnightSetStatus(
           items.length
-            ? `Found ${filteredItems.length}/${items.length} accommodation candidates (© OpenStreetMap contributors).`
-            : 'No accommodation candidates found for visible stage arrivals.',
+            ? i18nMsg('status.overnight.found', { shown: filteredItems.length, total: items.length })
+            : i18nMsg('status.overnight.noneFound'),
         );
       }
       _renderOvernightPlanner();
     } catch (e) {
       try { console.error('[OvernightDiscovery] failed', e); } catch (_) {}
-      _overnightSetStatus(`Overnight search failed: ${e && e.message ? e.message : e}`, 'error');
+      _overnightSetStatus(i18nMsg('status.overnight.failed', { error: e && e.message ? e.message : e }), 'error');
     } finally {
       try { console.groupEnd(); } catch (_) {}
       _overnightSetBusySharedProgress(false);
@@ -2812,8 +2840,9 @@
       const fallbackName = String(nameHint || '').trim();
       ACTIVE_TOUR_PLAN_FILE_NAME = handle && typeof handle.name === 'string' ? String(handle.name || '').trim() : fallbackName;
       if (tourPlanFileInfo) {
-        const name = ACTIVE_TOUR_PLAN_FILE_NAME || 'not saved';
-        tourPlanFileInfo.textContent = `Tour file: ${name}`;
+        tourPlanFileInfo.textContent = ACTIVE_TOUR_PLAN_FILE_NAME
+          ? i18nT('tour.file.name', { name: ACTIVE_TOUR_PLAN_FILE_NAME })
+          : i18nT('tour.file.notSaved');
       }
     } catch (_) {}
     try { _refreshProjectHeaderUi(); } catch (_) {}
@@ -2835,7 +2864,7 @@
     const dirty = !!isDirty;
     try {
       if (tourProjectStatusEl) {
-        tourProjectStatusEl.textContent = dirty ? '● Modified' : '● Saved';
+        tourProjectStatusEl.textContent = dirty ? i18nT('tour.status.modified') : i18nT('tour.status.saved');
         tourProjectStatusEl.style.color = dirty ? '#b45309' : '#0f766e';
       }
     } catch (_) {}
@@ -3200,7 +3229,7 @@
       ACTIVE_TOUR_PLAN_ID = String(fresh.id || _nextTourPlanId());
       try { localStorage.setItem(TOUR_PLAN_ACTIVE_ID_KEY, ACTIVE_TOUR_PLAN_ID); } catch (_) {}
       _roadbookResetState();
-      _tourPlanSetActiveFileContext(null, 'not saved');
+      _tourPlanSetActiveFileContext(null, '');
       try {
         WEATHER_CONTEXT = {
           ...WEATHER_CONTEXT,
@@ -5833,16 +5862,16 @@
       if (tourWeatherModeHint) {
         tourWeatherModeHint.dataset.mode = forecastMode ? 'forecast' : 'climatology';
         tourWeatherModeHint.textContent = forecastMode
-          ? 'Forecast mode uses live Open-Meteo data, clamps the ride-day control to 14 days, and ignores historical year selection.'
+          ? i18nT('weather.hint.forecast')
           : forecastEligible
-            ? `Forecast is available for this tour window (${policy.startIso} to ${policy.endIso}).`
-            : 'Historical mode uses the selected historical year blend. Forecast is available only when the full tour is inside the next 14 days.';
+            ? i18nT('weather.hint.forecastAvailable', { start: _fmtLocaleDate(policy.startIso), end: _fmtLocaleDate(policy.endIso) })
+            : i18nT('weather.hint.historical');
       }
       if (weatherQualitySelect) {
         weatherQualitySelect.disabled = forecastMode;
         weatherQualitySelect.title = forecastMode
-          ? 'Forecast mode always uses live Open-Meteo forecast data.'
-          : 'Choose standard offline tiles or premium route sampling';
+          ? i18nT('weather.quality.forecastTitle')
+          : i18nT('prefs.chooseStandardOfflineTilesOrPremium');
       }
       if (tourDaysInput) {
         const nextMax = forecastMode ? 14 : 60;
@@ -5878,11 +5907,11 @@
       if (!fetchWeatherBtn) return;
       if (PRIME_IN_PROGRESS || MAIN_IN_PROGRESS) return;
       if (_tourIsActive() && _tourUsingForecastMode()) {
-        fetchWeatherBtn.textContent = 'Get Forecast Route Weather';
+        fetchWeatherBtn.textContent = i18nT('weather.load.forecast');
         return;
       }
       const mode = getWeatherQualityMode();
-      fetchWeatherBtn.textContent = (mode === 'premium') ? 'Get Premium Route Weather' : 'Get Offline Route Weather';
+      fetchWeatherBtn.textContent = (mode === 'premium') ? i18nT('weather.load.premium') : i18nT('weather.load.offline');
     } catch (_) {}
   }
 
@@ -8546,7 +8575,7 @@
       const dur = Math.max(1200, Math.min(9000, 1800 + mb * 450));
       startProgressAnim(24, dur);
     }
-    if (sseStatus) sseStatus.textContent = 'GPX: loading route…';
+    if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.gpxLoadingRoute'));
     _setVerboseProgress(
       'Step 1/3: loading GPX route geometry',
       'Preparing route points and map fit. Large GPX files can take longer.',
@@ -8561,7 +8590,7 @@
       const dur = Math.max(1200, Math.min(12000, 2200 + mb * 650));
       startProgressAnim(44, dur);
     }
-    if (sseStatus) sseStatus.textContent = 'GPX: generating elevation profile…';
+    if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.gpxGeneratingElevationProfile'));
     _setVerboseProgress(
       'Step 2/3: generating elevation profile',
       'Computing profile sampling and ride-day anchors before weather fetch.',
@@ -8949,7 +8978,7 @@
         LAST_GPX_FILE_SIZE_BYTES = (file && file.size !== undefined) ? Number(file.size) : null;
 
         setProgressPercent(0);
-        if (sseStatus) sseStatus.textContent = 'GPX: uploading…';
+        if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.gpxUploading'));
 
         const fd = new FormData();
         fd.append('file', file);
@@ -8963,10 +8992,10 @@
             if (ev && ev.lengthComputable && ev.total > 0) {
               const pct = Math.round(100 * ev.loaded / ev.total);
               setProgressPercent(pct);
-              if (sseStatus) sseStatus.textContent = `GPX: uploading… ${pct}%`;
+              if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.gpxUploading2', { pct }));
             } else {
               setProgressIndeterminate(true);
-              if (sseStatus) sseStatus.textContent = 'GPX: uploading…';
+              if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.gpxUploading'));
             }
           } catch (_) {}
         };
@@ -9089,9 +9118,9 @@
       if (!dropZone) return;
       if (LAST_GPX_PATH) {
         const displayName = (LAST_GPX_NAME && String(LAST_GPX_NAME).trim()) ? String(LAST_GPX_NAME).trim() : getBaseName(LAST_GPX_PATH);
-        dropZone.textContent = `Loaded GPX: ${displayName} (click or drop to change)`;
+        dropZone.textContent = i18nT('gpx.drop.loaded', { name: displayName });
       } else {
-        dropZone.textContent = 'Drop GPX here to load route (or click to choose)';
+        dropZone.textContent = i18nT('gpx.drop.empty');
       }
     } catch (_) {}
     try { _refreshProjectHeaderUi(); } catch (_) {}
@@ -9122,7 +9151,7 @@
       }
     } catch (_) {}
     try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
-    try { if (sseStatus) sseStatus.textContent = 'No GPX route loaded'; } catch (_) {}
+    try { if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.noGpxRouteLoaded')); } catch (_) {}
   }
 
   function syncActiveGpxFromStreamPayload(payload) {
@@ -9304,7 +9333,7 @@
 
   function _setTourSlotStatus(text) {
     try {
-      if (tourSlotStatus) tourSlotStatus.textContent = String(text || '');
+      _setI18nText(tourSlotStatus, text || '');
     } catch (_) {}
   }
 
@@ -9340,7 +9369,7 @@
       progressEl.classList.remove('loading');
       progressBar.style.width = ok ? '100%' : String(progressBar.style.width || '0%');
       if (progressPercentEl) {
-        progressPercentEl.textContent = ok ? 'Simulation run: 100% complete' : 'Simulation run: failed';
+        _setI18nText(progressPercentEl, i18nMsg(ok ? 'status.sim.progressComplete' : 'status.sim.progressFailed'));
       }
     } catch (_) {}
   }
@@ -9401,8 +9430,10 @@
     };
   }
 
+  let TOUR_SLOT_LAST_RESULT = null;
   function _renderTourSlotOptimizerResults(resultPayload) {
     if (!tourSlotResults) return;
+    TOUR_SLOT_LAST_RESULT = resultPayload || null;
     const result = (resultPayload && typeof resultPayload === 'object') ? resultPayload : {};
     const confidence = String(result.confidence || '').trim();
     const meta = (result.meta && typeof result.meta === 'object') ? result.meta : {};
@@ -9419,6 +9450,7 @@
     const missingRequestedYears = Array.isArray(meta.missing_requested_years) ? meta.missing_requested_years : [];
     if (!curvesRaw.length) {
       tourSlotResults.innerHTML = '';
+      try { _setSimResultsPanel(false); } catch (_) {}
       return;
     }
 
@@ -9439,47 +9471,44 @@
           if (LAST_PROFILE) loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });
           else loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
         } catch (_) {}
-        _setTourSlotStatus(`Applied slot: ${start} (${dir}) from ${curveLabel}. Refresh started.`);
+        _setTourSlotStatus(i18nMsg('status.sim.appliedSlotFromRefreshStarted', { start, dir, curveLabel }));
       } catch (_) {}
     };
 
+    // Compact for Sector 2: confidence and score direction on one line; formula and
+    // years in the details tooltip; missing years stay visible as a warning.
     const html = [];
-    if (confidence) {
-      html.push(`<div style="font-size:11px;color:#0f172a;font-weight:700;">Confidence: ${_htmlEsc(confidence)}</div>`);
-    }
-    if (scoreInterpretation === 'lower_is_better') {
-      html.push('<div style="font-size:11px;color:#0f172a;font-weight:700;">Score semantics: LOWER is better.</div>');
-    } else if (scoreInterpretation === 'higher_is_better') {
-      html.push('<div style="font-size:11px;color:#0f172a;font-weight:700;">Score semantics: HIGHER is better.</div>');
-    }
-    if (formulaText) {
-      html.push(`<div style="font-size:10px;color:#64748b;">Formula: ${_htmlEsc(formulaText)}</div>`);
-    }
-    if (requestedYears.length) {
-      html.push(`<div style="font-size:10px;color:#334155;">Requested years: ${_htmlEsc(requestedYears.join(', '))}</div>`);
-    }
-    if (actualYearsUsed.length) {
-      html.push(`<div style="font-size:10px;color:#334155;">Years actually used: ${_htmlEsc(actualYearsUsed.join(', '))}</div>`);
+    const head = [];
+    if (confidence) head.push(i18nT('sim.result.confidence', { value: confidence }));
+    if (scoreInterpretation === 'lower_is_better') head.push(i18nT('sim.result.lowerBetter'));
+    else if (scoreInterpretation === 'higher_is_better') head.push(i18nT('sim.result.higherBetter'));
+    const details = [];
+    if (formulaText) details.push(i18nT('sim.result.formula', { formula: formulaText }));
+    if (requestedYears.length) details.push(i18nT('sim.result.requestedYears', { years: requestedYears.join(', ') }));
+    if (actualYearsUsed.length) details.push(i18nT('sim.result.usedYears', { years: actualYearsUsed.join(', ') }));
+    if (head.length || details.length) {
+      html.push(`<div class="wm-slot-meta" title="${_htmlEsc(details.join('\n'))}">${_htmlEsc(head.join(' · '))}${details.length ? ` · <u>${_htmlEsc(i18nT('sim.result.details'))}</u>` : ''}</div>`);
     }
     if (missingRequestedYears.length) {
-      html.push(`<div style="font-size:10px;color:#b45309;">Warning: missing requested years in coverage: ${_htmlEsc(missingRequestedYears.join(', '))}</div>`);
+      html.push(`<div style="font-size:10px;color:#b45309;">${_htmlEsc(i18nT('sim.result.missingYears', { years: missingRequestedYears.join(', ') }))}</div>`);
     }
     html.push(`
       <div class="wm-slot-unified-host">
         <div class="wm-slot-curve-legend" id="wmSlotCurveLegend"></div>
-        <div class="wm-slot-curve-readout" id="wmSlotCurveReadout">Move cursor over the graph to inspect slots.</div>
-        <div class="wm-slot-curve-title" id="wmSlotCurveTitle">Simulation Run</div>
+        <div class="wm-slot-curve-readout" id="wmSlotCurveReadout">${_htmlEsc(i18nT('sim.chart.readout'))}</div>
+        <div class="wm-slot-curve-title" id="wmSlotCurveTitle">${_htmlEsc(i18nT('sim.chart.title'))}</div>
         <div class="wm-slot-curve-scroll">
           <svg class="wm-slot-curve-svg" id="wmSlotCurveSvg" role="img" aria-label="Full-year simulation value curves"></svg>
         </div>
-        <div class="wm-slot-curve-hint">Wheel: zoom, Drag: pan, Click: select slot.</div>
+        <div class="wm-slot-curve-hint">${_htmlEsc(i18nT('sim.chart.hint'))}</div>
         <div class="wm-slot-curve-actions">
-          <button type="button" id="wmSlotResetView" class="wm-pref-action-btn wm-slot-apply-btn">Reset View</button>
-          <button type="button" id="wmSlotApplySelected" class="wm-pref-action-btn wm-slot-apply-btn">Apply Selected Slot</button>
+          <button type="button" id="wmSlotResetView" class="wm-pref-action-btn wm-slot-apply-btn">${_htmlEsc(i18nT('sim.chart.reset'))}</button>
+          <button type="button" id="wmSlotApplySelected" class="wm-pref-action-btn wm-slot-apply-btn">${_htmlEsc(i18nT('sim.chart.apply'))}</button>
         </div>
       </div>
     `);
     tourSlotResults.innerHTML = html.join('');
+    try { _setSimResultsPanel(true); } catch (_) {}
 
     const legendHost = document.getElementById('wmSlotCurveLegend');
     const readoutHost = document.getElementById('wmSlotCurveReadout');
@@ -10032,7 +10061,7 @@
       const res = await fetch(`/api/tour_slot_optimizer/result/${encodeURIComponent(TOUR_SLOT_OPTIMIZER_JOB_ID)}`);
       const payload = await res.json();
       if (!res.ok) {
-        _setTourSlotStatus(`Simulation run failed: ${String(payload && payload.error || res.statusText || 'request error')}`);
+        _setTourSlotStatus(i18nMsg('status.sim.failed', { error: String(payload && payload.error || res.statusText || 'request error') }));
         if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
         _clearTourSlotPoll();
         return;
@@ -10044,7 +10073,7 @@
       const pct = Math.max(0, Math.min(100, Math.round(100 * completed / total)));
       _setOptimizerProgress(completed, total, 'Simulation run');
       if (status === 'done') {
-        _setTourSlotStatus('Simulation run complete.');
+        _setTourSlotStatus(i18nMsg('status.sim.simulationRunComplete'));
         _finishOptimizerProgress(true);
         _renderTourSlotOptimizerResults(payload.result || null);
         if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
@@ -10053,19 +10082,19 @@
       }
       if (status === 'error') {
         const err = String(payload && payload.error || 'optimizer error');
-        _setTourSlotStatus(`Simulation run error: ${err}`);
+        _setTourSlotStatus(i18nMsg('status.sim.simulationRunError', { err }));
         _finishOptimizerProgress(false);
         if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
         _clearTourSlotPoll();
         return;
       }
-      _setTourSlotStatus('Simulation run in progress...');
+      _setTourSlotStatus(i18nMsg('status.sim.simulationRunInProgress'));
       _clearTourSlotPoll();
       TOUR_SLOT_OPTIMIZER_TIMER = setTimeout(() => {
         _pollTourSlotOptimizerResult();
       }, 650);
     } catch (e) {
-      _setTourSlotStatus(`Simulation run polling failed: ${String(e && e.message || e || 'network error')}`);
+      _setTourSlotStatus(i18nMsg('status.sim.pollingFailed', { error: String(e && e.message || e || 'network error') }));
       _finishOptimizerProgress(false);
       if (tourSlotOptimizeBtn) tourSlotOptimizeBtn.disabled = false;
       _clearTourSlotPoll();
@@ -10075,14 +10104,15 @@
   async function _startTourSlotOptimizer() {
     if (!tourSlotOptimizeBtn) return;
     if (!_tourIsActive()) {
-      _setTourSlotStatus('Simulation run available in Tour Planning mode only.');
+      _setTourSlotStatus(i18nMsg('status.sim.simulationRunAvailableInTourPlanning'));
       return;
     }
     try {
       const payload = _collectTourSlotOptimizerPayload();
       tourSlotOptimizeBtn.disabled = true;
       if (tourSlotResults) tourSlotResults.innerHTML = '';
-      _setTourSlotStatus('Starting simulation run...');
+      try { _setSimResultsPanel(false); } catch (_) {}
+      _setTourSlotStatus(i18nMsg('status.sim.startingSimulationRun'));
       _setOptimizerProgress(0, 1, 'Simulation run');
       const res = await fetch('/api/tour_slot_optimizer/start', {
         method: 'POST',
@@ -10091,23 +10121,23 @@
       });
       const data = await res.json();
       if (!res.ok) {
-        _setTourSlotStatus(`Simulation run start failed: ${String(data && data.error || res.statusText || 'request error')}`);
+        _setTourSlotStatus(i18nMsg('status.sim.startFailed', { error: String(data && data.error || res.statusText || 'request error') }));
         _finishOptimizerProgress(false);
         tourSlotOptimizeBtn.disabled = false;
         return;
       }
       TOUR_SLOT_OPTIMIZER_JOB_ID = String(data.job_id || '');
       if (!TOUR_SLOT_OPTIMIZER_JOB_ID) {
-        _setTourSlotStatus('Simulation run start failed: missing job id.');
+        _setTourSlotStatus(i18nMsg('status.sim.simulationRunStartFailedMissingJob'));
         _finishOptimizerProgress(false);
         tourSlotOptimizeBtn.disabled = false;
         return;
       }
-      _setTourSlotStatus('Simulation run queued.');
+      _setTourSlotStatus(i18nMsg('status.sim.simulationRunQueued'));
       _clearTourSlotPoll();
       _pollTourSlotOptimizerResult();
     } catch (e) {
-      _setTourSlotStatus(`Simulation run start failed: ${String(e && e.message || e || 'network error')}`);
+      _setTourSlotStatus(i18nMsg('status.sim.startFailed', { error: String(e && e.message || e || 'network error') }));
       _finishOptimizerProgress(false);
       tourSlotOptimizeBtn.disabled = false;
     }
@@ -10345,16 +10375,17 @@
     let elevationHm = (providedElevationHm !== null) ? providedElevationHm : fallbackElevationHm;
     if (distanceKm === null) elevationHm = null;
     const gpxName = String(data.gpxName || _tourDisplayGpxName() || '');
-    if (tourSidebarRouteStart) tourSidebarRouteStart.textContent = String(routeLabels && routeLabels.fromLabel || 'Start location');
-    if (tourSidebarRouteEnd) tourSidebarRouteEnd.textContent = String(routeLabels && routeLabels.toLabel || 'End location');
+    if (tourSidebarRouteStart) tourSidebarRouteStart.textContent = String(routeLabels && routeLabels.fromLabel || i18nT('tour.route.start'));
+    if (tourSidebarRouteEnd) tourSidebarRouteEnd.textContent = String(routeLabels && routeLabels.toLabel || i18nT('tour.route.end'));
     if (tourSidebarRouteFile) {
-      tourSidebarRouteFile.textContent = gpxName || 'No GPX route loaded.';
+      tourSidebarRouteFile.textContent = gpxName || i18nT('tour.route.noGpx');
     }
     if (tourSidebarRouteDistance) {
       tourSidebarRouteDistance.textContent = (distanceKm !== null) ? fmt(distanceKm, 0) : '—';
     }
     if (tourSidebarRouteElevation) {
-      tourSidebarRouteElevation.textContent = (elevationHm !== null) ? fmt(elevationHm, 0) : '—';
+      // elevationHm is in hectometres (legacy unit of the route summary); Sector 1 shows metres
+      tourSidebarRouteElevation.textContent = (elevationHm !== null) ? fmtN(Math.round(elevationHm * 100), 0) : '—';
     }
     const locationToken = String(++TOUR_SUMMARY_LOCATION_TOKEN);
     tourSidebarRouteSummary.dataset.locationToken = locationToken;
@@ -11838,6 +11869,7 @@
     const visible = canShow && (ROADBOOK_STATE && ROADBOOK_STATE.visible !== false);
     try { document.body.classList.toggle('wm-roadbook-visible', visible); } catch (_) {}
     try { document.body.classList.toggle('wm-roadbook-available', canShow); } catch (_) {}
+    try { _syncTourBookButton(); } catch (_) {}
     if (roadbookPanel) {
       roadbookPanel.classList.toggle('is-hidden', !visible);
       roadbookPanel.setAttribute('aria-hidden', visible ? 'false' : 'true');
@@ -12408,6 +12440,16 @@
     } catch (_) {}
   }
 
+  function _fmtRoadbookDate(day) {
+    // English keeps the established compact format; other languages use Intl.
+    try {
+      if (!day || !day.dateIso || !window.WM_I18N || window.WM_I18N.getLanguage() === 'en') return String(day && day.dateLabel || '');
+      return window.WM_I18N.formatDate(day.dateIso, { weekday: 'short', day: 'numeric', month: 'short' });
+    } catch (_) {
+      return String(day && day.dateLabel || '');
+    }
+  }
+
   function _renderRoadbookPanel() {
     try {
       if (!roadbookPanel || !roadbookList || !roadbookMeta) return;
@@ -12421,8 +12463,8 @@
         return;
       }
       if (!LAST_PROFILE) {
-        roadbookMeta.textContent = 'No route profile loaded yet';
-        roadbookList.innerHTML = '<div class="wm-roadbook-empty">Load route weather to build the roadbook.</div>';
+        roadbookMeta.textContent = i18nT('tourbook.noProfile');
+        roadbookList.innerHTML = `<div class="wm-roadbook-empty">${_htmlEsc(i18nT('tourbook.emptyHint'))}</div>`;
         return;
       }
       const model = _roadbookBuild(LAST_PROFILE);
@@ -12434,10 +12476,8 @@
       const rideCount = Number(model && model.rideCount) || 0;
       const restCount = Math.max(0, days.length - rideCount);
       const weatherMode = (LAST_TOUR_SUMMARY && LAST_TOUR_SUMMARY.weather_mode) ? String(LAST_TOUR_SUMMARY.weather_mode) : getTourWeatherMode();
-      const timelineLabel = weatherMode === 'forecast'
-        ? 'forecast timeline'
-        : 'climate timeline';
-      roadbookMeta.textContent = `${days.length} TourDays • ${rideCount} ride days • ${restCount} rest days • ${timelineLabel} • temperatures shown as route-segment medians`;
+      roadbookMeta.textContent = i18nT(weatherMode === 'forecast' ? 'tourbook.metaForecast' : 'tourbook.metaClimate',
+        { days: days.length, ride: rideCount, rest: restCount });
       if (!days.length) {
         roadbookList.innerHTML = '<div class="wm-roadbook-empty">Load route weather to build the roadbook.</div>';
         return;
@@ -12466,8 +12506,8 @@
         }).join('')}</div>`;
       };
       const _insertZoneHtml = (pos) => `<div class="wm-roadbook-insert-zone" data-insert-position="${pos}">
-        <button class="wm-roadbook-insert-btn" type="button" data-insert-position="${pos}" data-insert-type="ride">+ Ride Day</button>
-        <button class="wm-roadbook-insert-btn" type="button" data-insert-position="${pos}" data-insert-type="rest">+ Rest Day</button>
+        <button class="wm-roadbook-insert-btn" type="button" data-insert-position="${pos}" data-insert-type="ride">${_htmlEsc(i18nT('tourbook.addRide'))}</button>
+        <button class="wm-roadbook-insert-btn" type="button" data-insert-position="${pos}" data-insert-type="rest">${_htmlEsc(i18nT('tourbook.addRest'))}</button>
       </div>`;
       html.push(_insertZoneHtml(0));
       for (const day of days) {
@@ -12481,27 +12521,27 @@
           const restWind = _finiteOrNull(day.weather && day.weather.windMs);
           const restEff = _finiteOrNull(day.weather && day.weather.effMean);
           const restWindLabel = Number.isFinite(restEff)
-            ? `${Number(restEff) >= 0 ? 'Tailwind' : 'Headwind'} (${_roadbookMetricValue(restWind, ' m/s', 1)})`
+            ? `${Number(restEff) >= 0 ? i18nT('tourbook.tailwind') : i18nT('tourbook.headwind')} (${_roadbookMetricValue(restWind, ' m/s', 1)})`
             : _roadbookMetricValue(restWind, ' m/s', 1);
           const restWeatherRow = Number.isFinite(restWind)
             ? `${restWindLabel}`
-            : (weatherMode === 'forecast' ? 'Forecast unavailable' : 'Weather unavailable');
+            : (weatherMode === 'forecast' ? i18nT('tourbook.forecastUnavailable') : i18nT('tourbook.weatherUnavailable'));
           const overnightHtml = _roadbookOvernightHtml(day.key);
           html.push(`
           <article class="wm-roadbook-card" data-kind="rest" data-day-state="${_htmlEsc(day.dayState)}" data-day-key="${_htmlEsc(day.key)}" data-rest-id="${_htmlEsc(day.restId)}">
             <div class="wm-roadbook-card-head">
               <div class="wm-roadbook-card-title">
-                <div class="wm-roadbook-card-dayline">Day ${day.logicalIdx + 1}${hasNotes ? '<span class="wm-roadbook-note-indicator" title="Has notes" aria-label="Has notes">📝</span>' : ''}</div>
-                <div class="wm-roadbook-card-dateline">${_htmlEsc(day.dateLabel)}</div>
+                <div class="wm-roadbook-card-dayline">${_htmlEsc(i18nT('tourbook.day', { n: day.logicalIdx + 1 }))}${hasNotes ? `<span class="wm-roadbook-note-indicator" title="${_htmlEsc(i18nT('tourbook.hasNotes'))}" aria-label="${_htmlEsc(i18nT('tourbook.hasNotes'))}">📝</span>` : ''}</div>
+                <div class="wm-roadbook-card-dateline">${_htmlEsc(_fmtRoadbookDate(day))}</div>
               </div>
               <div class="wm-roadbook-rest-controls">
-                <span class="wm-roadbook-pill" data-weather="${_htmlEsc(weatherLabel)}" data-status="rest">Rest Day</span>
+                <span class="wm-roadbook-pill" data-weather="${_htmlEsc(weatherLabel)}" data-status="rest">${_htmlEsc(i18nT('tourbook.restDayPill'))}</span>
                 <details class="wm-roadbook-menu" data-menu="rest-actions">
-                  <summary aria-label="Edit rest day" title="Edit rest day">⋯</summary>
+                  <summary aria-label="${_htmlEsc(i18nT('tourbook.editRest'))}" title="${_htmlEsc(i18nT('tourbook.editRest'))}">⋯</summary>
                   <div class="wm-roadbook-menu-panel">
-                    <button class="wm-roadbook-day-btn" type="button" data-action="delete-day" data-day-key="${_htmlEsc(day.key)}" data-day-type="rest" data-rest-id="${_htmlEsc(day.restId)}" title="Delete day">Delete Day</button>
-                    <button class="wm-roadbook-day-btn" type="button" data-action="add-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="rest" title="Add annotation">Add Annotation</button>
-                    ${hasNotes ? `<button class="wm-roadbook-day-btn" type="button" data-action="clear-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="rest" title="Clear annotation">Clear Annotation</button>` : ''}
+                    <button class="wm-roadbook-day-btn" type="button" data-action="delete-day" data-day-key="${_htmlEsc(day.key)}" data-day-type="rest" data-rest-id="${_htmlEsc(day.restId)}" title="${_htmlEsc(i18nT('tourbook.deleteDay'))}">${_htmlEsc(i18nT('tourbook.deleteDay'))}</button>
+                    <button class="wm-roadbook-day-btn" type="button" data-action="add-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="rest" title="${_htmlEsc(i18nT('tourbook.addNote'))}">${_htmlEsc(i18nT('tourbook.addNote'))}</button>
+                    ${hasNotes ? `<button class="wm-roadbook-day-btn" type="button" data-action="clear-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="rest" title="${_htmlEsc(i18nT('tourbook.clearNote'))}">${_htmlEsc(i18nT('tourbook.clearNote'))}</button>` : ''}
                   </div>
                 </details>
               </div>
@@ -12509,8 +12549,8 @@
             <div class="wm-roadbook-card-body">
               <div class="wm-roadbook-weather">${weatherTile}</div>
               <div class="wm-roadbook-card-copy">
-                <div class="wm-roadbook-card-stage"><span data-roadbook-stage="start">${_htmlEsc(day.startLocation || 'Route segment')}</span><span class="wm-roadbook-card-arrow">↓</span><span data-roadbook-stage="end">${_htmlEsc(day.endLocation || 'Route segment')}</span></div>
-                <div class="wm-roadbook-card-row2">Rest day</div>
+                <div class="wm-roadbook-card-stage"><span data-roadbook-stage="start">${_htmlEsc(day.startLocation || i18nT('tourbook.segment'))}</span><span class="wm-roadbook-card-arrow">↓</span><span data-roadbook-stage="end">${_htmlEsc(day.endLocation || 'Route segment')}</span></div>
+                <div class="wm-roadbook-card-row2">${_htmlEsc(i18nT('tourbook.restDay'))}</div>
                 <div class="wm-roadbook-card-row3">${_htmlEsc(restWeatherRow)}</div>
                 ${overnightHtml}
               </div>
@@ -12524,26 +12564,26 @@
           const effMean = _finiteOrNull(day.weather && day.weather.effMean);
           const rideWind = _finiteOrNull(day.weather && day.weather.windMs);
           const windLine = Number.isFinite(rideWind)
-            ? `${Number.isFinite(effMean) ? (Number(effMean) >= 0 ? 'Tailwind' : 'Headwind') : 'Wind'} (${_roadbookMetricValue(rideWind, ' m/s', 1)})`
-            : 'Wind unavailable';
+            ? `${Number.isFinite(effMean) ? (Number(effMean) >= 0 ? i18nT('tourbook.tailwind') : i18nT('tourbook.headwind')) : i18nT('tourbook.wind')} (${_roadbookMetricValue(rideWind, ' m/s', 1)})`
+            : i18nT('tourbook.windUnavailable');
           const row3 = day.weather && day.weather.hasData
-            ? `${_roadbookMetricValue(day.weather.tempC, '°C', 0)} · Rain ${_roadbookMetricValue(day.weather.rainMm, ' mm', 1)} · ${windLine}`
-            : (weatherMode === 'forecast' ? 'Forecast unavailable' : 'Weather unavailable');
+            ? `${_roadbookMetricValue(day.weather.tempC, '°C', 0)} · ${_htmlEsc(i18nT('tourbook.rain'))} ${_roadbookMetricValue(day.weather.rainMm, ' mm', 1)} · ${windLine}`
+            : (weatherMode === 'forecast' ? i18nT('tourbook.forecastUnavailable') : i18nT('tourbook.weatherUnavailable'));
           const overnightHtml = _roadbookOvernightHtml(day.key);
           html.push(`
           <article class="wm-roadbook-card" data-kind="ride" data-day-state="${_htmlEsc(day.dayState)}" data-day-key="${_htmlEsc(day.key)}">
             <div class="wm-roadbook-card-head">
               <div class="wm-roadbook-card-title">
-                <div class="wm-roadbook-card-dayline">Day ${day.logicalIdx + 1}${hasNotes ? '<span class="wm-roadbook-note-indicator" title="Has notes" aria-label="Has notes">📝</span>' : ''}</div>
-                <div class="wm-roadbook-card-dateline">${_htmlEsc(day.dateLabel)}</div>
+                <div class="wm-roadbook-card-dayline">${_htmlEsc(i18nT('tourbook.day', { n: day.logicalIdx + 1 }))}${hasNotes ? `<span class="wm-roadbook-note-indicator" title="${_htmlEsc(i18nT('tourbook.hasNotes'))}" aria-label="${_htmlEsc(i18nT('tourbook.hasNotes'))}">📝</span>` : ''}</div>
+                <div class="wm-roadbook-card-dateline">${_htmlEsc(_fmtRoadbookDate(day))}</div>
               </div>
               <div class="wm-roadbook-card-actions">
                 <details class="wm-roadbook-menu" data-menu="ride-actions">
                   <summary aria-label="Edit ride day" title="Edit ride day">⋯</summary>
                   <div class="wm-roadbook-menu-panel">
-                    <button class="wm-roadbook-day-btn" type="button" data-action="delete-day" data-day-key="${_htmlEsc(day.key)}" data-day-type="ride"${rideCount <= 1 ? ' disabled' : ''} title="Delete day">Delete Day</button>
-                    <button class="wm-roadbook-day-btn" type="button" data-action="add-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="ride" title="Add annotation">Add Annotation</button>
-                    ${hasNotes ? `<button class="wm-roadbook-day-btn" type="button" data-action="clear-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="ride" title="Clear annotation">Clear Annotation</button>` : ''}
+                    <button class="wm-roadbook-day-btn" type="button" data-action="delete-day" data-day-key="${_htmlEsc(day.key)}" data-day-type="ride"${rideCount <= 1 ? ' disabled' : ''} title="${_htmlEsc(i18nT('tourbook.deleteDay'))}">${_htmlEsc(i18nT('tourbook.deleteDay'))}</button>
+                    <button class="wm-roadbook-day-btn" type="button" data-action="add-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="ride" title="${_htmlEsc(i18nT('tourbook.addNote'))}">${_htmlEsc(i18nT('tourbook.addNote'))}</button>
+                    ${hasNotes ? `<button class="wm-roadbook-day-btn" type="button" data-action="clear-annotation" data-day-key="${_htmlEsc(day.key)}" data-day-type="ride" title="${_htmlEsc(i18nT('tourbook.clearNote'))}">${_htmlEsc(i18nT('tourbook.clearNote'))}</button>` : ''}
                   </div>
                 </details>
               </div>
@@ -12551,7 +12591,7 @@
             <div class="wm-roadbook-card-body">
               <div class="wm-roadbook-weather">${weatherTile}</div>
               <div class="wm-roadbook-card-copy">
-                <div class="wm-roadbook-card-stage"><span data-roadbook-stage="start">${_htmlEsc(day.startLocation || 'Route segment')}</span><span class="wm-roadbook-card-arrow">↓</span><span data-roadbook-stage="end">${_htmlEsc(day.endLocation || 'Route segment')}</span></div>
+                <div class="wm-roadbook-card-stage"><span data-roadbook-stage="start">${_htmlEsc(day.startLocation || i18nT('tourbook.segment'))}</span><span class="wm-roadbook-card-arrow">↓</span><span data-roadbook-stage="end">${_htmlEsc(day.endLocation || 'Route segment')}</span></div>
                 <div class="wm-roadbook-card-row2">${_htmlEsc(row2)}</div>
                 <div class="wm-roadbook-card-row3">${_htmlEsc(row3)}</div>
                 ${overnightHtml}
@@ -12578,6 +12618,9 @@
       try { _renderOvernightPlanner(); } catch (_) {}
       try { if (TOUR_PLAN_MANAGER_OPEN) _renderTourPlanManager(); } catch (_) {}
     } catch (_) {}
+    finally {
+      try { _renderTourInsights(); } catch (_) {}
+    }
   }
 
   function _renderTourRouteDayCards(profile) {
@@ -13772,7 +13815,7 @@
       } catch (_) {}
       try { _tourSyncTimelineFromInputs(); } catch (_) {}
       try {
-        if (sseStatus) sseStatus.textContent = _hasActiveGpxSelection() ? 'Loading route + profile…' : 'No GPX route loaded';
+        if (sseStatus) _setI18nText(sseStatus, i18nMsg(_hasActiveGpxSelection() ? 'status.stream.loadingRouteProfile' : 'status.stream.noGpxRouteLoaded'));
       } catch (_) {}
       if (modeChanged) {
         if (MODE_SWITCH_RELOAD_TIMER) {
@@ -13885,7 +13928,7 @@
     if (includeAll) {
       _renderMiniBtn(
         host,
-        'All',
+        i18nT('common.all'),
         allPressed,
         () => {
           const next = allPressed ? [STRATEGIC_YEAR_CHOICES[0]] : STRATEGIC_YEAR_CHOICES.slice();
@@ -13956,6 +13999,7 @@
     } catch (_) {}
     try { _strategicSetYear(Number(years[0] || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
     try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears, { includeAll: true }); } catch (_) {}
+    try { _renderTourWeatherYears(); } catch (_) {}
     try { _updateStrategicLegend(); } catch (_) {}
     try {
       const span = _tourSelectedYearsSpan();
@@ -14342,7 +14386,7 @@
         } else if (!_tourIsActive()) {
           // Explore: the period of the data actually drawn, not the pending selection.
           const period = _exploreRespPeriodLabel(resp);
-          rangeTxt = period ? `Period: ${period}` : 'No data loaded';
+          rangeTxt = period ? i18nT('legend.period', { period }) : i18nT('legend.noData');
         } else {
           const ts = String(STRATEGIC_STATE && STRATEGIC_STATE.timescale ? STRATEGIC_STATE.timescale : 'daily');
           const map = { daily: 'Daily', week: 'Weekly', two_week: '2 Weeks', month: 'Monthly', quarter: 'Quarter', year: 'Yearly', custom: 'Custom' };
@@ -14354,10 +14398,10 @@
 
       const parts = [];
       if (!_tourIsActive() && STRATEGIC_STATE && STRATEGIC_STATE.windOn) {
-        parts.push('Wind visualization: arrows show where the wind pushes (downwind), at most two dominant directions; no arrow where directions are diffuse');
+        parts.push(i18nT('legend.windViz'));
       }
-      if (yearsTxt) parts.push(`Years: ${yearsTxt}`);
-      if (modeTxt) parts.push(`${_tourIsActive() ? 'Profile' : 'Mode'}: ${modeTxt}`);
+      if (yearsTxt) parts.push(i18nT('legend.years', { years: yearsTxt }));
+      if (modeTxt) parts.push(i18nT(_tourIsActive() ? 'legend.profile' : 'legend.mode', { mode: modeTxt }));
       if (rangeTxt) parts.push(rangeTxt);
       return parts.join(' • ');
     } catch (_) {
@@ -14442,7 +14486,7 @@
           return _strategicGetMode();
         }
       })();
-      const title = 'Temperature (24h, °C)';
+      const title = i18nT('legend.temperature');
       _setLegendSteps(title, segments, [], metaNote || null);
       try {
         const ticksEl = el.querySelector('#wmStrategicLegendTicks');
@@ -14459,13 +14503,11 @@
     }
     if (layer === 'rain_ride' || layer === 'precipitation') {
       const ts = String(STRATEGIC_STATE.timescale || ((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily') || 'daily');
-      const rangesTxt = 'sand tint = dry (<0.5) • 0.5–2 • 2–5 • 5–10 • 10–20 • 20–50 • >50';
-      const note = (ts && ts !== 'daily')
-        ? `${rangesTxt} (mm/day, capped). Interval shows mm/day average; tooltip shows sum.`
-        : `${rangesTxt} (mm/day, capped).`;
+      const rangesTxt = i18nT('legend.rainRanges');
+      const note = (ts && ts !== 'daily') ? i18nT('legend.rainNoteInterval', { ranges: rangesTxt }) : i18nT('legend.rainNote', { ranges: rangesTxt });
       const note2 = metaNote ? `${note}  |  ${metaNote}` : note;
       _setLegendSteps(
-        'Rain intensity (mm/day, capped)',
+        i18nT('legend.rain'),
         [
           { color: 'rgba(180,160,255,0.10)' },  // 0.5–2 very subtle
           { color: 'rgba(150,120,255,0.18)' },  // 2–5 light
@@ -14541,7 +14583,7 @@
       return;
     }
     if ((layer === 'wind_speed' || layer === 'wind_absolute') && !_tourIsActive()) {
-      _setLegend('Wind speed (m/s)', PAL_EXPLORE_WIND, ['0', '3', '6', '10', '14+'], metaNote || null);
+      _setLegend(i18nT('legend.windSpeed'), PAL_EXPLORE_WIND, ['0', '3', '6', '10', '14+'], metaNote || null);
       _setLegendTooltips(
         'Colour encodes the mean wind speed (m/s) of the selected period.',
         'Directions: switch on Wind visualization (flow lines and arrows showing where the wind pushes).',
@@ -14578,7 +14620,7 @@
     }
 
     if (layer === 'none') {
-      _setLegendSteps('No overlay', [{ color: 'rgba(160,160,160,0.20)' }], [], metaNote || null);
+      _setLegendSteps(i18nT('explore.overlay.none'), [{ color: 'rgba(160,160,160,0.20)' }], [], metaNote || null);
       _setLegendTooltips('Base map only (no climate overlay).', null, null);
       return;
     }
@@ -14630,12 +14672,12 @@
     if (!STRATEGIC_STATE.active) return;
     if (STRATEGIC_STATE.loadingReq) {
       // The load in progress draws the newly chosen overlay when its data arrives.
-      _setExploreOverlayStatus(STRATEGIC_STATE.overlayStatus || 'loading', `Loading ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      _setExploreOverlayStatus(STRATEGIC_STATE.overlayStatus || 'loading', i18nT('explore.status.loading', { overlay: _exploreOverlayLabel(), period: _exploreSelectedPeriodLabel() }));
       return;
     }
     if (!STRATEGIC_STATE.lastResp) return;   // nothing loaded (or the last load failed)
     _renderStrategic();
-    _setExploreOverlayStatus('ready', `${_exploreOverlayLabel()} · ${_exploreRespPeriodLabel(STRATEGIC_STATE.lastResp)}`);
+    _setExploreOverlayStatus('ready', i18nT('explore.status.ready', { overlay: _exploreOverlayLabel(), period: _exploreRespPeriodLabel(STRATEGIC_STATE.lastResp) }));
   }
 
   function _buildYearDates(year) {
@@ -15191,8 +15233,9 @@
 
   function _routeGradientClasses() {
     const cls = Array.isArray(LAST_PROFILE && LAST_PROFILE.gradient_classes) ? LAST_PROFILE.gradient_classes : [];
+    // Colours from the backend legend (single source); names and ranges in the UI language.
     return ROUTE_GRADIENT_FALLBACK_CLASSES.map((f, i) => ({
-      label: (cls[i] && cls[i].label) || f[0], color: (cls[i] && cls[i].color) || f[1], range: f[2] }));
+      label: i18nT(`gradient.class.${i}`), color: (cls[i] && cls[i].color) || f[1], range: i18nT(`gradient.range.${i}`) }));
   }
 
   function _routeKmScale() {
@@ -15301,9 +15344,9 @@
     if (!show) return;
     const secs = LAST_PROFILE && LAST_PROFILE.gradient_sections;
     const noElevation = Boolean(LAST_PROFILE) && !(Array.isArray(secs) && secs.length);
-    el.innerHTML = '<div class="wm-gradient-legend-title">Gradient (direction of travel)</div>'
+    el.innerHTML = `<div class="wm-gradient-legend-title">${_htmlEsc(i18nT('gradient.title'))}</div>`
       + (noElevation
-        ? '<div class="wm-gradient-legend-note">This GPX has no elevation data: stage colours are shown.</div>'
+        ? `<div class="wm-gradient-legend-note">${_htmlEsc(i18nT('gradient.noElevation'))}</div>`
         : '<div class="wm-gradient-legend-rows">' + _routeGradientClasses().slice().reverse().map((c) =>
           `<div class="wm-gradient-legend-row"><i style="background:${c.color}"></i><span>${c.range}</span><span class="lbl">${c.label}</span></div>`).join('') + '</div>');
   }
@@ -18349,7 +18392,7 @@
       SETTINGS.climatePeriodDoy = _clampDOYInt(STRATEGIC_STATE.doy || 1);
       try { saveSettings(SETTINGS); } catch (_) {}
       _updateExploreTimeButtons(ts, ts === 'year' ? 'year' : String(value));
-      _setExploreOverlayStatus('loading', `Loading ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      _setExploreOverlayStatus('loading', i18nT('explore.status.loading', { overlay: _exploreOverlayLabel(), period: _exploreSelectedPeriodLabel() }));
       _scheduleStrategicFetch(`explore-${ts}`);
     } catch (_) {}
   }
@@ -19236,20 +19279,20 @@
   // 100 % is set only after the overlay for the current request has been drawn.
   const EXPLORE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
     'August', 'September', 'October', 'November', 'December'];
-  const EXPLORE_OVERLAY_LABELS = { temperature: 'Temperature', precipitation: 'Precipitation', wind_absolute: 'Wind', none: 'No overlay' };
+  const EXPLORE_OVERLAY_KEYS = { temperature: 'explore.overlay.temperature', precipitation: 'explore.overlay.precipitation',
+    wind_absolute: 'explore.overlay.wind', none: 'explore.overlay.none' };
   const STRATEGIC_BUSY_RETRY_MAX_MS = 90000;
 
   function _explorePeriodLabel(timescale, month) {
     const ts = String(timescale || 'year');
     const m = Math.max(1, Math.min(12, Math.round(Number(month) || 1)));
-    if (ts === 'year') return 'Year';
+    const monthName = (i, style) => (window.WM_I18N ? window.WM_I18N.monthName(i, style) : EXPLORE_MONTH_NAMES[i - 1]);
+    if (ts === 'year') return i18nT('explore.period.year');
     if (ts === 'quarter') {
       const q = 1 + Math.floor((m - 1) / 3);
-      const first = _DOY_MONTHS[(q - 1) * 3].name;
-      const last = _DOY_MONTHS[(q - 1) * 3 + 2].name;
-      return `Q${q} (${first}–${last})`;
+      return i18nT('explore.period.quarter', { q, first: monthName((q - 1) * 3 + 1, 'short'), last: monthName((q - 1) * 3 + 3, 'short') });
     }
-    if (ts === 'month') return EXPLORE_MONTH_NAMES[m - 1];
+    if (ts === 'month') return monthName(m, 'long');
     return ts;
   }
 
@@ -19258,7 +19301,7 @@
       const md = _doyToMonthDay(_clampDOYInt(STRATEGIC_STATE.doy || 1));
       return _explorePeriodLabel(_strategicNormalizeClimateTimescale(STRATEGIC_STATE.timescale || 'year'), md.month);
     } catch (_) {
-      return 'Year';
+      return i18nT('explore.period.year');
     }
   }
 
@@ -19268,7 +19311,8 @@
   }
 
   function _exploreOverlayLabel() {
-    return EXPLORE_OVERLAY_LABELS[_strategicNormalizeLayer(STRATEGIC_STATE.layer)] || 'Overlay';
+    const key = EXPLORE_OVERLAY_KEYS[_strategicNormalizeLayer(STRATEGIC_STATE.layer)];
+    return key ? i18nT(key) : i18nT('explore.overlay.generic');
   }
 
   function _setExploreOverlayStatus(state, text) {
@@ -19336,7 +19380,7 @@
         busy.name = 'StrategicGridBusyError';
         throw busy;
       }
-      _setExploreOverlayStatus('waiting', `Waiting for the server · ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      _setExploreOverlayStatus('waiting', i18nT('explore.status.waiting', { overlay: _exploreOverlayLabel(), period: _exploreSelectedPeriodLabel() }));
       let wait = delayMs;
       try {
         const ra = Number(resp.headers.get('Retry-After'));
@@ -21086,7 +21130,7 @@
     const reason = (err && err.name === 'StrategicGridBusyError')
       ? 'the server stayed busy'
       : String((err && err.message) || 'unknown error').replace(/^Aggregation failed:\s*/i, '');
-    _setExploreOverlayStatus('error', `${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()} could not be loaded (${reason}). Select the period again to retry.`);
+    _setExploreOverlayStatus('error', i18nT('explore.status.error', { overlay: _exploreOverlayLabel(), period: _exploreSelectedPeriodLabel(), reason }));
   }
 
   async function _strategicLoadAndRender(why) {
@@ -21095,17 +21139,17 @@
     const S = STRATEGIC_STATE;
     const ticket = (S.loadTicket = (Number(S.loadTicket) || 0) + 1);
     S.loadingReq = { identity: _strategicSelectionIdentity(), bounds: _strategicRequestBounds() };
-    _setExploreOverlayStatus('loading', `Loading ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+    _setExploreOverlayStatus('loading', i18nT('explore.status.loading', { overlay: _exploreOverlayLabel(), period: _exploreSelectedPeriodLabel() }));
     try {
       const landed = await _fetchStrategicGrid(ticket);
       if (ticket !== S.loadTicket || !S.active) return;
       if (!landed) throw new Error('no data returned');
-      _setExploreOverlayStatus('drawing', `Drawing ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      _setExploreOverlayStatus('drawing', i18nT('explore.status.drawing', { overlay: _exploreOverlayLabel(), period: _exploreSelectedPeriodLabel() }));
       await _strategicNextFrame();
       if (ticket !== S.loadTicket || !S.active) return;
       _renderStrategic();
       try { _updateStrategicLegend(); } catch (_) {}
-      _setExploreOverlayStatus('ready', `${_exploreOverlayLabel()} · ${_exploreRespPeriodLabel(S.lastResp)}`);
+      _setExploreOverlayStatus('ready', i18nT('explore.status.ready', { overlay: _exploreOverlayLabel(), period: _exploreRespPeriodLabel(S.lastResp) }));
       S.loadingReq = null;
       // The user may have panned beyond this request while it was loading.
       try {
@@ -21487,6 +21531,278 @@
       _setStrategicLayer(String(exploreOverlaySelect.value || 'temperature'));
     });
   }
+  // --- Tour Planning sidebar: Sector 1 menus, Sector 2 task tabs, Sector 3 groups ---
+  const TOUR_TAB_STORAGE_KEY = 'touracle_tour_tab';
+  const PREF_GROUPS_STORAGE_KEY = 'touracle_pref_groups';
+  const TOUR_TABS = ['overnight', 'weather', 'simulation', 'analysis'];
+
+  function _closeSidebarMenus() {
+    for (const m of document.querySelectorAll('.wm-menu')) {
+      const pop = m.querySelector('.wm-menu-pop');
+      const btn = m.querySelector('.wm-menu-btn');
+      if (pop) pop.hidden = true;
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function _initSidebarMenus() {
+    for (const menu of document.querySelectorAll('.wm-menu')) {
+      const btn = menu.querySelector('.wm-menu-btn');
+      const pop = menu.querySelector('.wm-menu-pop');
+      if (!btn || !pop) continue;
+      const items = () => [...pop.querySelectorAll('.wm-menu-item, .wm-pref-segmented-btn')].filter((e) => !e.disabled);
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const willOpen = pop.hidden;
+        _closeSidebarMenus();
+        if (willOpen) {
+          pop.hidden = false;
+          btn.setAttribute('aria-expanded', 'true');
+        }
+      });
+      // An action closes the menu (after its own handler ran); toggles keep it open.
+      pop.addEventListener('click', (ev) => {
+        if (ev.target.closest('button.wm-menu-item')) setTimeout(_closeSidebarMenus, 0);
+      });
+      menu.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') { _closeSidebarMenus(); btn.focus(); return; }
+        if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+        ev.preventDefault();
+        if (pop.hidden) { pop.hidden = false; btn.setAttribute('aria-expanded', 'true'); }
+        const list = items();
+        if (!list.length) return;
+        const i = list.indexOf(document.activeElement);
+        const j = (i < 0) ? (ev.key === 'ArrowDown' ? 0 : list.length - 1) : (i + (ev.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length;
+        list[j].focus();
+      });
+    }
+    document.addEventListener('click', (ev) => { if (!ev.target.closest('.wm-menu')) _closeSidebarMenus(); });
+  }
+
+  function _syncTourBookButton() {
+    const b = document.getElementById('tourBookShowBtn');
+    if (!b) return;
+    b.disabled = !document.body.classList.contains('wm-roadbook-available');
+    b.setAttribute('aria-pressed', document.body.classList.contains('wm-roadbook-visible') ? 'true' : 'false');
+  }
+
+  function _showTourBook() {
+    if (!document.body.classList.contains('wm-roadbook-visible') && roadbookToggleBtn) roadbookToggleBtn.click();
+  }
+
+  function _setTourTab(key, opts = {}) {
+    const k = TOUR_TABS.includes(key) ? key : 'weather';
+    for (const tab of document.querySelectorAll('[data-tour-tab]')) {
+      const on = tab.dataset.tourTab === k;
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.tabIndex = on ? 0 : -1;
+      if (on && opts.focus) tab.focus();
+    }
+    for (const name of TOUR_TABS) {
+      const panel = document.getElementById(`tourPanel-${name}`);
+      if (panel) panel.hidden = (name !== k);
+    }
+    try { localStorage.setItem(TOUR_TAB_STORAGE_KEY, k); } catch (_) {}
+    // Only re-renders from data already loaded: no weather loading, no simulation.
+    if (k === 'analysis') { try { _renderTourAnalysis(); } catch (_) {} }
+    if (k === 'weather') { try { _renderTourWeatherSummary(); } catch (_) {} }
+  }
+
+  function _initTourTabs() {
+    const tabs = [...document.querySelectorAll('[data-tour-tab]')];
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => _setTourTab(tab.dataset.tourTab));
+      tab.addEventListener('keydown', (ev) => {
+        const i = tabs.indexOf(tab);
+        let j = null;
+        if (ev.key === 'ArrowRight') j = (i + 1) % tabs.length;
+        if (ev.key === 'ArrowLeft') j = (i + tabs.length - 1) % tabs.length;
+        if (ev.key === 'Home') j = 0;
+        if (ev.key === 'End') j = tabs.length - 1;
+        if (j === null) return;
+        ev.preventDefault();
+        _setTourTab(tabs[j].dataset.tourTab, { focus: true });
+      });
+    }
+    let saved = null;
+    try { saved = localStorage.getItem(TOUR_TAB_STORAGE_KEY); } catch (_) {}
+    _setTourTab(saved || 'weather');
+  }
+
+  function _initPreferenceGroups() {
+    let state = {};
+    try { state = JSON.parse(localStorage.getItem(PREF_GROUPS_STORAGE_KEY) || '{}') || {}; } catch (_) { state = {}; }
+    for (const g of document.querySelectorAll('.wm-pgroup[data-pgroup]')) {
+      const key = g.dataset.pgroup;
+      if (typeof state[key] === 'boolean') g.open = state[key];
+      g.addEventListener('toggle', () => {
+        state[key] = g.open;
+        try { localStorage.setItem(PREF_GROUPS_STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
+      });
+    }
+  }
+
+  function _renderTourWeatherYears() {
+    const host = document.getElementById('tourWeatherYears');
+    if (host) _renderStrategicYearsButtons(host, _strategicGetSelectedYears(), _setStrategicYears, { includeAll: true });
+  }
+
+  function _tourBookDays() {
+    const days = (ROADBOOK_CACHE && Array.isArray(ROADBOOK_CACHE.days) && LAST_PROFILE) ? ROADBOOK_CACHE.days : [];
+    return { all: days, ride: days.filter((d) => d && d.type === 'ride'), rest: days.filter((d) => d && d.type === 'rest') };
+  }
+
+  function _tourWeatherStats(rideDays) {
+    // Aggregates of the per-day TourBook weather (already loaded); nothing is recomputed.
+    const vals = (k) => rideDays.map((d) => Number(d && d.weather && d.weather[k])).filter(Number.isFinite);
+    const temps = vals('tempC');
+    const rain = vals('rainMm');
+    const wind = vals('windMs');
+    const lucky = rideDays.map((d) => d && d.weather && d.weather.lucky).filter((v) => typeof v === 'boolean');
+    if (!temps.length && !rain.length && !wind.length) return null;
+    const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+    return { temp: mean(temps), rain: rain.length ? rain.reduce((x, y) => x + y, 0) : null, wind: mean(wind),
+      lucky: lucky.length ? lucky.filter(Boolean).length : null, luckyOf: lucky.length };
+  }
+
+  function _metricHtml(label, value) {
+    return `<div class="wm-metric"><div class="wm-metric-label" title="${_htmlEsc(label)}">${_htmlEsc(label)}</div><div class="wm-metric-value">${_htmlEsc(value)}</div></div>`;
+  }
+
+  function _weatherMetricsHtml(w) {
+    return '<div class="wm-metrics wm-metrics-4">'
+      + _metricHtml(i18nT('metric.tempMean'), w.temp === null ? '—' : `${fmtN(w.temp, 1)} °C`)
+      + _metricHtml(i18nT('metric.rainTotal'), w.rain === null ? '—' : `${fmtN(w.rain, 0)} mm`)
+      + _metricHtml(i18nT('metric.windMean'), w.wind === null ? '—' : `${fmtN(w.wind, 1)} m/s`)
+      + (w.lucky === null ? '' : _metricHtml(i18nT('metric.luckyDays'), `${fmtN(w.lucky)} / ${fmtN(w.luckyOf)}`))
+      + '</div>';
+  }
+
+  function _renderTourDaysFact() {
+    const el = document.getElementById('tourSidebarDays');
+    if (!el) return;
+    const span = el.querySelector('span') || el;
+    const { ride, rest } = _tourBookDays();
+    span.textContent = ride.length ? i18nT('tour.daysValue', { ride: fmtN(ride.length), rest: fmtN(rest.length) }) : '—';
+  }
+
+  function _renderTourWeatherSummary() {
+    const host = document.getElementById('tourWeatherSummary');
+    if (!host) return;
+    const { ride } = _tourBookDays();
+    if (!ride.length) { host.innerHTML = ''; return; }
+    const w = _tourWeatherStats(ride);
+    if (!w) { host.innerHTML = `<div class="wm-s2-empty">${_htmlEsc(i18nT('weather.empty'))}</div>`; return; }
+    host.innerHTML = _weatherMetricsHtml(w)
+      + `<button type="button" class="wm-s2-linkbtn" data-action="show-tourbook">${_htmlEsc(i18nT('weather.details'))} ›</button>`;
+    const b = host.querySelector('[data-action="show-tourbook"]');
+    if (b) b.addEventListener('click', _showTourBook);
+  }
+
+  function _renderTourAnalysis() {
+    const host = document.getElementById('tourAnalysis');
+    if (!host) return;
+    const { ride, rest } = _tourBookDays();
+    if (!ride.length) { host.innerHTML = `<div class="wm-s2-empty">${_htmlEsc(i18nT('analysis.empty'))}</div>`; return; }
+    const dists = Array.isArray(LAST_PROFILE.sampled_dist_km) ? LAST_PROFILE.sampled_dist_km.map(Number).filter(Number.isFinite) : [];
+    const totalKm = dists.length ? dists[dists.length - 1] : ride.reduce((a, d) => a + (Number(d.distanceKm) || 0), 0);
+    const gains = ride.map((d) => Number(d.elevationGainM)).filter(Number.isFinite);
+    const ascent = gains.length ? gains.reduce((a, b) => a + b, 0) : null;
+    const stage = ride.map((d) => Number(d.distanceKm)).filter((v) => Number.isFinite(v) && v > 0);
+    const secs = Array.isArray(LAST_PROFILE.gradient_sections) ? LAST_PROFILE.gradient_sections : [];
+    // Mean gradient of the climbs (sections steeper than +2 %), length-weighted.
+    let climbLen = 0;
+    let climbSum = 0;
+    const byClass = new Array(9).fill(0);
+    for (const sct of secs) {
+      const len = Math.max(0, Number(sct[1]) - Number(sct[0]));
+      const c = Math.max(0, Math.min(8, Math.round(Number(sct[2]))));
+      byClass[c] += len;
+      if (Number(sct[3]) > 2) { climbLen += len; climbSum += len * Number(sct[3]); }
+    }
+    const metrics = [
+      _metricHtml(i18nT('metric.distance'), `${fmtN(totalKm, 0)} km`),
+      _metricHtml(i18nT('metric.ascent'), ascent === null ? '—' : `${fmtN(ascent, 0)} m`),
+      _metricHtml(i18nT('metric.climbGradient'), climbLen > 0 ? `${fmtN(climbSum / climbLen, 1)} %` : '—'),
+      _metricHtml(i18nT('metric.days'), `${fmtN(ride.length)} / ${fmtN(rest.length)}`),
+      _metricHtml(i18nT('metric.stageRange'), stage.length ? `${fmtN(Math.min(...stage), 0)}–${fmtN(Math.max(...stage), 0)} km` : '—'),
+      _metricHtml(i18nT('metric.stageMean'), stage.length ? `${fmtN(stage.reduce((a, b) => a + b, 0) / stage.length, 0)} km` : '—'),
+    ];
+    const totalSec = byClass.reduce((a, b) => a + b, 0);
+    let gradientHtml = `<div class="wm-s2-empty">${_htmlEsc(i18nT('analysis.noElevation'))}</div>`;
+    if (totalSec > 0) {
+      const cls = _routeGradientClasses();
+      gradientHtml = `<div class="wm-grad-bar" role="img" aria-label="${_htmlEsc(i18nT('analysis.gradientDistribution'))}">`
+        + byClass.map((km, i) => (km > 0 ? `<i style="width:${(100 * km / totalSec).toFixed(2)}%;background:${cls[i].color}" title="${_htmlEsc(cls[i].label)}: ${fmtN(km, 1)} km"></i>` : '')).join('')
+        + '</div><div class="wm-grad-legend">'
+        + byClass.map((km, i) => `<span title="${_htmlEsc(`${cls[i].label} (${cls[i].range}): ${fmtN(km, 1)} km`)}" data-gradient-class="${i}"><i style="background:${cls[i].color}"></i>${fmtN(100 * km / totalSec, 0)}%</span>`).join('')
+        + '</div>';
+    }
+    const w = _tourWeatherStats(ride);
+    host.innerHTML = `<div class="wm-metrics">${metrics.join('')}</div>`
+      + `<div class="wm-analysis-title">${_htmlEsc(i18nT('analysis.gradientDistribution'))}</div>${gradientHtml}`
+      + `<div class="wm-analysis-title">${_htmlEsc(i18nT('analysis.weather'))}</div>`
+      + (w ? _weatherMetricsHtml(w) : `<div class="wm-s2-empty">${_htmlEsc(i18nT('analysis.noWeather'))}</div>`);
+  }
+
+  function _renderTourInsights() {
+    _renderTourDaysFact();
+    _renderTourWeatherSummary();
+    const panel = document.getElementById('tourPanel-analysis');
+    if (panel && !panel.hidden) _renderTourAnalysis();
+  }
+
+  function _setSimResultsPanel(open) {
+    // Results live in a panel over the map; Sector 2 keeps parameters, start and status.
+    const panel = document.getElementById('simResultsPanel');
+    const showBtn = document.getElementById('simResultsShowBtn');
+    const hasResults = !!(tourSlotResults && tourSlotResults.childElementCount);
+    if (showBtn) showBtn.hidden = !hasResults || !!open;
+    if (panel) panel.hidden = !(open && hasResults);
+  }
+
+  function _initTourSidebar() {
+    const simShow = document.getElementById('simResultsShowBtn');
+    if (simShow) simShow.addEventListener('click', () => _setSimResultsPanel(true));
+    const simClose = document.getElementById('simResultsClose');
+    if (simClose) simClose.addEventListener('click', () => _setSimResultsPanel(false));
+    try { _initSidebarMenus(); } catch (_) {}
+    try { _initTourTabs(); } catch (_) {}
+    try { _initPreferenceGroups(); } catch (_) {}
+    try { _renderTourWeatherYears(); } catch (_) {}
+    const tb = document.getElementById('tourBookShowBtn');
+    if (tb) tb.addEventListener('click', () => { if (roadbookToggleBtn) roadbookToggleBtn.click(); _syncTourBookButton(); });
+    try { _syncTourBookButton(); } catch (_) {}
+    window.addEventListener('wm:languagechange', () => {
+      try { _rerenderI18nTexts(); } catch (_) {}
+      try { _renderRoadbookPanel(); } catch (_) {}
+      try {
+        if (TOUR_SLOT_LAST_RESULT) {
+          const panel = document.getElementById('simResultsPanel');
+          const wasOpen = !!(panel && !panel.hidden);
+          _renderTourSlotOptimizerResults(TOUR_SLOT_LAST_RESULT);
+          _setSimResultsPanel(wasOpen);          // a language switch does not open or close it
+        }
+      } catch (_) {}
+      try { _updateStrategicLegend(); } catch (_) {}
+      try {
+        const st = STRATEGIC_STATE.overlayStatus;
+        if (STRATEGIC_STATE.active && st === 'ready' && STRATEGIC_STATE.lastResp) {
+          _setExploreOverlayStatus('ready', i18nT('explore.status.ready', { overlay: _exploreOverlayLabel(), period: _exploreRespPeriodLabel(STRATEGIC_STATE.lastResp) }));
+        }
+      } catch (_) {}
+      try { updateFetchWeatherLabel(); } catch (_) {}
+      try { _applyTourWeatherModeUi(); } catch (_) {}
+      try { _setProjectStatusUi(TOUR_PLAN_IS_DIRTY); } catch (_) {}
+      try { _tourPlanSetActiveFileContext(ACTIVE_TOUR_PLAN_FILE_HANDLE, ACTIVE_TOUR_PLAN_FILE_NAME); } catch (_) {}
+      try { updateDropZoneLabel(); } catch (_) {}
+      try { _renderTourInsights(); } catch (_) {}
+      try { _renderTourWeatherYears(); } catch (_) {}
+      try { _updateRouteGradientLegend(); } catch (_) {}
+    });
+  }
+  _initTourSidebar();
+
   for (const b of document.querySelectorAll('[data-route-coloring]')) {
     b.addEventListener('click', () => _setRouteColoring(b.dataset.routeColoring));
   }
@@ -24351,7 +24667,7 @@
       try { stopProgressAnim(); } catch (_) {}
       try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
       try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
-      try { if (sseStatus) sseStatus.textContent = 'Stream: idle (Explore mode)'; } catch (_) {}
+      try { if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.streamIdleExploreMode')); } catch (_) {}
       return;
     }
 
@@ -24424,7 +24740,7 @@
     resetWeatherProvenance();
     // Update button state
     if (fetchWeatherBtn) {
-      fetchWeatherBtn.textContent = 'Downloading...';
+      fetchWeatherBtn.textContent = i18nT('weather.load.downloading');
       fetchWeatherBtn.disabled = true;
     }
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'block';
@@ -24481,9 +24797,7 @@
     if (weatherOnly) {
       beginWeatherProgress();
       _diagUpdateStatus({ state: 'Processing' });
-      if (sseStatus) sseStatus.textContent = loadOpts.offlineOnly
-        ? 'Loading offline tile weather…'
-        : 'Loading premium route weather…';
+      if (sseStatus) _setI18nText(sseStatus, i18nMsg(loadOpts.offlineOnly ? 'status.stream.loadingOfflineWeather' : 'status.stream.loadingPremiumWeather'));
     } else {
       startGpxRouteProgress();
       _diagUpdateStatus({ state: 'Loading' });
@@ -24515,7 +24829,7 @@
         PRIME_IN_PROGRESS = false;
         MAIN_IN_PROGRESS = false;
       }
-      if (sseStatus) sseStatus.textContent = 'Loading route + profile…';
+      if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.loadingRouteProfile'));
       OVERLAY_POINTS = [];
       TOUR_HOVER_POINTS_DIRTY = true;
       const urlPrime = `/api/map_stream?date=${mmdd}&step_km=${STEP_KM}&profile_step_km=${profileStep}&tour_planning=${tourPlanningParam}&mode=single_day&dry_run=1&total_days=${tourDays}&start_date=${encodeURIComponent(startDateStr)}&hist_years=${histN}&hist_start=${histStart}${yearsParam}${offlineOnlyParam}${forceOnlineParam}${reusePerDayParam}${gpxParam}${revParam}${tourWeatherModeParam}`;
@@ -24542,7 +24856,7 @@
           if (payload && payload.profile) {
             drawProfile(payload.profile);
             computeProfileRouteIndexes(payload.profile);
-            if (sseStatus) sseStatus.textContent = 'Profile ready';
+            if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.profileReady'));
             // Immediately proceed to full stream after profile is ready
             try { evtSourcePrime && evtSourcePrime.close(); } catch(_){}
             if (primeTimer) { clearTimeout(primeTimer); primeTimer = null; }
@@ -24582,7 +24896,7 @@
         try { stopProgressAnim(); } catch (_) {}
         try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
         try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
-        try { if (sseStatus) sseStatus.textContent = 'Stream: idle (Explore mode)'; } catch (_) {}
+        try { if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.streamIdleExploreMode')); } catch (_) {}
         return;
       }
 
@@ -24718,7 +25032,7 @@
         const spanTxt = _tourUsingForecastMode()
           ? 'live Open-Meteo forecast'
           : (YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data');
-        if (sseStatus && PROGRESS_PHASE === 'weather') sseStatus.textContent = `Loading station 0/${stationTotal} from ${spanTxt}`;
+        if (sseStatus && PROGRESS_PHASE === 'weather') _setI18nText(sseStatus, i18nMsg('status.stream.loadingStation0From', { stationTotal, spanTxt }));
       } catch (e) { console.error('route event error', e); }
     });
     // Profile data stream
@@ -24808,7 +25122,7 @@
         try { _resetTourRouteDisplay(message, { keepPlan: true }); } catch (_) {}
         try { if (fetchWeatherBtn) { updateFetchWeatherLabel(); fetchWeatherBtn.disabled = false; } } catch (_) {}
         try { if (stopWeatherBtn) stopWeatherBtn.style.display = 'none'; } catch (_) {}
-        try { if (sseStatus) sseStatus.textContent = `Stream: ${message}`; } catch (_) {}
+        try { if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.stream', { message })); } catch (_) {}
         try { if (progressEl) progressEl.classList.remove('loading'); } catch (_) {}
         _finalizeVerboseProgress(
           `Load failed: ${message}`,
@@ -24881,7 +25195,7 @@
           );
           if (payload && payload.skipped && sseStatus) {
             const reason = payload.reason ? String(payload.reason) : 'No weather data for this route point';
-            sseStatus.textContent = `Skipping route point ${completed}/${total}: ${reason}`;
+            _setI18nText(sseStatus, i18nMsg('status.stream.skippingRoutePoint', { completed, total, reason }));
           }
           return;
         }
@@ -25074,7 +25388,7 @@
           }
         );
         const spanTxt = YEARS_SPAN_TEXT ? `historical Open-Meteo weather data ${YEARS_SPAN_TEXT}` : 'historical Open-Meteo weather data';
-        if (sseStatus) sseStatus.textContent = `Loading station ${stationCount}/${stationTotal} (${weatherProvenanceText()}) from ${spanTxt}`;
+        if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.loadingStationFrom', { stationCount, stationTotal, weatherProvenanceText: weatherProvenanceText(), spanTxt }));
       } catch (e) { console.error('station event error', e); }
     });
 
@@ -25142,7 +25456,7 @@
         const suffix = backendTxt ? ` ${backendTxt}` : spanTxt;
         const prov = weatherProvenanceText();
         const provTxt = prov ? ` (${prov})` : '';
-        sseStatus.textContent = `Stream: done, stations ${stationCount}/${Math.max(stationCount, stationTotal)}${provTxt}${suffix}`;
+        _setI18nText(sseStatus, i18nMsg('status.stream.streamDoneStations', { stationCount, v2: Math.max(stationCount, stationTotal), provTxt, suffix }));
       }
       _finalizeVerboseProgress(
         `Done: processed ${Math.max(stationCount, stationTotal)} weather stations`,
@@ -25190,7 +25504,7 @@
       // Legacy upgrade path: keep available for explicit force-online passes.
       if (autoUpgradeIfSingleYear && !upgradePass && wantMultiYear && sawSingleYearSpan) {
         try {
-          if (sseStatus) sseStatus.textContent = 'Upgrading to multi-year weather…';
+          if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.upgradingToMultiYearWeather'));
         } catch (_) {}
         // Keep button disabled; start a weather-only stream that forces online.
         loadMap({
@@ -25231,7 +25545,7 @@
       // Allow retry to actually start a new stream
       MAIN_IN_PROGRESS = false;
       if (progressBar) progressBar.style.width = '0%';
-      if (sseStatus) sseStatus.textContent = `Stream: error, reconnecting in ${Math.round(retryMs/1000)}s…`;
+      if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.streamErrorReconnectingInS', { v1: Math.round(retryMs/1000) }));
       _setVerboseProgress(
         `Connection issue: retry in ${Math.round(retryMs / 1000)}s`,
         'Auto-retry is active. If this repeats, switch mode or reduce day range.',
@@ -25345,7 +25659,7 @@
     if (wasInProgress && !wasFallback) {
       OFFLINE_FALLBACK_ACTIVE = true;
       try { window.__WM_PROFILE_PRIME_DONE__ = false; } catch(_){ }
-      if (sseStatus) sseStatus.textContent = 'Stream: switching to offline fallback…';
+      if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.streamSwitchingToOfflineFallback'));
       _setVerboseProgress(
         'Switching strategy: offline fallback in progress',
         'Primary stream was stopped. Restarting with a faster offline-only year window.',
@@ -25361,7 +25675,7 @@
     updateFetchWeatherLabel();
     fetchWeatherBtn.disabled = false;
     if (stopWeatherBtn) stopWeatherBtn.style.display = 'none';
-    if (sseStatus) sseStatus.textContent = 'Stream: stopped';
+    if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.streamStopped'));
     if (progressEl) progressEl.classList.remove('loading');
     _finalizeVerboseProgress(
       'Stopped by user',
@@ -25393,7 +25707,7 @@
       const actionLabel = (fetchWeatherBtn && fetchWeatherBtn.textContent)
         ? String(fetchWeatherBtn.textContent).trim()
         : 'Get Route Weather';
-      sseStatus.textContent = `Parameters changed - click "${actionLabel}"`;
+      _setI18nText(sseStatus, i18nMsg('status.stream.parametersChangedClick', { actionLabel }));
     }
     _diagUpdateStatus({ state: 'Idle' });
   }
@@ -25887,7 +26201,7 @@
           try {
             await navigator.clipboard.write([new window.ClipboardItem({ 'image/png': blob })]);
             shared = true;
-            if (sseStatus) sseStatus.textContent = 'Snapshot copied to clipboard';
+            if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.snapshotCopiedToClipboard'));
           } catch(_) {}
         }
         // Try Web Share API with file if available
@@ -25896,7 +26210,7 @@
           if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
             await navigator.share({ files: [file], title: 'WeatherMap snapshot' });
             shared = true;
-            if (sseStatus) sseStatus.textContent = 'Snapshot shared';
+            if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.snapshotShared'));
           }
         } catch(_) {}
         // Fallback: trigger download
@@ -25909,7 +26223,7 @@
           a.click();
           a.remove();
           URL.revokeObjectURL(url);
-          if (sseStatus) sseStatus.textContent = 'Snapshot downloaded';
+          if (sseStatus) _setI18nText(sseStatus, i18nMsg('status.stream.snapshotDownloaded'));
         }
       } catch (e) {
         console.error('Share snapshot error', e);
@@ -26007,7 +26321,7 @@
       if (sessionRestoreOk) {
         ACTIVE_TOUR_SNAPSHOT_KEY = _currentTourSnapshotKey();
         if (_restoreTourSnapshotIfCurrent() && sseStatus) {
-          sseStatus.textContent = 'Restored cached tour weather cards';
+          _setI18nText(sseStatus, i18nMsg('status.stream.restoredCachedTourWeatherCards'));
         }
       }
     } catch (_) {}
