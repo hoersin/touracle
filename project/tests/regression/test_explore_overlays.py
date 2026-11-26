@@ -23,7 +23,7 @@ LAND = [(48.5, 10.0), (47.0, 2.5), (51.0, 19.0), (45.5, 10.5)]   # inland points
 @pytest.fixture
 def grid_server(server, monkeypatch):
     """Server whose Strategic Grid computation is synthetic and slow on demand."""
-    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, fail_months=set(), calls=[])
+    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, rain=None, fail_months=set(), calls=[])
 
     def impl():
         args = request.args.to_dict()
@@ -31,7 +31,7 @@ def grid_server(server, monkeypatch):
         time.sleep(cfg.delay)
         if xs.period_month(args) in cfg.fail_months:
             return jsonify({'error': 'Aggregation failed: synthetic failure'}), 500
-        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed))
+        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed, rain=cfg.rain))
 
     monkeypatch.setattr(server.module, '_api_strategic_grid_impl', impl)
     server.grid = cfg
@@ -370,6 +370,17 @@ def test_all_overlays_render_on_the_map(explore):
     wait_ready(page)
     assert all(close(px, temp_rgb(page, xs.YEAR_TEMP)) for px in pixels(page, 'wm-strategic-heat', LAND))
     assert not page.errors
+
+
+def test_dry_areas_are_drawn_not_left_as_gaps(explore):
+    """< 0.5 mm/day is data (dry); it must look different from 'no data' (transparent)."""
+    explore.srv.grid.rain = 0.2
+    page = explore()
+    wait_ready(page)
+    select_overlay(page, 'precipitation')
+    wait_ready(page)
+    dry = pixels(page, 'wm-strategic-heat', LAND)
+    assert all(px[3] > 0 and px[0] > px[2] for px in dry), dry          # sand tint, not purple
 
 
 # ------------------------------------------------------------------- T1/T2 ---

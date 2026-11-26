@@ -45,13 +45,14 @@ MIXED_LAT = (44.0, 46.5)
 MIXED_FROM_LON = 8.0
 
 
-def grid(args, *, gradient=0.0, mixed=False):
+def grid(args, *, gradient=0.0, mixed=False, rain=None):
     lat_min = float(args['lat_min']) - 0.6
     lat_max = float(args['lat_max']) + 0.6
     lon_min = float(args['lon_min']) - 0.8
     lon_max = float(args['lon_max']) + 0.8
     month = period_month(args)
-    rain = YEAR_RAIN if month is None else MONTH_RAIN[month]
+    if rain is None:
+        rain = YEAR_RAIN if month is None else MONTH_RAIN[month]
     points = []
     row = 0
     while True:

@@ -14533,7 +14533,7 @@
     }
     if (layer === 'rain_ride' || layer === 'precipitation') {
       const ts = String(STRATEGIC_STATE.timescale || ((SETTINGS && SETTINGS.climateTimescale) ? SETTINGS.climateTimescale : 'daily') || 'daily');
-      const rangesTxt = '0.5–2 • 2–5 • 5–10 • 10–20 • 20–50 • >50';
+      const rangesTxt = 'sand tint = dry (<0.5) • 0.5–2 • 2–5 • 5–10 • 10–20 • 20–50 • >50';
       const note = (ts && ts !== 'daily')
         ? `${rangesTxt} (mm/day, capped). Interval shows mm/day average; tooltip shows sum.`
         : `${rangesTxt} (mm/day, capped).`;
@@ -14556,7 +14556,7 @@
         _renderRainLegendTicksInto(ticksEl, { rangeMin: 0.5, rangeMax: 50, major: [2, 10, 20, 50] });
       } catch (_) {}
       _setLegendTooltips(
-        'Bikepacking-relevant rain intensity (mm/day). Light drizzle (<0.5mm/day) is hidden; values above 50mm/day are visually capped.',
+        'Bikepacking-relevant rain intensity (mm/day). Dry areas (<0.5mm/day) get a faint sand tint; transparent means no data. Values above 50mm/day are visually capped.',
         'Discrete bins after interpolation (no gradient), with light smoothing for field shape.',
         'Ticks are mm/day anchors on the capped scale.'
       );
@@ -20532,6 +20532,7 @@
           { r: 80,  g: 40,  b: 160, a: 0.72 }, // 20–50 heavy
           { r: 70,  g: 30,  b: 140, a: 0.78 }, // >50 extreme (capped max)
         ];
+        const RAIN_DRY = { r: 214, g: 190, b: 140, a: 0.22 }; // < 0.5 mm/day
         const rainBinIdx = (mm) => {
           const v = Number(mm);
           if (!Number.isFinite(v) || v < RAIN_BINS[0]) return -1;
@@ -20605,7 +20606,9 @@
             } catch (_) {
               mm = NaN;
             }
-            if (!Number.isFinite(mm) || mm < RAIN_BINS[0]) continue;
+            // Dry (< 0.5 mm/day) is data, not a gap: keep it in the field so it is
+            // drawn with the dry tint; only missing samples stay NaN (transparent).
+            if (!Number.isFinite(mm)) continue;
             field[y2][x2] = Math.max(0, mm);
           }
         }
@@ -20624,7 +20627,15 @@
             const bi = rainBinIdx(mm);
             const i = (y2 * w2 + x2) * 4;
             if (bi < 0) {
-              data[i + 3] = 0;
+              if (Number.isFinite(mm)) {
+                // dry: faint sand tint, no edge emphasis
+                data[i + 0] = RAIN_DRY.r;
+                data[i + 1] = RAIN_DRY.g;
+                data[i + 2] = RAIN_DRY.b;
+                data[i + 3] = Math.round(RAIN_DRY.a * 255);
+              } else {
+                data[i + 3] = 0;
+              }
               continue;
             }
             binArr[(y2 * w2 + x2)] = bi;
