@@ -19531,15 +19531,24 @@
     if (!STRATEGIC_STATE.active) return false;
     const tk = (ticket === undefined) ? STRATEGIC_STATE.loadTicket : ticket;
     const selectionIdentity = _strategicSelectionIdentity();
-    const accept = (j) => {
-      if (tk !== STRATEGIC_STATE.loadTicket || !STRATEGIC_STATE.active) throw _strategicSupersededError();
-      if (_strategicSelectionIdentity() !== selectionIdentity) throw _strategicSupersededError();
+    const store = (j) => {
       try { j._coverage_bbox = _coverageBBoxFromPoints(j.points); } catch (_) {}
       STRATEGIC_STATE.lastResp = j;
       STRATEGIC_STATE.respSeq = (Number(STRATEGIC_STATE.respSeq) || 0) + 1;
       // Invalidate sampling caches so tooltip counts update immediately.
       STRATEGIC_STATE._meta = null;
       STRATEGIC_STATE._tileMap = null;
+    };
+    const accept = (j) => {
+      if (!STRATEGIC_STATE.active || _strategicSelectionIdentity() !== selectionIdentity) throw _strategicSupersededError();
+      if (tk !== STRATEGIC_STATE.loadTicket) {
+        // Superseded only by a larger view of the same period: show this data now;
+        // the newer load keeps the status ("Loading…") until the full view arrives.
+        store(j);
+        try { _renderStrategic(); _updateStrategicLegend(); } catch (_) {}
+        throw _strategicSupersededError();
+      }
+      store(j);
       return true;
     };
     if (_strategicUsingRangeUI()) {
@@ -20896,7 +20905,8 @@
         STRATEGIC_STATE.windLayer.startFlow(sampleFn, { speedHint: _meanWindSpeed(resp.points) });
       }
     }
-    STRATEGIC_STATE._lastRenderSig = renderSig;
+    // Recomputed: clearing a layer during this draw (overlay None) bumps the epoch.
+    STRATEGIC_STATE._lastRenderSig = _strategicRenderSignature();
     EXPLORE_DIAG.renders += 1;
     EXPLORE_DIAG.lastRenderMs = Math.round(performance.now() - renderStartedAt);
   }

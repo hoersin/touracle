@@ -233,6 +233,8 @@ def test_each_change_draws_once(explore):
         return renders(page) - before - (len(page.grid_responses) - loads)
 
     assert count(lambda: select_overlay(page, 'precipitation')) == 1
+    assert count(lambda: select_overlay(page, 'none')) == 1
+    assert count(lambda: select_overlay(page, 'temperature')) == 1
     assert count(lambda: page.evaluate("() => window.__WM_LEAFLET_MAP__.panBy([60, 0], {animate: false})")) == 1
     # Zoom out: the coastline for that band is already loaded (zooming in to >= 6 may
     # legitimately redraw once more when the finer coastline arrives).
