@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+
+try:
+    from wind_modes import WindRoseAccumulator
+except ImportError:  # pragma: no cover - package-relative import
+    from .wind_modes import WindRoseAccumulator  # type: ignore
 import sqlite3
 import threading
 import time
@@ -401,6 +406,8 @@ def aggregate_range(
         acc[tile_id][k] = acc[tile_id].get(k, 0.0) + x
         cnt[tile_id][k] = cnt[tile_id].get(k, 0) + 1
 
+    roses = WindRoseAccumulator()   # dominant directions for the wind roses
+
     def add_dir(tile_id: str, deg: Any) -> None:
         try:
             if deg is None:
@@ -486,6 +493,7 @@ def aggregate_range(
         ):
             add_mean(tid, k, v)
         add_dir(tid, wind_dir_deg)
+        roses.add(tid, wind_dir_deg, wind_speed_ms)
 
         if want_lucky:
             try:
@@ -524,6 +532,7 @@ def aggregate_range(
                 if deg < 0:
                     deg += 360.0
                 d["wind_dir_deg"] = deg
+        d["wind_modes"] = roses.modes(tid)
 
         if want_lucky:
             d["lucky_day_count"] = int(lucky_day_cnt.get(tid, 0))
@@ -680,6 +689,8 @@ def aggregate_climate(
         acc[tile_id][k] = acc[tile_id].get(k, 0.0) + x
         cnt[tile_id][k] = cnt[tile_id].get(k, 0) + 1
 
+    roses = WindRoseAccumulator()   # dominant directions for the wind roses
+
     def add_dir(tile_id: str, deg: Any) -> None:
         try:
             if deg is None:
@@ -737,6 +748,7 @@ def aggregate_climate(
         add_num(tid, "temp_day_p25", temp_day_p25)
         add_num(tid, "temp_day_p75", temp_day_p75)
         add_dir(tid, wind_dir_deg)
+        roses.add(tid, wind_dir_deg, wind_speed_ms)
 
         if want_lucky:
             try:
@@ -771,6 +783,7 @@ def aggregate_climate(
                 if deg < 0:
                     deg += 360.0
                 d["wind_dir_deg"] = deg
+        d["wind_modes"] = roses.modes(tid)
 
         out.append(d)
 
@@ -998,6 +1011,8 @@ def _aggregate_multi_for_mmdd(
         sum_fields[tile_id][k] = sum_fields[tile_id].get(k, 0.0) + x
         cnt_fields[tile_id][k] = cnt_fields[tile_id].get(k, 0) + 1
 
+    roses = WindRoseAccumulator()   # dominant directions for the wind roses
+
     def add_dir(tile_id: str, deg: Any) -> None:
         try:
             if deg is None:
@@ -1124,6 +1139,7 @@ def _aggregate_multi_for_mmdd(
 
             # Wind direction circular mean
             add_dir(tid, wind_dir_deg)
+            roses.add(tid, wind_dir_deg, wind_speed_ms)
 
             if want_lucky:
                 try:
@@ -1187,6 +1203,7 @@ def _aggregate_multi_for_mmdd(
             if deg < 0:
                 deg += 360.0
             d["wind_dir_deg"] = deg
+        d["wind_modes"] = roses.modes(tid)
 
         if want_lucky:
             d["lucky_day_count"] = int(lucky_day_cnt.get(tid, 0))
