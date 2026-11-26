@@ -143,17 +143,16 @@ def test_explore_uses_24h_only_and_preferences_overlay_control():
 def test_preferences_three_zone_architecture_and_file_toolbar():
     html = _html()
     source = _source()
-    assert 'id="wmPrefsGlobalSection"' in html
     for zone in ('id="wmZonePrimary"', 'id="wmZoneContext"', 'id="wmSidebarScroll"'):
         assert zone in html
-    assert 'id="prefsSaveSettings"' in html
-    assert 'id="prefsSaveTourAs"' in html
-    assert 'id="prefsLoadSettings"' in html
-    assert 'id="prefsImportGpx"' in html
-    assert 'id="prefsExportGpx"' in html
-    assert 'id="prefsExportTourXls"' in html
-    assert 'id="prefsExportTourCsv"' in html
-    assert 'id="prefsPrintTourPdf"' in html
+    # Sector 1 menus: one entry per command; the former duplicate Preferences toolbar is gone
+    for ident in ('tourProjectOpenBtn', 'tourProjectSaveBtn', 'tourProjectSaveAsBtn', 'tourProjectImportGpxBtn',
+                  'prefsExportGpx', 'tourPlanExportPdfBtn', 'tourPlanExportExcelBtn', 'prefsExportTourCsv',
+                  'settingsSave', 'settingsLoad'):
+        assert f'id="{ident}"' in html, ident
+    for gone in ('wmPrefsGlobalSection', 'prefsSaveSettings', 'prefsSaveTourAs', 'prefsLoadSettings',
+                 'prefsImportGpx', 'prefsExportTourXls', 'prefsPrintTourPdf', 'prefsShareSnapshot'):
+        assert f'id="{gone}"' not in html, gone
     assert "_prefsExportGpx" in source
     assert "_prefsExportTourCsv" in source
 

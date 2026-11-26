@@ -3,12 +3,13 @@ from pathlib import Path
 
 FRONTEND_INDEX_HTML = Path(__file__).resolve().parents[1] / 'frontend' / 'index.html'
 FRONTEND_MAP_JS = Path(__file__).resolve().parents[1] / 'frontend' / 'map.js'
+FRONTEND_EN = Path(__file__).resolve().parents[1] / 'frontend' / 'i18n' / 'en.js'   # UI texts (English reference)
 
 
 def test_tour_slot_optimizer_controls_present_in_tour_panel():
     html = FRONTEND_INDEX_HTML.read_text(encoding='utf-8')
     assert 'id="tourSlotOptimizeBtn"' in html
-    assert 'Start Simulation Run' in html
+    assert 'data-i18n="sim.start"' in html and '"sim.start": "Start simulation"' in FRONTEND_EN.read_text(encoding='utf-8')
     assert 'Simulation run idle.' in html
     assert 'id="tourSlotObjectiveMode"' not in html
     assert 'id="tourSlotGranularity"' in html
@@ -35,15 +36,15 @@ def test_tour_slot_optimizer_frontend_calls_backend_endpoints():
     assert "objectiveMode" in source
     assert "slotGranularity" in source
     assert "luckyThresholds" in source
-    assert 'Applied slot:' in source
-    assert 'Refresh started.' in source
-    assert 'Simulation run complete.' in source
+    assert "i18nMsg('status.sim.appliedSlotFromRefreshStarted'" in source
+    assert 'Applied slot: {start} ({dir}) from {curveLabel}. Refresh started.' in FRONTEND_EN.read_text(encoding='utf-8')
+    assert "'status.sim.simulationRunComplete'" in source and '"Simulation run complete."' in FRONTEND_EN.read_text(encoding='utf-8')
     assert 'Simulation Run' in source
     assert 'loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });' in source
-    assert 'Score semantics: LOWER is better.' in source
+    assert "'sim.result.lowerBetter'" in source and "'sim.result.higherBetter'" in source   # score direction
     assert 'year_penalty_curve_bundle' in source
     assert 'wmSlotCurveSvg' in source
-    assert 'Apply Selected Slot' in source
+    assert "i18nT('sim.chart.apply')" in source
     assert 'year_penalty_curve' in source
-    assert 'Requested years:' in source
-    assert 'Years actually used:' in source
+    assert "'sim.result.requestedYears'" in source
+    assert "'sim.result.usedYears'" in source

@@ -13,4 +13,4 @@ def test_tourbook_visibility_not_tied_to_last_profile():
     assert "const inTourMode = _tourIsActive();" in source
     assert "_roadbookSyncPanelVisibility(inTourMode);" in source
     assert "if (!LAST_PROFILE) {" in source
-    assert "roadbookMeta.textContent = 'No route profile loaded yet';" in source
+    assert "roadbookMeta.textContent = i18nT('tourbook.noProfile');" in source

@@ -138,6 +138,8 @@ class TourPage:
 
     def get_weather(self):
         n = self._arm()
+        if not self.page.locator('#fetchWeather').is_visible():
+            self.page.click('#tourTab-weather')                   # the Weather task tab holds the button
         self.page.click('#fetchWeather')
         self.wait_weather(n)
 

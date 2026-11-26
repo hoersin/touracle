@@ -7,8 +7,8 @@ import pytest
 
 from test_explore_overlays import explore, grid_server, wait_ready, click_time, select_overlay, legend  # noqa: F401
 
-TOUR_ONLY = ['#prefsSaveSettings', '#prefsSaveTourAs', '#prefsLoadSettings', '#prefsImportGpx', '#prefsExportGpx',
-             '#prefsExportTourXls', '#prefsExportTourCsv', '#prefsPrintTourPdf', '#prefsShareSnapshot',
+TOUR_ONLY = ['.wm-s1-menubar', '#tourProjectSaveAsBtn', '#tourProjectImportGpxBtn', '#prefsExportGpx',
+             '#tourPlanExportExcelBtn', '#prefsExportTourCsv', '#tourTab-weather', '#fetchWeather',
              '#setTempCold', '#setTempHot', '#setRainHigh', '#setWindHeadComfort']
 ALWAYS = ['.wm-prefs-time-button[data-time-kind="year"]', '.wm-prefs-time-button[data-time-kind="month"][data-time-value="12"]',
           '#exploreOverlaySelect', '#exploreContextStatus', '#exploreContextProgress']
@@ -36,7 +36,8 @@ def test_context_settings_stay_visible_and_preferences_are_in_zone_3(explore):
         assert visible(page, sel) and page.evaluate("(s) => document.getElementById('wmZoneContext').contains(document.querySelector(s))", sel), sel
     for sel in ('#setInterpolation', '#setIncludeSea', '#setBasemap', '#settingsSave', '#settingsLoad', '#setWindDensity'):
         assert page.evaluate("(s) => document.getElementById('wmSidebarScroll').contains(document.querySelector(s))", sel), sel
-        page.locator(sel).first.scroll_into_view_if_needed()
+        page.evaluate("(s) => { const d = document.querySelector(s).closest('details.wm-pgroup'); if (d) d.open = true; }", sel)
+        page.locator(sel).first.scroll_into_view_if_needed()                     # collapsible Sector 3 groups
         assert visible(page, sel), sel
         assert visible(page, '#strategicWindOn') and visible(page, '#exploreOverlaySelect')   # never scrolled away
 
@@ -77,12 +78,13 @@ def test_explore_shows_no_tour_planning_controls_and_tour_keeps_them(explore):
     page.click('#navTour')
     page.wait_for_timeout(500)
     assert not visible(page, '#exploreOverlaySelect') and not visible(page, '.wm-prefs-time-button')
-    assert page.locator('#prefsSaveTourAs').count() == 1 and page.locator('#prefsImportGpx').count() == 1
-    page.locator('#prefsImportGpx').scroll_into_view_if_needed()
-    assert visible(page, '#prefsImportGpx') and visible(page, '#prefsSaveTourAs')
+    assert page.locator('#tourProjectSaveAsBtn').count() == 1 and page.locator('#tourProjectImportGpxBtn').count() == 1
+    page.click('.wm-menu[data-menu="tour"] .wm-menu-btn')                        # commands live in the Tour menu
+    assert visible(page, '#tourProjectImportGpxBtn') and visible(page, '#tourProjectSaveAsBtn')
+    page.keyboard.press('Escape')
     page.click('#navClimate')
     page.wait_for_timeout(500)
-    assert visible(page, '#exploreOverlaySelect') and not visible(page, '#prefsSaveTourAs')
+    assert visible(page, '#exploreOverlaySelect') and not visible(page, '.wm-s1-menubar')
 
 
 def test_dead_controls_are_gone(explore):

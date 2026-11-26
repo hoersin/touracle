@@ -16,7 +16,7 @@ def _html() -> str:
 
 def test_route_info_section_exists_in_tour_sidebar():
     html = _html()
-    assert 'Route information' in html
+    assert 'aria-label="Route information"' in html          # Sector 1 metadata block
     assert 'id="tourSidebarRouteStart"' in html
     assert 'id="tourSidebarRouteEnd"' in html
     assert 'id="tourSidebarRouteDistance"' in html
@@ -41,7 +41,8 @@ def test_sidebar_route_metric_validation_keeps_unknown_as_placeholder():
     assert 'const fallbackElevationHm = (fallbackDistanceKm !== null) ? _finiteOrNull(_tourRouteElevationHm()) : null;' in source
     assert 'if (distanceKm === null) elevationHm = null;' in source
     assert "tourSidebarRouteDistance.textContent = (distanceKm !== null) ? fmt(distanceKm, 0) : '—';" in source
-    assert "tourSidebarRouteElevation.textContent = (elevationHm !== null) ? fmt(elevationHm, 0) : '—';" in source
+    # the summary value is in hectometres; Sector 1 shows it in metres
+    assert "tourSidebarRouteElevation.textContent = (elevationHm !== null) ? fmtN(Math.round(elevationHm * 100), 0) : '—';" in source
     assert 'Number.isFinite(Number(distanceKm))' not in source
     assert 'Number.isFinite(Number(elevationHm))' not in source
 

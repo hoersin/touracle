@@ -16,19 +16,18 @@ def _html() -> str:
 
 def test_advanced_weather_preferences_are_collapsible_by_default():
     html = _html()
-    assert 'id="advancedWeatherPrefs"' in html
-    assert 'Advanced Weather Preferences' in html
-    assert '<details id="advancedWeatherPrefs"' in html
-    assert html.index('Data Selection') > html.index('id="advancedWeatherPrefs"')
-    assert html.index('Wind Settings') > html.index('id="advancedWeatherPrefs"')
-    assert html.index('Advanced</h4>') > html.index('id="advancedWeatherPrefs"')
+    # Weather preferences are one collapsible Sector 3 group (closed by default)
+    start = html.index('<details class="wm-pgroup" data-pgroup="weather"')
+    end = html.index('</details>', html.index('Wind Settings'))
+    assert start < html.index('Data Selection') < html.index('Wind Settings') < end
+    assert '<details class="wm-pgroup" data-pgroup="weather" data-mode-only="tour">' in html   # not open
 
 
 def test_tour_schedule_exposes_departure_duration_and_arrival_inputs():
     html = _html()
-    assert 'Departure date' in html
-    assert 'Duration' in html
-    assert 'Arrival date' in html
+    assert 'data-i18n="tour.departure"' in html and 'id="startDate"' in html
+    assert 'data-i18n="tour.duration"' in html and 'id="tourDays"' in html
+    assert 'data-i18n="tour.arrival"' in html
     assert 'id="arrivalDate"' in html
 
 
@@ -38,7 +37,7 @@ def test_weather_source_ui_is_historical_forecast_only():
     assert 'value="hybrid"' not in html
     assert 'id="tourWeatherModeClimate"' in html
     assert 'id="tourWeatherModeForecast"' in html
-    assert 'Historical weather is the default.' in html
+    assert 'id="tourWeatherModeHint"' in html and 'data-mode="climatology"' in html   # historical is the default
 
 
 def test_arrival_date_sync_uses_shared_tour_model_helpers():

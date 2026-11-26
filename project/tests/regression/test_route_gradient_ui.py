@@ -52,6 +52,13 @@ def section_at(sections, km):
     return next(s for s in sections if s[0] <= km <= s[1])
 
 
+def set_coloring(page, mode):
+    """Route colours live in the Sector 1 Route menu."""
+    if not page.locator(f'[data-route-coloring="{mode}"]').is_visible():
+        page.click('.wm-menu[data-menu="route"] .wm-menu-btn')
+    page.click(f'[data-route-coloring="{mode}"]')
+
+
 def open_route(ui):
     gpx = write_profile_gpx(ui.backend.tmp / 'gradient_route.gpx')
     ui.open()
@@ -71,7 +78,7 @@ def test_stage_colors_stay_the_default_and_unchanged(ui):
 
 def test_gradient_mode_colours_the_route_with_the_nine_classes(ui):
     page = open_route(ui)
-    page.click('[data-route-coloring="gradient"]')
+    set_coloring(page, 'gradient')
     page.wait_for_timeout(500)
     d = page.evaluate(DIAG)
     assert d['mode'] == 'gradient'
@@ -91,7 +98,7 @@ def test_day_boundaries_are_visible_in_both_modes(ui):
     page = open_route(ui)
     cards = [c for c in ui.cards() if c['kind'] != 'rest']
     for mode in ('stage', 'gradient'):
-        page.click(f'[data-route-coloring="{mode}"]')
+        set_coloring(page, mode)
         page.wait_for_timeout(500)
         days = page.evaluate(DIAG)['days']
         assert len(days) == len(cards) - 1 >= 1, (mode, days, len(cards))
@@ -103,7 +110,7 @@ def test_day_boundaries_are_visible_in_both_modes(ui):
 
 def test_reversed_route_turns_climbs_into_descents(ui):
     page = open_route(ui)
-    page.click('[data-route-coloring="gradient"]')
+    set_coloring(page, 'gradient')
     fwd = page.evaluate(DIAG)['sections']
     total = fwd[-1][1]
     ui.set_reverse(True)
@@ -123,7 +130,7 @@ def test_reversed_route_turns_climbs_into_descents(ui):
 
 def test_route_colour_choice_survives_a_reload(ui):
     page = open_route(ui)
-    page.click('[data-route-coloring="gradient"]')
+    set_coloring(page, 'gradient')
     page.wait_for_timeout(1500)
     page.reload(wait_until='load')
     page.wait_for_function('() => window.__WM_ROUTE_GRADIENT_DIAG__')

@@ -41,7 +41,7 @@ def test_legacy_tourplan_loader_bridge_exists():
 
 def test_sidebar_has_project_centric_commands():
     html = _html()
-    assert 'id="tourProjectPanel"' in html
+    assert 'class="wm-s1-menubar"' in html
     assert 'id="tourProjectOpenBtn"' in html
     assert 'id="tourProjectSaveBtn"' in html
     assert 'id="tourProjectSaveAsBtn"' in html

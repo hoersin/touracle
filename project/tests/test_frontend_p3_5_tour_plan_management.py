@@ -16,10 +16,12 @@ def _html() -> str:
 
 def test_req51_tour_plan_list_ui_exists():
     html = _html()
-    assert 'id="tourPlanManageBtn"' in html
-    assert 'id="tourPlanManager"' in html
-    assert 'id="tourPlanList"' in html
+    # Only one TourBook: the separate plan-variant manager is no longer offered in the UI
+    # (the local plan store stays for autosave/restore).
+    assert 'id="tourPlanManageBtn"' not in html
+    assert 'id="tourPlanManager"' not in html
     assert 'id="tourPlanDirty"' in html
+    assert 'id="tourBookShowBtn"' in html
 
 
 def test_req52_save_current_tour_plan_overwrites_existing_id():

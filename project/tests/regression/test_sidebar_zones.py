@@ -49,13 +49,24 @@ EXPLORE_ZONES = {
                         'settingsSave', 'settingsLoad', 'devDiagnosticsEnabled', 'wmSectionCalcGuide'],
 }
 TOUR_ZONES = {
-    'wmZonePrimary': ['tourProjectOpenBtn', 'tourProjectSaveBtn', 'tourProjectImportGpxBtn', 'reverse', 'tourSummaryFitAll',
-                      'startDate', 'tourDays', 'arrivalDate', 'fetchWeather', 'stopWeather', 'progress', 'sseStatus'],
-    'wmZoneContext': ['routeColoringMode', 'tourWeatherModeClimate', 'tourWeatherModeForecast'],
-    'wmSidebarScroll': ['dropZone', 'progressDetails', 'overnightSearchBtn', 'tourSlotOptimizeBtn', 'prefsExportGpx',
-                        'prefsExportTourXls', 'advancedWeatherPrefs', 'setStepKm', 'weatherQuality', 'setBasemap',
-                        'devDiagnosticsEnabled', 'wmSectionCalcGuide'],
+    # Sector 1 - Tour & TourBook: header, menus (Tour / Route / TourBook / Export), compact metadata
+    'wmZonePrimary': ['tourProjectTitle', 'tourProjectStatus', 'tourProjectOpenBtn', 'tourProjectSaveBtn', 'tourProjectSaveAsBtn',
+                      'tourProjectImportGpxBtn', 'prefsExportGpx', 'reverse', 'tourSummaryFitAll', 'routeColoringMode',
+                      'tourBookShowBtn', 'tourPlanExportPdfBtn', 'tourPlanExportExcelBtn', 'prefsExportTourCsv',
+                      'startDate', 'tourDays', 'arrivalDate', 'tourSidebarDays'],
+    # Sector 2 - Tasks: Overnight / Weather / Simulation / Analysis
+    'wmZoneContext': ['tourTab-overnight', 'tourTab-weather', 'tourTab-simulation', 'tourTab-analysis',
+                      'overnightSearchBtn', 'tourWeatherModeClimate', 'tourWeatherModeForecast', 'tourWeatherYears',
+                      'fetchWeather', 'stopWeather', 'progress', 'sseStatus', 'tourWeatherSummary',
+                      'tourSlotOptimizeBtn', 'tourAnalysis'],
+    # Sector 3 - Preferences: the only scroll area
+    'wmSidebarScroll': ['uiLanguage', 'setBasemap', 'dropZone', 'setStepKm', 'progressDetails', 'weatherQuality',
+                        'settingsSave', 'settingsLoad', 'devDiagnosticsEnabled', 'wmSectionCalcGuide'],
 }
+# removed in the redesign: duplicate commands and the separate plan-variant manager
+TOUR_REMOVED = ('wmPrefsGlobalSection', 'prefsSaveSettings', 'prefsSaveTourAs', 'prefsLoadSettings', 'prefsImportGpx',
+                'prefsExportTourXls', 'prefsPrintTourPdf', 'prefsShareSnapshot', 'tourPlanManageBtn', 'tourPlanManager',
+                'advancedWeatherPrefs')
 
 
 # visually hidden select behind the segmented buttons; Stop is shown only while a stream runs
@@ -83,7 +94,7 @@ def sized(server, chromium):
         c.close()
 
 
-def check_layout(page, min_prefs_px):
+def check_layout(page, min_prefs_px, min_controls=20):
     page.evaluate("document.getElementById('wmSidebarScroll').scrollTop = 0")
     top = page.evaluate(LAYOUT)
     assert not top['sidebarScrolls'], 'the sidebar itself must not scroll'
@@ -98,7 +109,7 @@ def check_layout(page, min_prefs_px):
     after = page.evaluate(LAYOUT)
     assert after['primary'] == top['primary'] and after['context'] == top['context'], 'Zones 1 and 2 must not move'
     reach = page.evaluate(REACH)
-    assert reach['checked'] > 20 and not reach['bad'], reach
+    assert reach['checked'] > min_controls and not reach['bad'], reach
     return top
 
 
@@ -108,7 +119,11 @@ def check_contents(page, zones):
             assert page.evaluate("([z, i]) => document.getElementById(z).contains(document.getElementById(i))", [zone, ident]), (zone, ident)
     # shown in this mode (controls inside a collapsed group count when the group itself is shown)
     hidden = page.evaluate("""ids => ids.filter(i => { const e = document.getElementById(i);
-        const box = e.closest('details:not([open])') ? e.closest('details').querySelector('summary') : e;
+        // a control in a closed menu, an inactive task tab or a collapsed group counts when its opener is shown
+        const menu = e.closest('.wm-menu'), panel = e.closest('[role="tabpanel"]');
+        const box = menu && e.closest('.wm-menu-pop') ? menu.querySelector('.wm-menu-btn')
+                  : panel && panel.hidden ? document.getElementById(panel.getAttribute('aria-labelledby'))
+                  : e.closest('details:not([open])') ? e.closest('details').querySelector('summary') : e;
         return !box.getClientRects().length; })""",
                            [i for ids in zones.values() for i in ids if i not in ONLY_WHILE_ACTIVE])
     assert not hidden, hidden
@@ -127,8 +142,12 @@ def test_tour_three_zones_only_preferences_scroll(sized, w, h):
     tp = sized(w, h)
     tp.tour()
     tp.import_gpx(syn.write_gpx(tp.backend.tmp / 'zones.gpx', 420))
-    check_layout(tp.page, min_prefs_px=220)
+    for tab in ('overnight', 'weather', 'simulation', 'analysis'):
+        tp.page.click(f'#tourTab-{tab}')
+        tp.page.wait_for_timeout(150)
+        check_layout(tp.page, min_prefs_px=170, min_controls=12)   # commands sit in closed menus
     check_contents(tp.page, TOUR_ZONES)
+    assert tp.page.evaluate("ids => ids.filter(i => document.getElementById(i))", list(TOUR_REMOVED)) == []
 
 
 def test_switching_modes_keeps_the_structure_and_the_map_width(sized):
