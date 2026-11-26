@@ -18,7 +18,9 @@ def test_explore_nav_label_and_tour_section_visibility_rules():
     html = _html()
     assert 'id="navClimate"' in html
     assert '>Explore</button>' in html
-    assert 'body[data-mode="climate"] #wmSectionTour { display: none; }' in html
+    # sidebar zones: each mode shows only its own zone parts
+    assert 'body[data-mode="climate"] .wm-zone-part[data-zone-mode="tour"],' in html
+    assert 'body[data-mode="tour"] .wm-zone-part[data-zone-mode="climate"] { display: none; }' in html
     assert 'body[data-mode="climate"] #strategicTimeline { display: none; }' in html
     assert 'body[data-mode="climate"] #profileCanvas,' in html
     assert 'body[data-mode="climate"] #tourSummary {' in html
@@ -138,12 +140,12 @@ def test_explore_uses_24h_only_and_preferences_overlay_control():
     assert "_strategicSelectionIdentity()" in source
 
 
-def test_preferences_three_section_architecture_and_file_toolbar():
+def test_preferences_three_zone_architecture_and_file_toolbar():
     html = _html()
     source = _source()
     assert 'id="wmPrefsGlobalSection"' in html
-    assert 'id="wmPrefsContextSection"' in html
-    assert 'id="wmPrefsAdvancedSection"' in html
+    for zone in ('id="wmZonePrimary"', 'id="wmZoneContext"', 'id="wmSidebarScroll"'):
+        assert zone in html
     assert 'id="prefsSaveSettings"' in html
     assert 'id="prefsSaveTourAs"' in html
     assert 'id="prefsLoadSettings"' in html
@@ -152,7 +154,6 @@ def test_preferences_three_section_architecture_and_file_toolbar():
     assert 'id="prefsExportTourXls"' in html
     assert 'id="prefsExportTourCsv"' in html
     assert 'id="prefsPrintTourPdf"' in html
-    assert "#wmPrefsAdvancedSection" in html
     assert "_prefsExportGpx" in source
     assert "_prefsExportTourCsv" in source
 

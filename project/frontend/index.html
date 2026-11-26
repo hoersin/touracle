@@ -31,6 +31,8 @@
     }
     body.wm-sidebar-collapsed { --wm-sidebar-w-active: var(--wm-sidebar-w-collapsed); }
     body.wm-roadbook-visible { --wm-roadbook-panel-w-active: calc(var(--wm-roadbook-panel-w) + var(--wm-roadbook-gap) + 8px); }
+    /* Explore never shows the TourBook: no reserved space after leaving Tour Planning */
+    body[data-mode="climate"].wm-roadbook-visible { --wm-roadbook-panel-w-active: 0px; }
     #appShell { height: 100vh; width: 100vw; }
     #wmSidebar {
       position: fixed;
@@ -80,18 +82,133 @@
       justify-content: center;
     }
     #wmSidebarToggle svg { width: 18px; height: 18px; }
-    #wmSidebarScroll {
+    /* Sidebar = three independent zones in one flex column:
+       1 Primary controls and 2 Context settings take their natural height and never
+       scroll; 3 Preferences (#wmSidebarScroll) takes the remaining height and is the
+       only scroll container. Zone contents depend on the mode (data-zone-mode). */
+    #wmSidebarZones {
       flex: 1 1 auto;
       min-height: 0;
-      height: auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      pointer-events: auto;
+    }
+    body.wm-sidebar-collapsed #wmSidebarZones { display: none; }
+    .wm-zone {
+      box-sizing: border-box;
+      font-size: 12px;
+      container: wmzone / inline-size;
+      min-width: 0;
+    }
+    .wm-zone button, .wm-zone input, .wm-zone select, .wm-zone label { font-family: inherit; }
+    .wm-zone-primary {
+      flex: 0 0 auto;
+      padding: 10px 12px 9px;
+      background: #ffffff;
+      border-bottom: 1px solid rgba(15,23,42,0.08);
+      overflow: hidden;
+    }
+    .wm-zone-context {
+      flex: 0 0 auto;
+      padding: 8px 12px 9px;
+      background: rgba(240,253,250,0.75);
+      border-bottom: 1px solid rgba(15,118,110,0.16);
+      overflow: hidden;
+    }
+    #wmSidebarScroll {
+      flex: 1 1 0;
+      min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 10px 26px 10px 10px;
+      padding: 8px 26px 14px 12px;
       box-sizing: border-box;
       pointer-events: auto;
       overscroll-behavior: contain;
+      background: #f8fafc;
     }
-    body.wm-sidebar-collapsed #wmSidebarScroll { display: none; }
+    body[data-mode="climate"] .wm-zone-part[data-zone-mode="tour"],
+    body[data-mode="tour"] .wm-zone-part[data-zone-mode="climate"] { display: none; }
+    .wm-zone-title {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: #64748b;
+      margin: 0 0 6px;
+    }
+    .wm-zone-group-title {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: #64748b;
+      margin: 12px 0 5px;
+    }
+    .wm-zone-part > .wm-tour-controls > .wm-zone-group-title:first-child,
+    .wm-zone-part > .wm-settings-scope > .wm-zone-group-title:first-child { margin-top: 2px; }
+    #wmSidebarScroll .wm-section { margin: 12px 0 0; }
+    /* Zone 1 / Tour: compact planning console (overrides inline styles of the panel) */
+    #wmZonePrimary #tourProjectPanel { margin: 0 !important; padding: 7px 8px !important; }
+    #wmZonePrimary #tourProjectPanel > div:first-child { display: none; }          /* "CURRENT TOUR" kicker */
+    #wmZonePrimary #tourProjectTitle { display: inline; font-size: 13px !important; margin: 0 6px 0 0 !important; }
+    #wmZonePrimary #tourProjectStatus { display: inline; font-size: 11px !important; margin: 0 !important; }
+    #wmZonePrimary #tourProjectPanel > div[style*="grid"] { margin-top: 6px; gap: 4px !important; }
+    #wmZonePrimary #tourProjectPanel .wm-pref-action-btn { min-height: 26px; padding: 3px 6px; font-size: 11px; }
+    .wm-zone .wm-tour-plan {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-areas: "route route" "start arrival" "duration duration";
+      gap: 5px 8px;
+      margin-top: 7px;
+    }
+    .wm-zone .wm-tour-plan > #tourRowRoute { grid-area: route; }
+    .wm-zone .wm-tour-plan > #tourRowStartDate { grid-area: start; }
+    .wm-zone .wm-tour-plan > #tourRowArrival { grid-area: arrival; }
+    .wm-zone .wm-tour-plan > #tourRowDuration { grid-area: duration; }
+    .wm-zone .wm-tour-plan > .wm-pref-row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 0; }
+    .wm-zone .wm-tour-plan .wm-pref-sub { display: none; }
+    .wm-zone .wm-tour-plan .wm-pref-name { font-size: 11px; }
+    .wm-zone .wm-tour-plan .wm-pref-date { width: 100%; min-width: 0; box-sizing: border-box; min-height: 28px; font-size: 12px; }
+    .wm-zone .wm-tour-plan #tourRowDuration { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; column-gap: 12px; }
+    .wm-zone .wm-tour-plan #tourRowDuration > .wm-pref-label { padding-top: 5px; }
+    .wm-zone .wm-tour-plan #tourRowDuration .wm-slider-field { margin-top: 0; }
+    #wmZonePrimary #tourRowRoute > .wm-pref-label { display: none; }
+    #wmZonePrimary .wm-tour-sidebar-route-card { padding: 5px 8px; margin: 0; min-height: 0; display: flex; flex-direction: row; flex-wrap: wrap;
+      align-items: center; justify-content: flex-start; gap: 1px 8px; text-align: left; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-kicker { display: none; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-title { flex: 1 1 100%; font-size: 12px; margin: 0; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-file,
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-meta { margin: 0; font-size: 11px; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-file { order: 3; flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #64748b; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-meta { order: 2; white-space: nowrap; }
+    #wmZonePrimary .wm-tour-sidebar-route-card label.wm-tour-route-meta,
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-actions { order: 4; }
+    #wmZonePrimary .wm-tour-sidebar-route-card label.wm-tour-route-meta { margin-left: auto; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-actions { margin: 0; }
+    #wmZonePrimary .wm-tour-sidebar-route-card .wm-tour-route-actions button { min-height: 24px; padding: 2px 8px; font-size: 11px; }
+    .wm-zone .wm-tour-run { margin-top: 7px; }
+    .wm-zone .wm-tour-run #tourFetchRow { margin-top: 0 !important; }
+    .wm-zone .wm-tour-run #fetchWeather, .wm-zone .wm-tour-run #stopWeather { min-height: 30px; }
+    .wm-zone .wm-tour-run #sseStatus { margin-top: 3px !important; font-size: 11px !important; line-height: 1.3;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }      /* full details: Zone 3 */
+    .wm-zone .wm-tour-run .wm-progress-row { margin-top: 5px; }
+    /* Zone 2 / Tour: one row per control */
+    .wm-zone .wm-tour-context > .wm-pref-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 2px 0; }
+    .wm-zone .wm-tour-context .wm-pref-sub { display: none; }
+    .wm-zone .wm-tour-context .wm-pref-stack { gap: 2px; }
+    .wm-zone .wm-tour-context #tourWeatherModeHint { grid-column: 1 / -1; font-size: 10px; line-height: 1.3; }
+    /* the general historical-mode text is not needed in the console; forecast notes stay */
+    .wm-zone .wm-tour-context #tourWeatherModeHint[data-mode="climatology"] { display: none; }
+    .wm-zone .wm-tour-context #tourRowWeatherSource { grid-template-columns: minmax(0, 1fr) auto; }
+    .wm-zone .wm-tour-context #tourRowWeatherSource > .wm-pref-control { display: contents; }
+    .wm-zone .wm-tour-context .wm-pref-segmented-btn { white-space: nowrap; padding: 4px 9px; min-height: 26px; font-size: 11px; }
+    /* Zone 3: label above control when the sidebar is narrow; switches stay on the right */
+    @container wmzone (max-width: 470px) {
+      .wm-zone-prefs .wm-pref-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+      .wm-zone-prefs .wm-pref-row:has(> .wm-pref-control > .wm-toggle),
+      .wm-zone-prefs .wm-pref-row:has(> .wm-pref-control.wm-pref-toggle-wrap) { grid-template-columns: minmax(0, 1fr) auto; }
+    }
     #wmSidebarScrollbar {
       position: absolute;
       top: 60px;
@@ -258,7 +375,6 @@
     body[data-mode="tour"] .wm-pref-row[data-wm-scope="climate"] { display: none; }
     body[data-mode="climate"] .wm-pref-section[data-wm-scope="tour"],
     body[data-mode="climate"] .wm-pref-row[data-wm-scope="tour"] { display: none; }
-    body[data-mode="climate"] #wmSectionTour { display: none; }
     body[data-mode="climate"] #roadbookPanel,
     body[data-mode="climate"] #roadbookToggle,
     body[data-mode="climate"] #roadbookResizeHandle { display: none !important; }
@@ -284,7 +400,7 @@
     .wm-seg-btn:focus-visible { outline: 2px solid rgba(40,167,69,0.35); outline-offset: 2px; }
 
     /* Controls panels (now hosted inside sidebar) */
-    #controls, #strategicControls {
+    .wm-tour-controls, #strategicControls {
       position: static;
       z-index: auto;
       background: transparent;
@@ -294,18 +410,18 @@
       left: auto;
       top: auto;
     }
-    #controls {
+    .wm-tour-controls {
       width: auto;
       max-width: none;
       box-sizing: border-box;
       font-family: inherit;
     }
-    #controls button,
-    #controls input,
-    #controls select,
-    #controls label { font-family: inherit; }
-    #controls button,
-    #controls select {
+    .wm-tour-controls button,
+    .wm-tour-controls input,
+    .wm-tour-controls select,
+    .wm-tour-controls label { font-family: inherit; }
+    .wm-tour-controls button,
+    .wm-tour-controls select {
       border-radius: var(--wm-ui-radius);
       border: 1px solid var(--wm-ui-border);
       background: var(--wm-ui-surface);
@@ -313,13 +429,13 @@
       min-height: 32px;
       box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
     }
-    #controls select {
+    .wm-tour-controls select {
       padding: 4px 10px;
       font-size: 12px;
       background: var(--wm-ui-surface-strong);
     }
-    #controls button:focus-visible,
-    #controls select:focus-visible {
+    .wm-tour-controls button:focus-visible,
+    .wm-tour-controls select:focus-visible {
       outline: 2px solid rgba(14, 165, 233, 0.28);
       outline-offset: 2px;
       border-color: rgba(14, 165, 233, 0.4);
@@ -2796,12 +2912,12 @@
     .wm-overnight-note { font-size:11px; color:#5f766d; line-height:1.35; }
     .wm-overnight-toggle { display:flex; align-items:center; gap:6px; font-size:12px; color:#1f2937; }
     .wm-overnight-chip-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:6px; }
-    #controls .wm-overnight-chip {
+    .wm-tour-controls .wm-overnight-chip {
       border:1px solid #d4dde3; border-radius:10px; background:#f7fafb; color:#64727d; min-height:38px;
       display:flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; font-size:12px; font-weight:700; padding:5px 7px;
       transition:background .14s ease,border-color .14s ease,color .14s ease,box-shadow .14s ease;
     }
-    #controls .wm-overnight-chip .state {
+    .wm-tour-controls .wm-overnight-chip .state {
       font-size:12px;
       font-weight:900;
       line-height:1;
@@ -2809,14 +2925,14 @@
       text-align:center;
       color:#dc2626;
     }
-    #controls .wm-overnight-chip .icon { font-size:20px; line-height:1; }
-    #controls .wm-overnight-chip .label { line-height:1; }
-    #controls .wm-overnight-chip.is-active { background:#167765; color:#fff; border-color:#167765; box-shadow:0 0 0 1px rgba(22,119,101,.2); }
-    #controls .wm-overnight-chip:hover { border-color:#9cb8ae; }
-    #controls .wm-overnight-chip.is-active .icon { color:#fff; }
-    #controls .wm-overnight-chip.is-active .label { color:#fff; }
-    #controls .wm-overnight-chip.is-active .state { color:#fff; }
-    #controls .wm-overnight-chip[data-overnight-category="all"] .label {
+    .wm-tour-controls .wm-overnight-chip .icon { font-size:20px; line-height:1; }
+    .wm-tour-controls .wm-overnight-chip .label { line-height:1; }
+    .wm-tour-controls .wm-overnight-chip.is-active { background:#167765; color:#fff; border-color:#167765; box-shadow:0 0 0 1px rgba(22,119,101,.2); }
+    .wm-tour-controls .wm-overnight-chip:hover { border-color:#9cb8ae; }
+    .wm-tour-controls .wm-overnight-chip.is-active .icon { color:#fff; }
+    .wm-tour-controls .wm-overnight-chip.is-active .label { color:#fff; }
+    .wm-tour-controls .wm-overnight-chip.is-active .state { color:#fff; }
+    .wm-tour-controls .wm-overnight-chip[data-overnight-category="all"] .label {
       font-size:13px;
       letter-spacing:.04em;
     }
@@ -2885,24 +3001,14 @@
     }
 
     /* Modes */
-    body[data-mode="climate"] #controls { display: none; }
+    body[data-mode="climate"] .wm-tour-controls { display: none; }
     body[data-mode="climate"] #strategicControls { display: block; }
 
-    body[data-mode="settings"] #controls { display: none; }
+    body[data-mode="settings"] .wm-tour-controls { display: none; }
     body[data-mode="settings"] #strategicControls { display: none; }
     body[data-mode="settings"] #profilePanel { display: none; }
 
     /* Settings view (embedded in sidebar) */
-    #settingsView {
-      display: block;
-      position: static;
-      inset: auto;
-      padding: 0;
-      box-sizing: border-box;
-      overflow: visible;
-      background: transparent;
-      font-family: system-ui, -apple-system, sans-serif;
-    }
     .wm-card {
       background: #fff;
       border: 1px solid rgba(15, 23, 42, 0.08);
@@ -3024,45 +3130,17 @@
       gap: 10px;
       width: 100%;
     }
-    #wmPrefsGlobalSection,
-    #wmPrefsContextSection,
-    #wmPrefsAdvancedSection {
-      box-sizing: border-box;
-    }
     #wmPrefsGlobalSection {
-      flex: 0 0 auto;
+      box-sizing: border-box;
       padding: 8px 10px;
       border: 1px solid rgba(15,23,42,0.10);
       border-radius: 10px;
-      background: rgba(248,250,252,0.82);
+      background: rgba(255,255,255,0.9);
     }
-    #wmPrefsContextSection {
-      flex: 0 0 auto;
-      margin-top: 8px;
-      padding: 8px 10px;
-      border: 1px solid rgba(15,118,110,0.16);
-      border-radius: 10px;
-      background: rgba(240,253,250,0.72);
-    }
-    #wmPrefsAdvancedSection {
-      flex: 1 1 auto;
-      min-height: 120px;
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      margin-top: 8px;
-      padding-right: 4px;
-      scrollbar-gutter: stable;
-    }
-    #settingsView {
-      display: flex;
-      flex-direction: column;
-      height: min(64vh, 620px);
-      max-height: calc(100vh - 180px);
-    }
-    #settingsView .wm-pref-head {
+    .wm-settings-scope .wm-pref-head {
       margin: 0;
     }
-    #settingsView .wm-pref-head-actions {
+    .wm-settings-scope .wm-pref-head-actions {
       display: none;
     }
     .wm-prefs-file-toolbar {
@@ -3119,17 +3197,6 @@
     body[data-mode="climate"] .wm-mode-climate-only { display: inline; }
     body[data-mode="climate"] .wm-mode-tour-only { display: none; }
     /* Explore shows only its own controls; Tour keeps its Preferences unchanged. */
-    body[data-mode="climate"] #wmPrefsGlobalSection,
-    body[data-mode="climate"] #wmPrefsAdvancedSection { display: none !important; }
-    body[data-mode="tour"] #wmPrefsContextSection { display: none !important; }
-    body[data-mode="climate"] #settingsView { height: auto; max-height: none; }
-    #wmPrefsContextSection.wm-explore-controls {
-      margin-top: 0;
-      padding: 10px 10px 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
     .wm-explore-group { display: flex; flex-direction: column; gap: 7px; }
     .wm-explore-group-title,
     .wm-explore-fold > summary {
@@ -3156,8 +3223,7 @@
     #exploreContextStatus[data-state="error"] { color: #9f1239 !important; font-weight: 700; }
     #exploreContextProgress { height: 4px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
     #exploreContextProgressBar { height: 100%; width: 0%; background: #0f766e; transition: width .18s linear; }
-    #exploreAdvanced { margin-top: 8px; padding: 8px 10px; border: 1px solid rgba(15,23,42,0.10); border-radius: 10px; background: rgba(248,250,252,0.82); }
-    #exploreAdvanced .wm-pref-row { padding: 6px 0; }
+    .wm-explore-adv .wm-pref-row { padding: 6px 0; }
     .wm-explore-adv-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: #64748b; margin-top: 4px; }
     body[data-mode="tour"] .wm-explore-adv-title[data-wm-scope="climate"] { display: none; }
     .wm-explore-snapshot { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -3311,13 +3377,13 @@
       flex-wrap: wrap;
       gap: 6px;
     }
-    #settingsView .wm-mini-btn {
+    .wm-settings-scope .wm-mini-btn {
       border-radius: 999px;
       padding: 7px 10px;
       background: rgba(255,255,255,0.84);
       border-color: rgba(15, 23, 42, 0.12);
     }
-    #settingsView .wm-mini-btn[aria-pressed="true"] {
+    .wm-settings-scope .wm-mini-btn[aria-pressed="true"] {
       background: rgba(14, 165, 233, 0.16);
       border-color: rgba(14, 165, 233, 0.36);
       color: #0f172a;
@@ -3937,135 +4003,11 @@
           </svg>
         </button>
       </div>
-      <div id="wmSidebarScroll">
-        <details class="wm-section" id="wmSectionTour" open>
-          <summary>TOUR</summary>
-          <div class="wm-section-body">
-            <div id="tourProjectPanel" style="margin-bottom:10px; border:1px solid #dbe7dd; border-radius:10px; padding:10px; background:#f8fffa;">
-              <div style="font-size:11px; font-weight:700; letter-spacing:0.04em; color:#37554a; margin-bottom:4px;">CURRENT TOUR</div>
-              <div id="tourProjectTitle" style="font-size:13px; font-weight:700; color:#1f2937; margin-bottom:4px;">Untitled Tour</div>
-              <div id="tourProjectStatus" style="font-size:12px; color:#0f766e; margin-bottom:8px;">● Saved</div>
-              <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
-                <button id="tourProjectOpenBtn" type="button" class="wm-pref-action-btn">Open Tour...</button>
-                <button id="tourProjectSaveBtn" type="button" class="wm-pref-action-btn">Save Tour</button>
-                <button id="tourProjectSaveAsBtn" type="button" class="wm-pref-action-btn">Save Tour As...</button>
-                <button id="tourProjectImportGpxBtn" type="button" class="wm-pref-action-btn">Import GPX...</button>
-              </div>
-              <input id="tourProjectOpenInput" type="file" accept=".tour,.json,application/json" hidden>
-            </div>
-            <div id="controls">
-              <div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-size:12px; color:#2a7a2a; cursor:pointer; white-space:normal;">Drop GPX here to load route (or click to choose)</div>
-              <input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
-              <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                <button id="fetchWeather">Get Weather Data</button>
-                <button id="stopWeather">Stop</button>
-              </div>
-              <div class="wm-slot-panel">
-                <div class="wm-slot-toolbar">
-                  <div class="wm-slot-row">
-                    <button id="tourSlotOptimizeBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Start Simulation Run</button>
-                    <label for="tourSlotGranularity" class="wm-slot-label">Steps</label>
-                    <select id="tourSlotGranularity" class="wm-slot-select">
-                    <option value="day" selected>Daily (finer)</option>
-                    <option value="week">Weekly (faster)</option>
-                  </select>
-                    <label for="tourSlotDirectionMode" class="wm-slot-label">Direction</label>
-                    <select id="tourSlotDirectionMode" class="wm-slot-select">
-                    <option value="forward" selected>Forward</option>
-                    <option value="reverse">Backward</option>
-                  </select>
-                    <label for="tourSlotHorizonYears" class="wm-slot-label">Horizon</label>
-                    <select id="tourSlotHorizonYears" class="wm-slot-select">
-                    <option value="1">Last year</option>
-                    <option value="3" selected>Last 3 years</option>
-                    <option value="5">Last 5 years</option>
-                  </select>
-                  </div>
-                </div>
-                <div id="tourSlotStatus" class="wm-slot-status">Simulation run idle.</div>
-                <div id="tourSlotResults" class="wm-slot-results"></div>
-              </div>
-              <div id="overnightPlannerPanel" class="wm-overnight-panel">
-                <div class="wm-overnight-section">
-                  <div class="wm-overnight-head">
-                    <div class="wm-overnight-title">Your overnight stops</div>
-                    <div id="overnightOwnedCount" class="wm-overnight-badge">0</div>
-                  </div>
-                  <label class="wm-overnight-toggle"><input type="checkbox" id="overnightShowOwned" checked> Show on map</label>
-                  <div class="wm-overnight-note">Your planned and booked places, regardless of their source.</div>
-                </div>
-                <div class="wm-overnight-section">
-                  <button id="overnightSearchBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Search accommodations</button>
-                  <div class="wm-overnight-chip-grid" id="overnightCategoryChips">
-                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="all"><span class="state" aria-hidden="true">✓</span><span class="label">ALL</span></button>
-                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="camping" title="Camping"><span class="state" aria-hidden="true">✓</span><span class="icon">⛺</span><span class="label">Camping</span></button>
-                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="hotel" title="Hotel"><span class="state" aria-hidden="true">✓</span><span class="icon">🛏</span><span class="label">Hotel</span></button>
-                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="hostel" title="Hostel"><span class="state" aria-hidden="true">✓</span><span class="icon">⌂</span><span class="label">Hostel</span></button>
-                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="bivouac" title="Bivouac"><span class="state" aria-hidden="true">✓</span><span class="icon">🌲</span><span class="label">Bivouac</span></button>
-                  </div>
-                  <div class="wm-overnight-radius">
-                    <label for="overnightSearchRadius">Search radius</label>
-                    <input id="overnightSearchRadius" type="range" min="5" max="60" step="5" value="30">
-                    <span id="overnightSearchRadiusValue" class="value">30 km</span>
-                  </div>
-                  <div id="overnightSearchScope" class="wm-overnight-scope">Visible stage arrivals: 0 · 30 km radius</div>
-                  <label class="wm-overnight-toggle"><input type="checkbox" id="overnightShowSearchResults" checked> Show search results</label>
-                  <label class="wm-overnight-toggle"><input type="checkbox" id="overnightShowSearchAreas" checked> Show search areas</label>
-                  <div id="overnightSearchCount" class="wm-overnight-note">No search results yet.</div>
-                </div>
-                <div id="overnightStatus" style="font-size:11px; color:#475569;">No overnight search run yet.</div>
-              </div>
-              <div class="wm-progress-row">
-                <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">
-                  <div class="bar"></div>
-                </div>
-                <div id="progressPercent" class="wm-progress-value" aria-live="polite"></div>
-              </div>
-              <div id="sseStatus" style="margin-top:6px; font-size:12px; color:#555;">Stream: idle</div>
-              <div id="progressDetails" class="wm-progress-details" aria-live="polite">
-                <div id="progressPhaseLine" class="wm-progress-phase">Idle: no active weather stream</div>
-                <div id="progressMetricLine" class="wm-progress-metric">Elapsed 00:00 • last update just now</div>
-                <div id="progressNoteLine" class="wm-progress-note">Long tours and live forecast requests can take a while. Status updates appear here continuously.</div>
-              </div>
-            </div>
-
-            <div id="strategicControls">
-              <span id="strategicDayLabel" style="display:none">—</span>
-            </div>
-          </div>
-        </details>
-
-        <details class="wm-section" id="wmSectionPrefs" open>
-          <summary><span class="wm-mode-tour-only">Preferences</span><span class="wm-mode-climate-only">Explore Controls</span></summary>
-          <div class="wm-section-body">
-            <div id="settingsView" aria-label="Settings">
-              <div class="wm-card wm-pref-card">
-                <div id="wmPrefsGlobalSection" aria-label="Global settings and file management">
-                <div class="wm-pref-head">
-                  <div>
-                    <p class="wm-pref-kicker">Shared Preferences</p>
-                    <h3>Live controls for climate and route planning</h3>
-                    <p class="wm-pref-head-note">Every change applies automatically after a short pause. Click any value bubble to edit it directly.</p>
-                  </div>
-                  <div class="wm-pref-head-actions">
-                    <button type="button" class="wm-pref-live" id="settingsLiveStatus" aria-live="polite" data-state="idle" aria-label="Live updates enabled" title="Live updates enabled" aria-pressed="true"><span class="wm-pref-live-ico" aria-hidden="true">&#9889;</span><span class="wm-pref-live-text">Live updates on</span></button>
-                  </div>
-                </div>
-                  <div class="wm-prefs-file-toolbar" aria-label="File actions">
-                    <button type="button" id="prefsSaveSettings">Save</button>
-                    <button type="button" id="prefsSaveTourAs">Save As</button>
-                    <button type="button" id="prefsLoadSettings">Load</button>
-                    <button type="button" id="prefsImportGpx">Import GPX</button>
-                    <button type="button" id="prefsExportGpx">Export GPX</button>
-                    <button type="button" id="prefsExportTourXls">Tour XLS</button>
-                    <button type="button" id="prefsExportTourCsv">Tour CSV</button>
-                    <button type="button" id="prefsPrintTourPdf">Print PDF</button>
-                    <button type="button" id="prefsShareSnapshot">Snapshot</button>
-                  </div>
-                </div>
-
-                <div id="wmPrefsContextSection" class="wm-explore-controls" aria-label="Explore controls">
-                  <div class="wm-explore-group" data-explore-level="always">
+      <div id="wmSidebarZones">
+<section id="wmZonePrimary" class="wm-zone wm-zone-primary" aria-label="Primary controls">
+<div class="wm-zone-part" data-zone-mode="climate">
+<div class="wm-settings-scope">
+<div class="wm-explore-group" id="exploreAlways" data-explore-level="always">
                     <div class="wm-explore-group-title">Period</div>
                     <div class="wm-prefs-time-grid" role="group" aria-label="Explore time selection">
                       <div class="wm-prefs-time-row" data-time-row="year">
@@ -4108,73 +4050,23 @@
                       </div>
                     </div>
                   </div>
-
-                  <details class="wm-explore-group wm-explore-fold" id="exploreWhenNeeded" data-explore-level="when-needed" open>
-                    <summary>Layers and reference years</summary>
-                    <div class="wm-explore-fold-body">
-                      <div class="wm-explore-ctl">
-                        <span class="wm-explore-ctl-name">Reference years</span>
-                        <span class="wm-explore-ctl-note">Years averaged for the map. More years: steadier climate picture.</span>
-                        <div id="setStrategicYears" class="wm-pref-years" aria-label="Reference years"></div>
-                      </div>
-                      <label class="wm-explore-ctl wm-explore-ctl-toggle" for="strategicWindOn">
-                        <span class="wm-explore-ctl-copy">
-                          <span class="wm-explore-ctl-name">Wind visualization</span>
-                          <span class="wm-explore-ctl-note">Animated flow lines and dominant wind directions. Can be shown over any climate overlay.</span>
-                        </span>
-                        <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind visualization" />
-                      </label>
-                    </div>
-                  </details>
-                </div>
-
-                <div id="wmPrefsAdvancedSection" aria-label="Advanced preferences">
-                <div class="wm-pref-sections">
-                  <section class="wm-pref-section" data-wm-scope="tour">
-                    <div class="wm-pref-section-head">
-                      <h4 class="wm-pref-section-title">Tour Settings</h4>
-                      <p class="wm-pref-section-note">Core route timing, weather source, and direction.</p>
-                    </div>
-                    <div class="wm-pref-section-body">
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="startDate">
-                          <span class="wm-pref-name">Departure date</span>
-                          <span class="wm-pref-sub">Tour departure date.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <input type="date" id="startDate" class="wm-pref-date" />
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="tourDays">
-                          <span class="wm-pref-name">Duration</span>
-                          <span class="wm-pref-sub">Overall tour length in days.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <div class="wm-slider-field" data-slider-field="single">
-                            <div class="wm-slider-shell" data-track="season">
-                              <div class="wm-slider-track" aria-hidden="true"></div>
-                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
-                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit tour duration"></button>
-                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Tour duration" />
-                              <input type="range" id="tourDays" min="1" max="60" step="1" value="7" class="wm-slider-native" data-unit=" d" data-snap="int" aria-label="Tour duration in days" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row">
-                        <label class="wm-pref-label" for="arrivalDate">
-                          <span class="wm-pref-name">Arrival date</span>
-                          <span class="wm-pref-sub">Adjust this directly to recalculate tour duration.</span>
-                        </label>
-                        <div class="wm-pref-control">
-                          <input type="date" id="arrivalDate" class="wm-pref-date" />
-                        </div>
-                      </div>
-
-                      <div class="wm-pref-row" data-wm-scope="tour">
+</div>
+</div>
+<div class="wm-zone-part" data-zone-mode="tour">
+<div id="tourProjectPanel" style="margin-bottom:10px; border:1px solid #dbe7dd; border-radius:10px; padding:10px; background:#f8fffa;">
+              <div style="font-size:11px; font-weight:700; letter-spacing:0.04em; color:#37554a; margin-bottom:4px;">CURRENT TOUR</div>
+              <div id="tourProjectTitle" style="font-size:13px; font-weight:700; color:#1f2937; margin-bottom:4px;">Untitled Tour</div>
+              <div id="tourProjectStatus" style="font-size:12px; color:#0f766e; margin-bottom:8px;">● Saved</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                <button id="tourProjectOpenBtn" type="button" class="wm-pref-action-btn">Open Tour...</button>
+                <button id="tourProjectSaveBtn" type="button" class="wm-pref-action-btn">Save Tour</button>
+                <button id="tourProjectSaveAsBtn" type="button" class="wm-pref-action-btn">Save Tour As...</button>
+                <button id="tourProjectImportGpxBtn" type="button" class="wm-pref-action-btn">Import GPX...</button>
+              </div>
+              <input id="tourProjectOpenInput" type="file" accept=".tour,.json,application/json" hidden>
+            </div>
+<div class="wm-settings-scope wm-tour-plan">
+<div id="tourRowRoute" class="wm-pref-row" data-wm-scope="tour">
                         <div class="wm-pref-label">
                           <span class="wm-pref-name">Route information</span>
                           <span class="wm-pref-sub">Route endpoints and totals from the loaded GPX.</span>
@@ -4196,8 +4088,77 @@
                           </div>
                         </div>
                       </div>
-
-                      <div class="wm-pref-row" data-wm-scope="tour" id="routeColoringRow">
+<div id="tourRowStartDate" class="wm-pref-row">
+                        <label class="wm-pref-label" for="startDate">
+                          <span class="wm-pref-name">Departure date</span>
+                          <span class="wm-pref-sub">Tour departure date.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <input type="date" id="startDate" class="wm-pref-date" />
+                        </div>
+                      </div>
+<div id="tourRowDuration" class="wm-pref-row">
+                        <label class="wm-pref-label" for="tourDays">
+                          <span class="wm-pref-name">Duration</span>
+                          <span class="wm-pref-sub">Overall tour length in days.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <div class="wm-slider-field" data-slider-field="single">
+                            <div class="wm-slider-shell" data-track="season">
+                              <div class="wm-slider-track" aria-hidden="true"></div>
+                              <div class="wm-slider-fill" data-slider-fill aria-hidden="true"></div>
+                              <button type="button" class="wm-slider-badge" data-slider-badge aria-label="Edit tour duration"></button>
+                              <input type="number" class="wm-slider-editor" data-slider-editor aria-label="Tour duration" />
+                              <input type="range" id="tourDays" min="1" max="60" step="1" value="7" class="wm-slider-native" data-unit=" d" data-snap="int" aria-label="Tour duration in days" />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+<div id="tourRowArrival" class="wm-pref-row">
+                        <label class="wm-pref-label" for="arrivalDate">
+                          <span class="wm-pref-name">Arrival date</span>
+                          <span class="wm-pref-sub">Adjust this directly to recalculate tour duration.</span>
+                        </label>
+                        <div class="wm-pref-control">
+                          <input type="date" id="arrivalDate" class="wm-pref-date" />
+                        </div>
+                      </div>
+</div>
+<div class="wm-tour-controls wm-tour-run">
+<div id="tourFetchRow" style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button id="fetchWeather">Get Weather Data</button>
+                <button id="stopWeather">Stop</button>
+              </div>
+<div class="wm-progress-row" id="tourProgressRow">
+                <div id="progress" class="wm-progress" aria-label="Loading progress" title="Loading">
+                  <div class="bar"></div>
+                </div>
+                <div id="progressPercent" class="wm-progress-value" aria-live="polite"></div>
+              </div>
+<div id="sseStatus" style="margin-top:6px; font-size:12px; color:#555;">Stream: idle</div>
+</div>
+</div>
+</section>
+<section id="wmZoneContext" class="wm-zone wm-zone-context" aria-label="Context settings">
+<div class="wm-zone-part" data-zone-mode="climate">
+<div class="wm-settings-scope wm-explore-context">
+<div class="wm-explore-ctl">
+  <span class="wm-explore-ctl-name">Reference years</span>
+  <span class="wm-explore-ctl-note">Years averaged for the map. More years: steadier climate picture.</span>
+  <div id="setStrategicYears" class="wm-pref-years" aria-label="Reference years"></div>
+</div>
+<label class="wm-explore-ctl wm-explore-ctl-toggle" for="strategicWindOn">
+                        <span class="wm-explore-ctl-copy">
+                          <span class="wm-explore-ctl-name">Wind visualization</span>
+                          <span class="wm-explore-ctl-note">Animated flow lines and dominant wind directions. Can be shown over any climate overlay.</span>
+                        </span>
+                        <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind visualization" />
+                      </label>
+</div>
+</div>
+<div class="wm-zone-part" data-zone-mode="tour">
+<div class="wm-settings-scope wm-tour-context">
+<div class="wm-pref-row" data-wm-scope="tour" id="routeColoringRow">
                         <label class="wm-pref-label" for="routeColoringMode">
                           <span class="wm-pref-name">Route colors</span>
                           <span class="wm-pref-sub">Stage colors or the local gradient in the direction of travel.</span>
@@ -4213,8 +4174,7 @@
                           </select>
                         </div>
                       </div>
-
-                      <div class="wm-pref-row">
+<div id="tourRowWeatherSource" class="wm-pref-row">
                         <label class="wm-pref-label" for="tourWeatherMode">
                           <span class="wm-pref-name">Weather source</span>
                           <span class="wm-pref-sub">Historical weather is the default. Forecast is offered only when the full tour is inside the next 14 days.</span>
@@ -4231,11 +4191,107 @@
                           <div id="tourWeatherModeHint" class="wm-pref-hint" data-mode="climatology">Historical mode uses the selected year blend. Forecast can be enabled only when the full tour fits inside the 14-day forecast horizon.</div>
                         </div>
                       </div>
-
-                    </div>
-                  </section>
-
-                  <details id="advancedWeatherPrefs" class="wm-pref-section wm-pref-advanced" data-wm-scope="both">
+</div>
+</div>
+</section>
+<section id="wmSidebarScroll" class="wm-zone wm-zone-prefs" aria-label="Preferences">
+<div class="wm-zone-title">Preferences</div>
+<div class="wm-zone-part" data-zone-mode="tour">
+<div class="wm-tour-controls">
+<div class="wm-zone-group-title">Route file</div>
+<div id="dropZone" style="margin-top:6px; padding:6px 8px; border:1px dashed #66cc66; border-radius:6px; background:rgba(0,255,128,0.06); font-size:12px; color:#2a7a2a; cursor:pointer; white-space:normal;">Drop GPX here to load route (or click to choose)</div>
+<input type="file" id="gpxFileInput" accept=".gpx" style="display:none" />
+<div class="wm-zone-group-title">Weather stream details</div>
+<div id="progressDetails" class="wm-progress-details" aria-live="polite">
+                <div id="progressPhaseLine" class="wm-progress-phase">Idle: no active weather stream</div>
+                <div id="progressMetricLine" class="wm-progress-metric">Elapsed 00:00 • last update just now</div>
+                <div id="progressNoteLine" class="wm-progress-note">Long tours and live forecast requests can take a while. Status updates appear here continuously.</div>
+              </div>
+<div class="wm-zone-group-title">Overnight stops</div>
+<div id="overnightPlannerPanel" class="wm-overnight-panel">
+                <div class="wm-overnight-section">
+                  <div class="wm-overnight-head">
+                    <div class="wm-overnight-title">Your overnight stops</div>
+                    <div id="overnightOwnedCount" class="wm-overnight-badge">0</div>
+                  </div>
+                  <label class="wm-overnight-toggle"><input type="checkbox" id="overnightShowOwned" checked> Show on map</label>
+                  <div class="wm-overnight-note">Your planned and booked places, regardless of their source.</div>
+                </div>
+                <div class="wm-overnight-section">
+                  <button id="overnightSearchBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Search accommodations</button>
+                  <div class="wm-overnight-chip-grid" id="overnightCategoryChips">
+                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="all"><span class="state" aria-hidden="true">✓</span><span class="label">ALL</span></button>
+                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="camping" title="Camping"><span class="state" aria-hidden="true">✓</span><span class="icon">⛺</span><span class="label">Camping</span></button>
+                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="hotel" title="Hotel"><span class="state" aria-hidden="true">✓</span><span class="icon">🛏</span><span class="label">Hotel</span></button>
+                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="hostel" title="Hostel"><span class="state" aria-hidden="true">✓</span><span class="icon">⌂</span><span class="label">Hostel</span></button>
+                    <button type="button" class="wm-overnight-chip is-active" data-overnight-category="bivouac" title="Bivouac"><span class="state" aria-hidden="true">✓</span><span class="icon">🌲</span><span class="label">Bivouac</span></button>
+                  </div>
+                  <div class="wm-overnight-radius">
+                    <label for="overnightSearchRadius">Search radius</label>
+                    <input id="overnightSearchRadius" type="range" min="5" max="60" step="5" value="30">
+                    <span id="overnightSearchRadiusValue" class="value">30 km</span>
+                  </div>
+                  <div id="overnightSearchScope" class="wm-overnight-scope">Visible stage arrivals: 0 · 30 km radius</div>
+                  <label class="wm-overnight-toggle"><input type="checkbox" id="overnightShowSearchResults" checked> Show search results</label>
+                  <label class="wm-overnight-toggle"><input type="checkbox" id="overnightShowSearchAreas" checked> Show search areas</label>
+                  <div id="overnightSearchCount" class="wm-overnight-note">No search results yet.</div>
+                </div>
+                <div id="overnightStatus" style="font-size:11px; color:#475569;">No overnight search run yet.</div>
+              </div>
+<div class="wm-zone-group-title">Simulation run</div>
+<div class="wm-slot-panel" id="tourSlotPanel">
+                <div class="wm-slot-toolbar">
+                  <div class="wm-slot-row">
+                    <button id="tourSlotOptimizeBtn" type="button" class="wm-pref-action-btn wm-slot-opt-btn">Start Simulation Run</button>
+                    <label for="tourSlotGranularity" class="wm-slot-label">Steps</label>
+                    <select id="tourSlotGranularity" class="wm-slot-select">
+                    <option value="day" selected>Daily (finer)</option>
+                    <option value="week">Weekly (faster)</option>
+                  </select>
+                    <label for="tourSlotDirectionMode" class="wm-slot-label">Direction</label>
+                    <select id="tourSlotDirectionMode" class="wm-slot-select">
+                    <option value="forward" selected>Forward</option>
+                    <option value="reverse">Backward</option>
+                  </select>
+                    <label for="tourSlotHorizonYears" class="wm-slot-label">Horizon</label>
+                    <select id="tourSlotHorizonYears" class="wm-slot-select">
+                    <option value="1">Last year</option>
+                    <option value="3" selected>Last 3 years</option>
+                    <option value="5">Last 5 years</option>
+                  </select>
+                  </div>
+                </div>
+                <div id="tourSlotStatus" class="wm-slot-status">Simulation run idle.</div>
+                <div id="tourSlotResults" class="wm-slot-results"></div>
+              </div>
+</div>
+<div class="wm-settings-scope">
+<div class="wm-zone-group-title">Files and export</div>
+<div id="wmPrefsGlobalSection" aria-label="Global settings and file management">
+                <div class="wm-pref-head">
+                  <div>
+                    <p class="wm-pref-kicker">Shared Preferences</p>
+                    <h3>Live controls for climate and route planning</h3>
+                    <p class="wm-pref-head-note">Every change applies automatically after a short pause. Click any value bubble to edit it directly.</p>
+                  </div>
+                  <div class="wm-pref-head-actions">
+                    <button type="button" class="wm-pref-live" id="settingsLiveStatus" aria-live="polite" data-state="idle" aria-label="Live updates enabled" title="Live updates enabled" aria-pressed="true"><span class="wm-pref-live-ico" aria-hidden="true">&#9889;</span><span class="wm-pref-live-text">Live updates on</span></button>
+                  </div>
+                </div>
+                  <div class="wm-prefs-file-toolbar" aria-label="File actions">
+                    <button type="button" id="prefsSaveSettings">Save</button>
+                    <button type="button" id="prefsSaveTourAs">Save As</button>
+                    <button type="button" id="prefsLoadSettings">Load</button>
+                    <button type="button" id="prefsImportGpx">Import GPX</button>
+                    <button type="button" id="prefsExportGpx">Export GPX</button>
+                    <button type="button" id="prefsExportTourXls">Tour XLS</button>
+                    <button type="button" id="prefsExportTourCsv">Tour CSV</button>
+                    <button type="button" id="prefsPrintTourPdf">Print PDF</button>
+                    <button type="button" id="prefsShareSnapshot">Snapshot</button>
+                  </div>
+                </div>
+<div class="wm-pref-sections">
+<details id="advancedWeatherPrefs" class="wm-pref-section wm-pref-advanced" data-wm-scope="both">
                     <summary>
                       <div class="wm-pref-advanced-toggle">
                         <div class="wm-pref-advanced-toggle-copy">
@@ -4449,13 +4505,17 @@
 
                     </div>
                   </section>
-                </div>
-                </div>
-              </div>
-
-                <details class="wm-explore-group wm-explore-fold" id="exploreAdvanced" data-explore-level="advanced">
-                  <summary>Advanced</summary>
-                  <div class="wm-explore-fold-body wm-explore-adv">
+                    </div>
+                  </details>
+</div>
+</div>
+<div id="strategicControls">
+              <span id="strategicDayLabel" style="display:none">—</span>
+            </div>
+</div>
+<div class="wm-zone-part" data-zone-mode="both">
+<div class="wm-settings-scope">
+<div class="wm-explore-fold-body wm-explore-adv">
                     <div class="wm-explore-adv-title" data-wm-scope="climate">Wind visualization look</div>
                       <div class="wm-pref-row" data-wm-scope="climate">
                         <label class="wm-pref-label" for="setWindDensity">
@@ -4559,12 +4619,9 @@
                         </div>
                       </div>
                   </div>
-                </details>
-            </div>
-          </div>
-        </details>
-
-        <details class="wm-section" id="wmSectionCalcGuide">
+</div>
+</div>
+<details class="wm-section" id="wmSectionCalcGuide">
           <summary>How Values Are Calculated</summary>
           <div class="wm-section-body">
             <p class="wm-calc-intro">Use this as the quick reference for what the app is actually showing. Start with the window, then the selected years, then the mode where applicable.</p>
@@ -4688,7 +4745,8 @@
             </div>
           </div>
         </details>
-      </div>
+</section>
+</div>
       <div id="wmSidebarScrollbar" class="is-hidden" aria-hidden="true">
         <div id="wmSidebarScrollbarThumb"></div>
       </div>

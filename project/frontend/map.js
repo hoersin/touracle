@@ -293,7 +293,16 @@
   const shareBtn = document.getElementById('share');
   const weatherQualitySelect = document.getElementById('weatherQuality');
 
-  const settingsView = document.getElementById('settingsView');
+  // Settings controls live in several sidebar zones; each settings block is marked
+  // .wm-settings-scope (sliders, live apply). Queries cover all of them.
+  const settingsView = {
+    querySelectorAll: (sel) => {
+      const out = [];
+      for (const root of document.querySelectorAll('.wm-settings-scope')) out.push(...root.querySelectorAll(sel));
+      return out;
+    },
+    dataset: (document.getElementById('wmSidebarZones') || document.body).dataset,
+  };
   const setBasemap = document.getElementById('setBasemap');
   const setStepKm = document.getElementById('setStepKm');
   const setHistLast = document.getElementById('setHistLast');

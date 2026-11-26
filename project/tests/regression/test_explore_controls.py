@@ -1,4 +1,6 @@
-"""Explore Controls (Phase 3): three usage levels, 2 x 6 months, Explore/Tour isolation."""
+"""Explore Controls: three sidebar zones (primary / context / preferences), 2 x 6 months, Explore/Tour isolation.
+
+The zone layout itself (only Zone 3 scrolls, both modes) is covered in test_sidebar_zones.py."""
 from __future__ import annotations
 
 import pytest
@@ -20,28 +22,23 @@ def visible(page, sel):
 def test_always_controls_are_visible_without_expanding_or_scrolling(explore, viewport):
     page = explore(viewport)
     wait_ready(page)
-    assert page.evaluate("document.querySelector('#wmSectionPrefs > summary').innerText.trim()") == 'Explore Controls'
     for sel in ALWAYS:
+        assert page.evaluate("(s) => document.getElementById('wmZonePrimary').contains(document.querySelector(s))", sel), sel
         box = page.locator(sel).first.bounding_box()
         assert box and box['height'] > 0 and box['y'] + box['height'] <= viewport[1], (sel, box)
         assert page.evaluate("(s) => !document.querySelector(s).closest('details:not([open])')", sel), sel
 
 
-def test_when_needed_can_be_collapsed_and_advanced_starts_collapsed(explore):
-    page = explore()
+def test_context_settings_stay_visible_and_preferences_are_in_zone_3(explore):
+    page = explore((1280, 800))
     wait_ready(page)
-    assert visible(page, '#strategicWindOn') and visible(page, '#setStrategicYears')
-    page.click('#exploreWhenNeeded > summary')
-    assert not visible(page, '#strategicWindOn')
-    page.click('#exploreWhenNeeded > summary')
-    assert visible(page, '#strategicWindOn')
-    assert page.evaluate("document.getElementById('exploreAdvanced').open") is False
-    for sel in ('#setInterpolation', '#setIncludeSea', '#setWindDensity', '#setBasemap', '#settingsSave'):
-        assert not visible(page, sel), sel
-    page.click('#exploreAdvanced > summary')
-    for sel in ('#setInterpolation', '#setIncludeSea', '#setBasemap', '#settingsSave', '#settingsLoad'):
+    for sel in ('#strategicWindOn', '#setStrategicYears'):                      # Zone 2: always visible, no folding
+        assert visible(page, sel) and page.evaluate("(s) => document.getElementById('wmZoneContext').contains(document.querySelector(s))", sel), sel
+    for sel in ('#setInterpolation', '#setIncludeSea', '#setBasemap', '#settingsSave', '#settingsLoad', '#setWindDensity'):
+        assert page.evaluate("(s) => document.getElementById('wmSidebarScroll').contains(document.querySelector(s))", sel), sel
         page.locator(sel).first.scroll_into_view_if_needed()
         assert visible(page, sel), sel
+        assert visible(page, '#strategicWindOn') and visible(page, '#exploreOverlaySelect')   # never scrolled away
 
 
 @pytest.mark.parametrize('viewport', [(1280, 800), (1440, 900)])
@@ -81,7 +78,6 @@ def test_explore_shows_no_tour_planning_controls_and_tour_keeps_them(explore):
     page.wait_for_timeout(500)
     assert not visible(page, '#exploreOverlaySelect') and not visible(page, '.wm-prefs-time-button')
     assert page.locator('#prefsSaveTourAs').count() == 1 and page.locator('#prefsImportGpx').count() == 1
-    page.evaluate("document.getElementById('wmSectionPrefs').open = true")
     page.locator('#prefsImportGpx').scroll_into_view_if_needed()
     assert visible(page, '#prefsImportGpx') and visible(page, '#prefsSaveTourAs')
     page.click('#navClimate')
@@ -101,11 +97,10 @@ def test_dead_controls_are_gone(explore):
 def test_no_nested_scroll_container_in_explore_controls(explore):
     page = explore((1280, 800))
     wait_ready(page)
-    page.evaluate("document.getElementById('exploreAdvanced').open = true")
-    nested = page.evaluate("""() => [...document.querySelectorAll('#settingsView, #settingsView *')].filter(e => {
+    nested = page.evaluate("""() => [...document.querySelectorAll('#wmSidebar *')].filter(e => {
         const s = getComputedStyle(e); return e.offsetParent !== null && /(auto|scroll)/.test(s.overflowY) && e.scrollHeight > e.clientHeight + 1;
       }).map(e => e.id || e.className)""")
-    assert nested == [], nested
+    assert set(nested) <= {'wmSidebarScroll'}, nested                            # only Zone 3 scrolls
 
 
 def test_explore_tour_explore_keeps_period_and_overlay(explore):
