@@ -9,6 +9,9 @@ rendered map colours.
 from __future__ import annotations
 
 import math
+import random
+
+import wind_modes
 
 BBOX = [34.0, 72.0, -28.0, 33.0]
 TILE_KM = 50.0
@@ -43,6 +46,33 @@ def temperature(month, lon, gradient):
 # the bbox origin (-28 deg) while the rest of the row uses LON_ORIGIN.
 MIXED_LAT = (44.0, 46.5)
 MIXED_FROM_LON = 8.0
+
+
+def _observations(kind, seed):
+    rnd = random.Random(seed)
+    if kind == 'nw':
+        return [(315.0, 7.0)] * 60 + [(rnd.uniform(0, 360), 3.0) for _ in range(30)]
+    if kind == 'n60w30':
+        return [(0.0, 5.0)] * 54 + [(270.0, 5.0)] * 27 + [(rnd.uniform(0, 360), 5.0) for _ in range(9)]
+    return [(rnd.uniform(0, 360), 5.0) for _ in range(90)]
+
+
+def wind_region(lon, month):
+    """Synthetic regional wind: west NW (diffuse in July), centre N 60 % / W 30 %, east diffuse."""
+    if lon < 5.0:
+        return 'diffuse' if month == 7 else 'nw'
+    if lon < 15.0:
+        return 'n60w30'
+    return 'diffuse'
+
+
+_MODES = {}
+
+
+def modes_for(kind):
+    if kind not in _MODES:
+        _MODES[kind] = wind_modes.classify_observations(_observations(kind, 7))
+    return _MODES[kind]
 
 
 def grid(args, *, gradient=0.0, mixed=False, rain=None):
@@ -85,6 +115,7 @@ def grid(args, *, gradient=0.0, mixed=False, rain=None):
                         'precipitation_mm': rain, 'rain_probability': 0.4, 'rain_typical_mm': rain,
                         'wind_speed_ms': 7.0, 'wind_dir_deg': 270.0, 'wind_var_deg': 0.5,
                         'lucky_day_count': 10, 'lucky_ride_count': 10,
+                        'wind_modes': modes_for(wind_region(lon, month)),
                     })
         row += 1
     ts = args.get('timescale', 'year')

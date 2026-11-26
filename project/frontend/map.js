@@ -14168,6 +14168,15 @@
     { t: 0.70, c: { r: 245, g: 220, b: 90 } },
     { t: 1.00, c: { r: 60, g: 170, b: 110 } },
   ];
+  // Explore wind speed wash (Tour keeps PAL_WIND). Visible already at the 2-4 m/s
+  // typical over land, where PAL_WIND at 50 % opacity was nearly invisible.
+  const PAL_EXPLORE_WIND = [
+    { t: 0.00, c: { r: 224, g: 242, b: 254 } },
+    { t: 0.35, c: { r: 125, g: 211, b: 252 } },
+    { t: 0.70, c: { r: 37, g: 99, b: 235 } },
+    { t: 1.00, c: { r: 30, g: 27, b: 120 } },
+  ];
+
   const PAL_WIND = [
     { t: 0.00, c: { r: 200, g: 215, b: 225 } },
     { t: 1.00, c: { r: 90, g: 115, b: 140 } },
@@ -14611,6 +14620,18 @@
         'Lucky Days score combines temperature, rain and wind for the full-day view.',
         `Thresholds: temp ${cold}..${hot}°C, rain < ${rainHigh} mm/day, wind < ${wAbs} m/s (absolute).`,
         'Tick labels are score anchors (0..1).'
+      );
+      return;
+    }
+    if ((layer === 'wind_speed' || layer === 'wind_absolute') && !_tourIsActive()) {
+      const arrows = 'Arrows: wind pushes towards (downwind). Longer and darker = more frequent; '
+        + 'at most two dominant directions; no arrow where directions are diffuse.';
+      _setLegend('Wind pushes towards · speed (m/s)', PAL_EXPLORE_WIND, ['0', '3', '6', '10', '14+'],
+        metaNote ? `${arrows}  |  ${metaNote}` : arrows);
+      _setLegendTooltips(
+        'Arrows show where the wind pushes a cyclist (downwind), i.e. the meteorological direction rotated by 180°.',
+        'Colour encodes the mean wind speed (m/s) of the selected period.',
+        'Directions come from daily wind of the selected period and reference years.'
       );
       return;
     }
@@ -20275,6 +20296,98 @@
     }
   }
 
+  // --- Wind roses: one or two dominant directions per region ------------------
+  // Data: wind_modes per grid point from the server (see backend wind_modes.py):
+  // from_deg (meteorological) and to_deg = from_deg + 180. Touracle draws only to_deg:
+  // the direction the wind pushes towards (downwind), like a tailwind for a cyclist.
+  const WIND_ROSE_MIN_SPACING_PX = 220;   // ~4-5 roses for Germany at country zoom
+  const WIND_ROSE_EDGE_MARGIN_PX = 24;
+  const WIND_ROSE_MAX = 14;
+
+  function _selectWindRoses(resp, w, h) {
+    const cands = [];
+    for (const p of (resp && resp.points) || []) {
+      const modes = p && p.wind_modes;
+      if (!Array.isArray(modes) || !modes.length) continue;
+      let pt = null;
+      try { pt = map.latLngToContainerPoint([Number(p.lat), Number(p.lon)]); } catch (_) { pt = null; }
+      if (!pt || pt.x < WIND_ROSE_EDGE_MARGIN_PX || pt.y < WIND_ROSE_EDGE_MARGIN_PX
+          || pt.x > w - WIND_ROSE_EDGE_MARGIN_PX || pt.y > h - WIND_ROSE_EDGE_MARGIN_PX) continue;
+      const score = Number(modes[0].significance) || 0;
+      if (!(score > 0)) continue;
+      cands.push({ x: pt.x, y: pt.y, lat: Number(p.lat), lon: Number(p.lon), modes: modes.slice(0, 2), score });
+    }
+    // Most significant first; ties by position so the choice is stable while panning.
+    cands.sort((a, b) => (b.score - a.score) || (a.lat - b.lat) || (a.lon - b.lon));
+    const out = [];
+    const d2 = WIND_ROSE_MIN_SPACING_PX * WIND_ROSE_MIN_SPACING_PX;
+    for (const c of cands) {
+      if (out.length >= WIND_ROSE_MAX) break;
+      if (out.every((o) => ((o.x - c.x) * (o.x - c.x) + (o.y - c.y) * (o.y - c.y)) >= d2)) out.push(c);
+    }
+    return out;
+  }
+
+  function _drawWindArrow(ctx, x, y, toDeg, len, width, alpha) {
+    const a = Number(toDeg) * Math.PI / 180;         // compass bearing: 0 = north, 90 = east
+    const dx = Math.sin(a);
+    const dy = -Math.cos(a);
+    const x1 = x + dx * len;
+    const y1 = y + dy * len;
+    const head = 4 + width * 1.6;
+    const px = -dy;
+    const py = dx;
+    const path = () => {
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x1 - dx * head * 0.6, y1 - dy * head * 0.6);
+    };
+    const tip = () => {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x1 - dx * head + px * head * 0.55, y1 - dy * head + py * head * 0.55);
+      ctx.lineTo(x1 - dx * head - px * head * 0.55, y1 - dy * head - py * head * 0.55);
+      ctx.closePath();
+    };
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';      // halo for any basemap
+    ctx.lineWidth = width + 3;
+    path(); ctx.stroke();
+    tip(); ctx.lineWidth = 3; ctx.stroke();
+    ctx.strokeStyle = '#1e293b';
+    ctx.fillStyle = '#1e293b';
+    ctx.lineWidth = width;
+    path(); ctx.stroke();
+    tip(); ctx.fill();
+    ctx.restore();
+  }
+
+  function _drawWindRoses(ctx, resp, w, h) {
+    // Reusable on top of any overlay; Phase 3 draws it with the Wind overlay only.
+    const roses = _selectWindRoses(resp, w, h);
+    for (const r of roses) {
+      r.modes.forEach((m, i) => {
+        const share = Math.max(0, Math.min(1, Number(m.share) || 0));
+        const len = 14 + 30 * share;
+        _drawWindArrow(ctx, r.x, r.y, Number(m.to_deg), len, i === 0 ? 3.2 : 2, i === 0 ? 0.9 : 0.55);
+      });
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+    EXPLORE_DIAG.roses = roses.map((r) => ({ lat: r.lat, lon: r.lon, x: r.x, y: r.y,
+      modes: r.modes.map((m) => ({ from_deg: m.from_deg, to_deg: m.to_deg, share: m.share, mean_speed_ms: m.mean_speed_ms })) }));
+  }
+
   function _strategicRenderSignature() {
     // Everything a full overlay draw depends on. Several handlers fire for one
     // pan/zoom/setting change; a draw whose inputs are unchanged is skipped.
@@ -20294,11 +20407,12 @@
       Boolean(STRATEGIC_STATE.windOn), view, settings].join('|');
   }
 
-  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0 };
+  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [] };
   try {
     window.__WM_EXPLORE_DIAG__ = Object.defineProperties({}, {
       renders: { get: () => EXPLORE_DIAG.renders },
       lastRenderMs: { get: () => EXPLORE_DIAG.lastRenderMs },
+      roses: { get: () => EXPLORE_DIAG.roses.slice() },
       sampleAt: { value: (lat, lon) => _strategicSampleAt(Number(lat), Number(lon)) },
     });
   } catch (_) {}
@@ -20316,6 +20430,7 @@
     const renderSig = _strategicRenderSignature();
     if (!(opts && opts.force) && renderSig === STRATEGIC_STATE._lastRenderSig) return;
     const renderStartedAt = performance.now();
+    EXPLORE_DIAG.roses = [];
     try { STRATEGIC_STATE._lastLandSource = _strategicLandSourceForCurrentZoom(); } catch (_) {}
 
     const bboxRaw = _bboxFromResp(resp);
@@ -20748,11 +20863,11 @@
                 continue;
               }
               const u = _clamp01(ws / 16);
-              const c = _paletteSample(PAL_WIND, u);
+              const c = _paletteSample(PAL_EXPLORE_WIND, u);
               data[idxPx + 0] = c.r;
               data[idxPx + 1] = c.g;
               data[idxPx + 2] = c.b;
-              data[idxPx + 3] = Math.max(0, Math.min(255, Math.round(255 * 0.50)));
+              data[idxPx + 3] = Math.max(0, Math.min(255, Math.round(255 * (0.30 + 0.35 * u))));
             }
           }
           octx.putImageData(img, 0, 0);
@@ -20763,6 +20878,7 @@
         }
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
+        _drawWindRoses(ctx, resp, w, h);
         return;
       }
 

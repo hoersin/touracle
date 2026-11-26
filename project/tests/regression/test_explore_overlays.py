@@ -470,3 +470,98 @@ def test_climate_profile_timeout_shows_a_readable_message(explore, monkeypatch):
     band = page.evaluate("() => (document.querySelector('.wm-climate-workspace') || document.body).innerText")
     assert 'climate-profile-timeout' not in band
     assert 'took too long' in band.lower(), band[:400]
+
+
+# ------------------------------------------------------------------- wind roses
+ROSES = "() => window.__WM_EXPLORE_DIAG__.roses"
+
+
+def angle_diff(a, b):
+    return abs((a - b + 180) % 360 - 180)
+
+
+def show_wind(page):
+    select_overlay(page, 'wind_absolute')
+    wait_ready(page)
+    page.wait_for_timeout(300)
+    return page.evaluate(ROSES)
+
+
+def test_wind_roses_point_downwind_with_one_or_two_arrows(explore):
+    page = explore()
+    wait_ready(page)
+    roses = show_wind(page)
+    assert roses, 'no wind roses drawn'
+    west = [r for r in roses if r['lon'] < 5]
+    centre = [r for r in roses if 5 <= r['lon'] < 15]
+    east = [r for r in roses if r['lon'] >= 15]
+    assert west and centre, roses
+    assert not east, f'diffuse region must not get roses: {east}'
+    for r in west:                                     # wind from NW pushes towards SE
+        assert len(r['modes']) == 1 and angle_diff(r['modes'][0]['to_deg'], 135) < 10, r
+    for r in centre:                                   # N 60 % / W 30 % -> arrows S and E
+        assert len(r['modes']) == 2, r
+        assert angle_diff(r['modes'][0]['to_deg'], 180) < 10 and angle_diff(r['modes'][1]['to_deg'], 90) < 10, r
+        assert r['modes'][0]['share'] > r['modes'][1]['share']
+
+
+def test_wind_rose_arrows_are_drawn_downwind_on_the_map(explore):
+    page = explore()
+    wait_ready(page)
+    roses = show_wind(page)
+    r = next(r for r in roses if r['lon'] < 5)          # one arrow pointing SE
+    dark = page.evaluate("""([x, y]) => { const c = document.querySelector('.wm-strategic-heat canvas');
+        const k = c.width / c.clientWidth; const ctx = c.getContext('2d');
+        const at = (dx, dy) => Array.from(ctx.getImageData(Math.round((x + dx) * k), Math.round((y + dy) * k), 1, 1).data);
+        const s = Math.SQRT1_2 * 14;
+        return { downwind: at(s, s), upwind: at(-s, -s) }; }""", [r['x'], r['y']])
+    is_dark = lambda px: px[3] > 150 and max(px[:3]) < 110
+    assert is_dark(dark['downwind']), dark            # arrow body towards SE (screen +x, +y)
+    assert not is_dark(dark['upwind']), dark          # nothing towards NW
+
+
+def test_germany_at_country_zoom_shows_at_most_five_roses(explore):
+    page = explore()
+    wait_ready(page)
+    page.evaluate("window.__WM_LEAFLET_MAP__.setView([51.1, 10.4], 6, {animate: false})")
+    wait_ready(page)
+    roses = show_wind(page)
+    in_de = [r for r in roses if 47.3 <= r['lat'] <= 55.0 and 5.9 <= r['lon'] <= 15.0]
+    assert 1 <= len(in_de) <= 5, in_de
+    xs_ = [(r['x'], r['y']) for r in roses]
+    assert all(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 >= 219 for i, a in enumerate(xs_) for b in xs_[i + 1:])
+
+
+def test_wind_roses_follow_the_selected_period(explore):
+    page = explore()
+    wait_ready(page)
+    year = show_wind(page)
+    click_time(page, 'month', 7)
+    wait_ready(page)
+    page.wait_for_timeout(300)
+    july = page.evaluate(ROSES)
+    assert any(r['lon'] < 5 for r in year)
+    assert not any(r['lon'] < 5 for r in july), 'west is diffuse in July and must not get roses'
+
+
+def test_wind_roses_belong_to_the_wind_overlay_and_ignore_the_wind_field(explore):
+    page = explore()
+    wait_ready(page)
+    assert page.evaluate(ROSES) == []                 # Temperature: no roses
+    roses = show_wind(page)
+    page.click('#strategicWindOn')
+    page.wait_for_timeout(800)
+    assert [(r['lat'], r['lon']) for r in page.evaluate(ROSES)] == [(r['lat'], r['lon']) for r in roses]
+    assert page.evaluate("document.getElementById('strategicWindOn').checked")
+    select_overlay(page, 'temperature')
+    wait_ready(page)
+    assert page.evaluate(ROSES) == []
+    assert page.evaluate("document.getElementById('strategicWindOn').checked")     # field stays independent
+
+
+def test_wind_legend_says_where_the_wind_pushes(explore):
+    page = explore()
+    wait_ready(page)
+    show_wind(page)
+    text = page.evaluate("() => document.querySelector('.wm-map-legend').innerText")
+    assert 'pushes towards' in text.lower(), text
