@@ -357,9 +357,6 @@
   const strategicTemporalPeriodSelect = document.getElementById('strategicTemporalPeriod');
   const exploreTimescaleSelect = document.getElementById('exploreTimescaleSelect');
   const explorePeriodSelect = document.getElementById('explorePeriodSelect');
-  const exploreOverlayProgress = document.getElementById('exploreOverlayProgress');
-  const exploreOverlayProgressBar = document.getElementById('exploreOverlayProgressBar');
-  const exploreOverlayProgressText = document.getElementById('exploreOverlayProgressText');
   const strategicWindOn = document.getElementById('strategicWindOn');
   const strategicWindMode = document.getElementById('strategicWindMode');
   const settingsCancel = document.getElementById('settingsCancel');
@@ -4398,7 +4395,14 @@
   let MODE_SWITCH_RELOAD_TIMER = null;
   const CLIMATE_PROFILE_HEIGHT = 360;
   const CLIMATE_CLICK_DEBOUNCE_MS = 100;
-  const CLIMATE_PROFILE_FETCH_TIMEOUT_MS = 30000;
+  const CLIMATE_PROFILE_FETCH_TIMEOUT_MS = (() => {
+    // 30 s; a test may shorten it before the page loads.
+    try {
+      const v = Number(window.__WM_CLIMATE_PROFILE_TIMEOUT_MS__);
+      if (Number.isFinite(v) && v > 0) return v;
+    } catch (_) {}
+    return 30000;
+  })();
   const CLIMATE_PROFILE_LOADING_MIN_MS = 180;
   const CLIMATE_PROFILE_LOADING_COMPLETE_MIN_MS = 140;
   const CLIMATE_REFERENCE_YEAR_COUNT_DEFAULT = 3;
@@ -8239,7 +8243,8 @@
     let timedOut = false;
     const timeoutId = setTimeout(() => {
       timedOut = true;
-      try { ac.abort(new Error('climate-profile-timeout')); } catch (_) {}
+      // Plain abort: a custom reason would surface as a raw Error instead of an AbortError.
+      try { ac.abort(); } catch (_) {}
     }, CLIMATE_PROFILE_FETCH_TIMEOUT_MS);
 
     const refYears = Math.max(1, Number(CLIMATE_PROFILE_STATE.referenceYearCount) || CLIMATE_REFERENCE_YEAR_COUNT_DEFAULT);
@@ -8334,10 +8339,10 @@
         clickToRenderMs: CLIMATE_PROFILE_STATE.lastClientTimings.clickToRenderMs,
       });
     } catch (err) {
-      if (err && err.name === 'AbortError') {
-        if (!timedOut) return;
-        throw new Error('Climate profile loading timed out.');
+      if (timedOut) {
+        throw new Error(`Loading the climate profile took too long (over ${Math.round(CLIMATE_PROFILE_FETCH_TIMEOUT_MS / 1000)} s). The server may still be preparing its climate data; select the location again to retry.`);
       }
+      if (err && err.name === 'AbortError') return;
       throw err;
     } finally {
       clearTimeout(timeoutId);
@@ -12861,6 +12866,9 @@
       strategicYears: [2025],
       strategicMode: 'active',
       climateTimescale: 'year',
+      // Explore selection restored on reload: first day of the selected period, overlay.
+      climatePeriodDoy: 1,
+      exploreOverlay: 'temperature',
       includeSea: false,
       interpolation: true,
       strategicWindOn: false,
@@ -12948,6 +12956,10 @@
         climateTimescale: (typeof j.climateTimescale === 'string')
           ? j.climateTimescale
           : ((typeof j.climate_timescale === 'string') ? j.climate_timescale : defaults.climateTimescale),
+        climatePeriodDoy: (Number.isInteger(Number(j.climatePeriodDoy)) && Number(j.climatePeriodDoy) >= 1 && Number(j.climatePeriodDoy) <= 365)
+          ? Number(j.climatePeriodDoy) : defaults.climatePeriodDoy,
+        exploreOverlay: ['temperature', 'precipitation', 'wind_absolute', 'none'].includes(j.exploreOverlay)
+          ? j.exploreOverlay : defaults.exploreOverlay,
         includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
         interpolation: (typeof j.interpolation === 'boolean') ? j.interpolation : defaults.interpolation,
         strategicWindOn: (typeof j.strategicWindOn === 'boolean') ? j.strategicWindOn : defaults.strategicWindOn,
@@ -14023,16 +14035,16 @@
   }
 
   function _strategicSelectionIdentity() {
+    // Identity of the requested *data*. The overlay choice and the exact viewport
+    // are not part of it: all overlays come from the same response, and coverage
+    // of the viewport is checked separately (_strategicViewNeedsFetch).
     try {
-      const b = map && map.getBounds ? map.getBounds() : null;
       return JSON.stringify({
         years: _strategicGetSelectedYears(),
         timescale: String(STRATEGIC_STATE.timescale || 'year'),
         doy: Number(STRATEGIC_STATE.doy || 1),
         rangeStart: Number(STRATEGIC_STATE.rangeStartDoy || 1),
         rangeEnd: Number(STRATEGIC_STATE.rangeEndDoy || 14),
-        layer: _strategicNormalizeLayer(STRATEGIC_STATE.layer),
-        bounds: b ? [_q3(b.getSouth()), _q3(b.getNorth()), _q3(b.getWest()), _q3(b.getEast())] : null,
         mode: '24h',
       });
     } catch (_) {
@@ -14404,6 +14416,10 @@
           const d = Math.max(1, Math.round(Number(resp.duration_days) || 1));
           if (s && e) rangeTxt = `Range: ${_fmtISODayMonth(s)} – ${_fmtISODayMonth(e)} (${d}d)`;
           else if (s) rangeTxt = `Range: ${_fmtISODayMonth(s)} (${d}d)`;
+        } else if (!_tourIsActive()) {
+          // Explore: the period of the data actually drawn, not the pending selection.
+          const period = _exploreRespPeriodLabel(resp);
+          rangeTxt = period ? `Period: ${period}` : 'No data loaded';
         } else {
           const ts = String(STRATEGIC_STATE && STRATEGIC_STATE.timescale ? STRATEGIC_STATE.timescale : 'daily');
           const map = { daily: 'Daily', week: 'Weekly', two_week: '2 Weeks', month: 'Monthly', quarter: 'Quarter', year: 'Yearly', custom: 'Custom' };
@@ -14648,6 +14664,12 @@
       return;
     }
     STRATEGIC_STATE.layer = _strategicNormalizeLayer(layer);
+    try {
+      if (SETTINGS && SETTINGS.exploreOverlay !== STRATEGIC_STATE.layer) {
+        SETTINGS.exploreOverlay = STRATEGIC_STATE.layer;
+        saveSettings(SETTINGS);
+      }
+    } catch (_) {}
     if (STRATEGIC_STATE.layer === 'none') {
       try {
         if (STRATEGIC_STATE.isoLayer) STRATEGIC_STATE.isoLayer.clear();
@@ -14676,7 +14698,15 @@
       if (!STRATEGIC_STATE.windLayer) STRATEGIC_STATE.windLayer = _makeWindLayer();
       if (!map.hasLayer(STRATEGIC_STATE.windLayer)) STRATEGIC_STATE.windLayer.addTo(map);
     } catch (_) {}
+    if (!STRATEGIC_STATE.active) return;
+    if (STRATEGIC_STATE.loadingReq) {
+      // The load in progress draws the newly chosen overlay when its data arrives.
+      _setExploreOverlayStatus(STRATEGIC_STATE.overlayStatus || 'loading', `Loading ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      return;
+    }
+    if (!STRATEGIC_STATE.lastResp) return;   // nothing loaded (or the last load failed)
     _renderStrategic();
+    _setExploreOverlayStatus('ready', `${_exploreOverlayLabel()} · ${_exploreRespPeriodLabel(STRATEGIC_STATE.lastResp)}`);
   }
 
   function _buildYearDates(year) {
@@ -14804,9 +14834,7 @@
         const climatePane = (m.getPane && m.getPane('wmClimatePane')) ? m.getPane('wmClimatePane') : m.getPanes().overlayPane;
         climatePane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
-        m.on('moveend zoomend resize', () => {
-          try { _renderStrategic(); } catch (_) {}
-        });
+        STRATEGIC_STATE.renderEpoch = (Number(STRATEGIC_STATE.renderEpoch) || 0) + 1;
         this._reset();
       },
       onRemove: function(m) {
@@ -14858,6 +14886,7 @@
         fctx.drawImage(this._buffer, 0, 0);
       },
       clear: function() {
+        STRATEGIC_STATE.renderEpoch = (Number(STRATEGIC_STATE.renderEpoch) || 0) + 1;
         [this._front, this._buffer].forEach((canvas) => {
           if (!canvas) return;
           try {
@@ -14902,9 +14931,7 @@
         const windPane = (m.getPane && m.getPane('wmWindPane')) ? m.getPane('wmWindPane') : m.getPanes().overlayPane;
         windPane.appendChild(this._container);
         m.on('moveend zoomend resize', this._reset, this);
-        m.on('moveend zoomend resize', () => {
-          try { _renderStrategic(); } catch (_) {}
-        });
+        STRATEGIC_STATE.renderEpoch = (Number(STRATEGIC_STATE.renderEpoch) || 0) + 1;
         this._reset();
       },
       onRemove: function(m) {
@@ -17308,6 +17335,13 @@
     }
   }
 
+  function _strategicRenderAfterMaskLoad() {
+    // Redraw only if the newly loaded coastline is the one the current zoom uses.
+    if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return;
+    if (_strategicLandSourceForCurrentZoom() === STRATEGIC_STATE._lastLandSource) return;
+    _renderStrategic({ force: true });
+  }
+
   function _strategicLandSourceForCurrentZoom() {
     const preferHi = _strategicPreferHiResLand();
     const preferUltra = _strategicPreferUltraResLand();
@@ -17431,7 +17465,7 @@
       console.warn('Land mask load failed', e);
     } finally {
       STRATEGIC_LAND_LOADING = false;
-      try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
+      try { _strategicRenderAfterMaskLoad(); } catch (_) {}
     }
   }
 
@@ -17453,7 +17487,7 @@
       console.warn('Shore mask load failed', e);
     } finally {
       STRATEGIC_SHORE_LOADING = false;
-      try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
+      try { _strategicRenderAfterMaskLoad(); } catch (_) {}
     }
   }
 
@@ -17475,7 +17509,7 @@
       console.warn('Ultra shore mask load failed', e);
     } finally {
       STRATEGIC_ULTRA_LOADING = false;
-      try { if (STRATEGIC_STATE && STRATEGIC_STATE.active) _renderStrategic(); } catch (_) {}
+      try { _strategicRenderAfterMaskLoad(); } catch (_) {}
     }
   }
 
@@ -18031,7 +18065,12 @@
     lastFetchAt: 0,
     pendingFetch: null,
     fetchAbort: null,
-    requestSerial: 0,
+    netInflight: null,   // the one Strategic Grid request in flight { url, wantedBy, ac, promise }
+    loadTicket: 0,       // id of the current overlay load; older loads are superseded
+    loadingReq: null,    // { identity, bounds } of the load in progress
+    respSeq: 0,          // bumped whenever lastResp changes (render signature)
+    renderEpoch: 0,      // bumped when a layer is (re)added or cleared
+    overlayStatus: 'idle',
     isoLayer: null,
     windLayer: null,
   };
@@ -18132,20 +18171,14 @@
       const ts = _strategicNormalizeClimateTimescale(STRATEGIC_STATE.timescale || 'year');
       if (ts === 'year') {
         _updateExploreTimeButtons('year', 'year');
-        const status = document.getElementById('exploreContextStatus');
-        if (status) status.textContent = 'YEAR · 24h';
       } else if (ts === 'quarter') {
         const md = _doyToMonthDay(_clampDOYInt(STRATEGIC_STATE.doy || 1));
         const quarter = 1 + Math.floor((Number(md.month) - 1) / 3);
         _updateExploreTimeButtons('quarter', String(quarter));
-        const status = document.getElementById('exploreContextStatus');
-        if (status) status.textContent = `Q${quarter} · 24h`;
       } else if (ts === 'month') {
         const md = _doyToMonthDay(_clampDOYInt(STRATEGIC_STATE.doy || 1));
         const month = Number(md.month) || 1;
         _updateExploreTimeButtons('month', String(month));
-        const status = document.getElementById('exploreContextStatus');
-        if (status) status.textContent = `${_DOY_MONTHS[month - 1].name} · 24h`;
       }
       if (exploreTimescaleSelect) exploreTimescaleSelect.value = ts;
       if (explorePeriodSelect) {
@@ -18231,7 +18264,12 @@
     } catch (_) {}
 
     let doy = _clampDOYInt(STRATEGIC_STATE.doy || 1);
-    const periodVal = strategicTemporalPeriodSelect ? String(strategicTemporalPeriodSelect.value || '').trim() : '';
+    // Without the (removed) period select, keep the current period instead of
+    // falling back to Q1 / January.
+    const curMonth = Number(_doyToMonthDay(doy).month) || 1;
+    const periodVal = strategicTemporalPeriodSelect
+      ? String(strategicTemporalPeriodSelect.value || '').trim()
+      : String(ts === 'quarter' ? (1 + Math.floor((curMonth - 1) / 3)) : curMonth);
     if (ts === 'year') {
       doy = 1;
     } else if (ts === 'quarter') {
@@ -18332,15 +18370,10 @@
       } else if (ts === 'month') {
         STRATEGIC_STATE.doy = _strategicMonthStartDoy(String(value));
       }
+      SETTINGS.climatePeriodDoy = _clampDOYInt(STRATEGIC_STATE.doy || 1);
       try { saveSettings(SETTINGS); } catch (_) {}
       _updateExploreTimeButtons(ts, ts === 'year' ? 'year' : String(value));
-      try {
-        const status = document.getElementById('exploreContextStatus');
-        if (status) {
-          const label = kind === 'year' ? 'YEAR · 24h' : kind === 'quarter' ? `Q${value} · 24h` : `${_DOY_MONTHS[Number(value) - 1].name} · 24h`;
-          status.textContent = label;
-        }
-      } catch (_) {}
+      _setExploreOverlayStatus('loading', `Loading ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
       _scheduleStrategicFetch(`explore-${ts}`);
     } catch (_) {}
   }
@@ -19217,74 +19250,155 @@
     return null;
   }
 
-  function _setExploreOverlayProgress(percent, text) {
-    const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  // --- Explore overlay status (one progress bar, honest states) ---------------
+  // States: idle | loading | waiting | drawing | ready | error. Loading, waiting and
+  // drawing cannot be measured, so the bar is indeterminate (no aria-valuenow);
+  // 100 % is set only after the overlay for the current request has been drawn.
+  const EXPLORE_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+    'August', 'September', 'October', 'November', 'December'];
+  const EXPLORE_OVERLAY_LABELS = { temperature: 'Temperature', precipitation: 'Precipitation', wind_absolute: 'Wind', none: 'No overlay' };
+  const STRATEGIC_BUSY_RETRY_MAX_MS = 90000;
+
+  function _explorePeriodLabel(timescale, month) {
+    const ts = String(timescale || 'year');
+    const m = Math.max(1, Math.min(12, Math.round(Number(month) || 1)));
+    if (ts === 'year') return 'Year';
+    if (ts === 'quarter') {
+      const q = 1 + Math.floor((m - 1) / 3);
+      const first = _DOY_MONTHS[(q - 1) * 3].name;
+      const last = _DOY_MONTHS[(q - 1) * 3 + 2].name;
+      return `Q${q} (${first}–${last})`;
+    }
+    if (ts === 'month') return EXPLORE_MONTH_NAMES[m - 1];
+    return ts;
+  }
+
+  function _exploreSelectedPeriodLabel() {
     try {
-      if (exploreOverlayProgress) {
-        exploreOverlayProgress.setAttribute('aria-valuenow', String(pct));
-        exploreOverlayProgress.setAttribute('aria-valuetext', String(text || ''));
+      const md = _doyToMonthDay(_clampDOYInt(STRATEGIC_STATE.doy || 1));
+      return _explorePeriodLabel(_strategicNormalizeClimateTimescale(STRATEGIC_STATE.timescale || 'year'), md.month);
+    } catch (_) {
+      return 'Year';
+    }
+  }
+
+  function _exploreRespPeriodLabel(resp) {
+    if (!resp || !resp.timescale) return '';
+    return _explorePeriodLabel(resp.timescale, resp.month);
+  }
+
+  function _exploreOverlayLabel() {
+    return EXPLORE_OVERLAY_LABELS[_strategicNormalizeLayer(STRATEGIC_STATE.layer)] || 'Overlay';
+  }
+
+  function _setExploreOverlayStatus(state, text) {
+    const s = String(state || 'idle');
+    const busy = (s === 'loading' || s === 'waiting' || s === 'drawing');
+    STRATEGIC_STATE.overlayStatus = s;
+    try {
+      const status = document.getElementById('exploreContextStatus');
+      if (status) {
+        status.textContent = String(text || '');
+        status.dataset.state = s;
+        status.setAttribute('role', s === 'error' ? 'alert' : 'status');
       }
-      if (exploreOverlayProgressBar) exploreOverlayProgressBar.style.width = `${pct}%`;
-      if (exploreOverlayProgressText) exploreOverlayProgressText.textContent = String(text || 'No calculation running.');
-      const contextBar = document.getElementById('exploreContextProgressBar');
-      const contextProgress = document.getElementById('exploreContextProgress');
-      if (contextBar) contextBar.style.width = `${pct}%`;
-      if (contextProgress) {
-        contextProgress.setAttribute('aria-valuenow', String(pct));
-        contextProgress.setAttribute('aria-valuetext', String(text || ''));
+      const p = document.getElementById('exploreContextProgress');
+      const bar = document.getElementById('exploreContextProgressBar');
+      if (p) {
+        p.dataset.state = s;
+        p.classList.toggle('is-indeterminate', busy);
+        if (busy) p.removeAttribute('aria-valuenow');
+        else p.setAttribute('aria-valuenow', s === 'ready' ? '100' : '0');
+        p.setAttribute('aria-valuetext', String(text || ''));
       }
+      if (bar) bar.style.width = (s === 'ready') ? '100%' : (busy ? '' : '0%');
+      // Dim a drawn overlay while a different period is loading, so it is never
+      // presented as the newly selected period.
+      const drawn = _exploreRespPeriodLabel(STRATEGIC_STATE.lastResp);
+      const stale = busy && Boolean(drawn) && drawn !== _exploreSelectedPeriodLabel();
+      document.body.classList.toggle('wm-explore-overlay-stale', stale);
     } catch (_) {}
   }
 
-  async function _strategicFetchJsonWithSingleBusyRetry(url, ac, requestSerial) {
-    let resp = await fetch(url, { signal: ac.signal });
-    let j = await resp.json();
-    if (resp.status === 429) {
-      if (!STRATEGIC_STATE.active
-          || STRATEGIC_STATE.fetchAbort !== ac
-          || STRATEGIC_STATE.requestSerial !== requestSerial) {
-        const aborted = new Error('Strategic Grid request superseded.');
-        aborted.name = 'AbortError';
-        throw aborted;
+  function _strategicSupersededError() {
+    const e = new Error('Strategic Grid request superseded.');
+    e.name = 'AbortError';
+    return e;
+  }
+
+  function _strategicRequestBounds() {
+    // Viewport snapped outward to whole degrees: small viewport changes (sidebar
+    // resize, invalidateSize, short pans) produce the identical request.
+    const b = map.getBounds();
+    return {
+      latMin: Math.max(-85, Math.floor(b.getSouth())),
+      latMax: Math.min(85, Math.ceil(b.getNorth())),
+      lonMin: Math.max(-180, Math.floor(b.getWest())),
+      lonMax: Math.min(180, Math.ceil(b.getEast())),
+    };
+  }
+
+  async function _strategicFetchBusyAware(url, entry) {
+    // Retries HTTP 429 with backoff while somebody still wants this result.
+    const started = Date.now();
+    let delayMs = 1000;
+    for (;;) {
+      const resp = await fetch(url, { signal: entry.ac.signal });
+      let j = null;
+      try { j = await resp.json(); } catch (_) { j = null; }
+      if (resp.status !== 429) {
+        if (!resp.ok) throw new Error(j && j.error ? String(j.error) : `HTTP ${resp.status}`);
+        return j;
       }
-      let delayMs = 1000;
-      try {
-        const retryAfter = Number(resp.headers && resp.headers.get
-          ? resp.headers.get('Retry-After')
-          : 0);
-        if (Number.isFinite(retryAfter) && retryAfter > 0) {
-          delayMs = Math.max(250, Math.min(5000, retryAfter * 1000));
-        }
-      } catch (_) {}
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      if (!STRATEGIC_STATE.active
-          || STRATEGIC_STATE.fetchAbort !== ac
-          || STRATEGIC_STATE.requestSerial !== requestSerial) {
-        const aborted = new Error('Strategic Grid request superseded.');
-        aborted.name = 'AbortError';
-        throw aborted;
-      }
-      resp = await fetch(url, { signal: ac.signal });
-      j = await resp.json();
-    }
-    if (!resp.ok) {
-      if (resp.status === 429) {
-        const busy = new Error('Strategic Grid is busy.');
+      if (!STRATEGIC_STATE.active || entry.wantedBy !== STRATEGIC_STATE.loadTicket) throw _strategicSupersededError();
+      if (Date.now() - started > STRATEGIC_BUSY_RETRY_MAX_MS) {
+        const busy = new Error('the server stayed busy with another map calculation');
         busy.name = 'StrategicGridBusyError';
         throw busy;
       }
-      throw new Error(j && j.error ? j.error : `HTTP ${resp.status}`);
+      _setExploreOverlayStatus('waiting', `Waiting for the server · ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      let wait = delayMs;
+      try {
+        const ra = Number(resp.headers.get('Retry-After'));
+        if (Number.isFinite(ra) && ra > 0) wait = Math.max(wait, ra * 1000);
+      } catch (_) {}
+      await new Promise((resolve) => setTimeout(resolve, Math.min(5000, wait)));
+      delayMs = Math.min(5000, Math.round(delayMs * 1.5));
+      if (!STRATEGIC_STATE.active || entry.wantedBy !== STRATEGIC_STATE.loadTicket) throw _strategicSupersededError();
     }
-    return j;
   }
 
-  async function _fetchStrategicGridForMMDD(mmdd) {
+  async function _strategicRequestGrid(url, ticket) {
+    // Client mirror of the server's single computation slot: at most one grid
+    // request is in flight. Aborting it would not free the server (it keeps
+    // computing and answers the next different request with HTTP 429), so a
+    // different request waits for it; an identical one shares it.
+    const S = STRATEGIC_STATE;
+    for (;;) {
+      const cur = S.netInflight;
+      if (!cur) break;
+      if (cur.url === url) {
+        cur.wantedBy = ticket;
+        return cur.promise;
+      }
+      try { await cur.promise; } catch (_) {}
+      if (!S.active || ticket !== S.loadTicket) throw _strategicSupersededError();
+    }
+    const entry = { url, wantedBy: ticket, ac: new AbortController(), promise: null };
+    entry.promise = _strategicFetchBusyAware(url, entry);
+    S.netInflight = entry;
+    S.fetchAbort = entry.ac;
+    try {
+      return await entry.promise;
+    } finally {
+      if (S.netInflight === entry) S.netInflight = null;
+      if (S.fetchAbort === entry.ac) S.fetchAbort = null;
+    }
+  }
+
+  async function _fetchStrategicGridForMMDD(mmdd, ticket) {
     if (!STRATEGIC_STATE.active) return;
-    const b = map.getBounds();
-    const latMin = b.getSouth();
-    const latMax = b.getNorth();
-    const lonMin = b.getWest();
-    const lonMax = b.getEast();
+    const { latMin, latMax, lonMin, lonMax } = _strategicRequestBounds();
 
     const years = _strategicGetSelectedYears();
     const yearsKey = _strategicYearsKey(years);
@@ -19298,53 +19412,31 @@
       latMax,
       lonMin,
       lonMax,
-      _strategicLuckyVariant(),
+      '',
     );
     const cached = _strategicCacheGet(cacheKey);
-    if (cached) {
-      _setExploreOverlayProgress(100, 'Overlay ready from cache.');
-      return cached;
-    }
+    if (cached) return cached;
 
     const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
+    // Lucky-day thresholds are not sent: no Explore overlay shows Lucky Days, so
+    // changing them must not reload the map (the server applies its defaults).
     const url = `/api/strategic_grid?year=${encodeURIComponent(String(primaryYear))}`
       + `&years=${encodeURIComponent(String(yearsKey))}`
       + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
       + `&date=${encodeURIComponent(String(mmdd))}`
       + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
-      + _strategicLuckyQueryParams();
+      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
     const t0 = Date.now();
-
-    // Abort any in-flight request; slider scrubs should only render the latest.
-    try {
-      if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
-    } catch (_) {}
-    const ac = new AbortController();
-    STRATEGIC_STATE.fetchAbort = ac;
-    const requestSerial = ++STRATEGIC_STATE.requestSerial;
-    _setExploreOverlayProgress(12, 'Calculating selected historical overlay…');
-    let j;
-    try {
-      j = await _strategicFetchJsonWithSingleBusyRetry(url, ac, requestSerial);
-      _setExploreOverlayProgress(100, 'Overlay calculation complete.');
-    } catch (err) {
-      _setExploreOverlayProgress(0, 'Overlay calculation canceled or busy.');
-      throw err;
-    }
-    try { j._luckyVariant = _strategicLuckyVariant(); } catch (_) {}
+    const j = await _strategicRequestGrid(url, ticket);
+    try { j._requestBounds = { latMin, latMax, lonMin, lonMax }; } catch (_) {}
     try { _strategicCacheSet(cacheKey, j); } catch (_) {}
     STRATEGIC_STATE.lastFetchAt = t0;
     return j;
   }
 
-  async function _fetchStrategicGridForRange(startDateIso, durationDays) {
+  async function _fetchStrategicGridForRange(startDateIso, durationDays, ticket) {
     if (!STRATEGIC_STATE.active) return;
-    const b = map.getBounds();
-    const latMin = b.getSouth();
-    const latMax = b.getNorth();
-    const lonMin = b.getWest();
-    const lonMax = b.getEast();
+    const { latMin, latMax, lonMin, lonMax } = _strategicRequestBounds();
 
     const startIso = String(startDateIso || '');
     const dur = Math.max(1, Math.round(Number(durationDays) || 1));
@@ -19361,7 +19453,7 @@
       latMax,
       lonMin,
       lonMax,
-      _strategicLuckyVariant(),
+      '',
     );
     const cached = _strategicCacheGet(cacheKey);
     if (cached) return cached;
@@ -19372,26 +19464,10 @@
       + `&start_date=${encodeURIComponent(startIso)}`
       + `&duration_days=${encodeURIComponent(String(dur))}`
       + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
-      + _strategicLuckyQueryParams();
+      + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
     const t0 = Date.now();
-
-    try {
-      if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
-    } catch (_) {}
-    const ac = new AbortController();
-    STRATEGIC_STATE.fetchAbort = ac;
-    const requestSerial = ++STRATEGIC_STATE.requestSerial;
-    _setExploreOverlayProgress(12, 'Calculating selected historical overlay…');
-    let j;
-    try {
-      j = await _strategicFetchJsonWithSingleBusyRetry(url, ac, requestSerial);
-      _setExploreOverlayProgress(100, 'Overlay calculation complete.');
-    } catch (err) {
-      _setExploreOverlayProgress(0, 'Overlay calculation canceled or busy.');
-      throw err;
-    }
-    try { j._luckyVariant = _strategicLuckyVariant(); } catch (_) {}
+    const j = await _strategicRequestGrid(url, ticket);
+    try { j._requestBounds = { latMin, latMax, lonMin, lonMax }; } catch (_) {}
     try { _strategicCacheSet(cacheKey, j); } catch (_) {}
     STRATEGIC_STATE.lastFetchAt = t0;
     return j;
@@ -19450,38 +19526,39 @@
     return out;
   }
 
-  async function _fetchStrategicGrid() {
-    if (!STRATEGIC_STATE.active) return;
+  async function _fetchStrategicGrid(ticket) {
+    // Returns true when STRATEGIC_STATE.lastResp now holds data for this load.
+    if (!STRATEGIC_STATE.active) return false;
+    const tk = (ticket === undefined) ? STRATEGIC_STATE.loadTicket : ticket;
     const selectionIdentity = _strategicSelectionIdentity();
+    const accept = (j) => {
+      if (tk !== STRATEGIC_STATE.loadTicket || !STRATEGIC_STATE.active) throw _strategicSupersededError();
+      if (_strategicSelectionIdentity() !== selectionIdentity) throw _strategicSupersededError();
+      try { j._coverage_bbox = _coverageBBoxFromPoints(j.points); } catch (_) {}
+      STRATEGIC_STATE.lastResp = j;
+      STRATEGIC_STATE.respSeq = (Number(STRATEGIC_STATE.respSeq) || 0) + 1;
+      // Invalidate sampling caches so tooltip counts update immediately.
+      STRATEGIC_STATE._meta = null;
+      STRATEGIC_STATE._tileMap = null;
+      return true;
+    };
     if (_strategicUsingRangeUI()) {
       const y = Number(STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
       const { startDoy, durationDays } = _strategicGetRangeDOY();
       const startIso = _isoDateFromDOY(startDoy, y);
-      const j = await _fetchStrategicGridForRange(startIso, durationDays);
-      if (!j || !j.points) return;
-      try { j._coverage_bbox = _coverageBBoxFromPoints(j.points); } catch (_) {}
-      if (_strategicSelectionIdentity() !== selectionIdentity) return;
-      STRATEGIC_STATE.lastResp = j;
-      // Invalidate sampling caches so tooltip counts update immediately.
-      STRATEGIC_STATE._meta = null;
-      STRATEGIC_STATE._tileMap = null;
-      return;
+      const j = await _fetchStrategicGridForRange(startIso, durationDays, tk);
+      if (!j || !j.points) return false;
+      return accept(j);
     }
     const { mmdd0, mmdd1, frac } = _strategicCurrentMMDDPair();
-    const a = await _fetchStrategicGridForMMDD(mmdd0);
-    const b = (mmdd1 === mmdd0) ? a : await _fetchStrategicGridForMMDD(mmdd1);
-    if (!a || !a.points) return;
-    const blended = {
+    const a = await _fetchStrategicGridForMMDD(mmdd0, tk);
+    const b = (mmdd1 === mmdd0) ? a : await _fetchStrategicGridForMMDD(mmdd1, tk);
+    if (!a || !a.points) return false;
+    const blended = (b === a) ? a : {
       ...a,
       points: (b && b.points) ? _blendStrategicPoints(a.points, b.points, frac) : a.points,
     };
-    try { blended._luckyVariant = _strategicLuckyVariant(); } catch (_) {}
-    try { blended._coverage_bbox = _coverageBBoxFromPoints(blended.points); } catch (_) {}
-    if (_strategicSelectionIdentity() !== selectionIdentity) return;
-    STRATEGIC_STATE.lastResp = blended;
-    // Invalidate sampling caches so tooltip counts update immediately.
-    STRATEGIC_STATE._meta = null;
-    STRATEGIC_STATE._tileMap = null;
+    return accept(blended);
   }
 
   function _prefetchStrategicNeighbor(offsetDays) {
@@ -19496,11 +19573,7 @@
       while (d < 1) d += 365;
       while (d > 365) d -= 365;
       const mmdd = _mmddFromDOY(d);
-      const b = map.getBounds();
-      const latMin = b.getSouth();
-      const latMax = b.getNorth();
-      const lonMin = b.getWest();
-      const lonMax = b.getEast();
+      const { latMin, latMax, lonMin, lonMax } = _strategicRequestBounds();
       const cacheKey = _strategicCacheKey(
         yearsKey,
         mode,
@@ -19510,7 +19583,7 @@
         latMax,
         lonMin,
         lonMax,
-        _strategicLuckyVariant(),
+        '',
       );
       if (_strategicCacheGet(cacheKey)) return;
       const primaryYear = Number(years[0] || STRATEGIC_STATE.year || STRATEGIC_DEFAULT_YEAR);
@@ -19519,8 +19592,7 @@
         + `&timescale=${encodeURIComponent(String(STRATEGIC_STATE.timescale || 'daily'))}`
         + `&date=${encodeURIComponent(String(mmdd))}`
         + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
-        + _strategicLuckyQueryParams();
+        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
       fetch(url)
         .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
         .then(({ ok, status, j }) => {
@@ -19545,11 +19617,7 @@
       s2 = Math.max(1, Math.min(maxStart, s2));
       const startIso = _isoDateFromDOY(s2, y);
 
-      const b = map.getBounds();
-      const latMin = b.getSouth();
-      const latMax = b.getNorth();
-      const lonMin = b.getWest();
-      const lonMax = b.getEast();
+      const { latMin, latMax, lonMin, lonMax } = _strategicRequestBounds();
       const cacheKey = _strategicCacheKey(
         yearsKey,
         mode,
@@ -19559,7 +19627,7 @@
         latMax,
         lonMin,
         lonMax,
-        _strategicLuckyVariant(),
+        '',
       );
       if (_strategicCacheGet(cacheKey)) return;
 
@@ -19569,8 +19637,7 @@
         + `&start_date=${encodeURIComponent(startIso)}`
         + `&duration_days=${encodeURIComponent(String(durationDays))}`
         + `&lat_min=${encodeURIComponent(String(latMin))}&lat_max=${encodeURIComponent(String(latMax))}`
-        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`
-        + _strategicLuckyQueryParams();
+        + `&lon_min=${encodeURIComponent(String(lonMin))}&lon_max=${encodeURIComponent(String(lonMax))}`;
       fetch(url)
         .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
         .then(({ ok, status, j }) => {
@@ -20180,7 +20247,35 @@
     }
   }
 
-  function _renderStrategic() {
+  function _strategicRenderSignature() {
+    // Everything a full overlay draw depends on. Several handlers fire for one
+    // pan/zoom/setting change; a draw whose inputs are unchanged is skipped.
+    let view = '';
+    try {
+      const c = map.getCenter();
+      const sz = map.getSize();
+      view = `${c.lat.toFixed(7)},${c.lng.toFixed(7)},${map.getZoom()},${sz.x}x${sz.y}`;
+    } catch (_) {}
+    // Settings read by the draw path (land clip, interpolation, wind field look).
+    let settings = '';
+    try {
+      const s = SETTINGS || {};
+      settings = JSON.stringify([s.includeSea, s.interpolation, s.windDensity, s.animSpeed]);
+    } catch (_) {}
+    return [STRATEGIC_STATE.respSeq, STRATEGIC_STATE.renderEpoch, _strategicNormalizeLayer(STRATEGIC_STATE.layer),
+      Boolean(STRATEGIC_STATE.windOn), view, settings].join('|');
+  }
+
+  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0 };
+  try {
+    window.__WM_EXPLORE_DIAG__ = Object.defineProperties({}, {
+      renders: { get: () => EXPLORE_DIAG.renders },
+      lastRenderMs: { get: () => EXPLORE_DIAG.lastRenderMs },
+      sampleAt: { value: (lat, lon) => _strategicSampleAt(Number(lat), Number(lon)) },
+    });
+  } catch (_) {}
+
+  function _renderStrategic(opts) {
     if (!STRATEGIC_STATE.active) return;
     const resp = STRATEGIC_STATE.lastResp;
     if (!resp || !resp.points) return;
@@ -20190,6 +20285,10 @@
       if (!map.hasLayer(STRATEGIC_STATE.isoLayer)) STRATEGIC_STATE.isoLayer.addTo(map);
       if (!map.hasLayer(STRATEGIC_STATE.windLayer)) STRATEGIC_STATE.windLayer.addTo(map);
     } catch (_) {}
+    const renderSig = _strategicRenderSignature();
+    if (!(opts && opts.force) && renderSig === STRATEGIC_STATE._lastRenderSig) return;
+    const renderStartedAt = performance.now();
+    try { STRATEGIC_STATE._lastLandSource = _strategicLandSourceForCurrentZoom(); } catch (_) {}
 
     const bboxRaw = _bboxFromResp(resp);
     const tileKm = Number(resp.tile_km || 50);
@@ -20783,9 +20882,9 @@
       _strokeStrategicShoreline(ctx);
     });
 
-    // Wind overlay
-    const forceWind = (layer === 'wind_absolute');
-    const wantWind = (layer === 'none') ? false : Boolean(forceWind || STRATEGIC_STATE.windOn);
+    // Wind field (animated flow): a separate optional visualization that follows
+    // only its own toggle, independent of the selected overlay.
+    const wantWind = Boolean(STRATEGIC_STATE.windOn);
     if (STRATEGIC_STATE.windLayer) {
       if (!wantWind) {
         STRATEGIC_STATE.windLayer.stop();
@@ -20796,6 +20895,87 @@
         STRATEGIC_STATE.windLayer.drawArrows(resp.points, sampleFn);
         STRATEGIC_STATE.windLayer.startFlow(sampleFn, { speedHint: _meanWindSpeed(resp.points) });
       }
+    }
+    STRATEGIC_STATE._lastRenderSig = renderSig;
+    EXPLORE_DIAG.renders += 1;
+    EXPLORE_DIAG.lastRenderMs = Math.round(performance.now() - renderStartedAt);
+  }
+
+  function _strategicNextFrame() {
+    // Let the browser paint the current status before a synchronous draw.
+    return new Promise((resolve) => {
+      try { requestAnimationFrame(() => setTimeout(resolve, 0)); } catch (_) { setTimeout(resolve, 0); }
+    });
+  }
+
+  function _strategicShowLoadError(err) {
+    // An honest failure: the previous period is removed from the map and the
+    // legend, and the status says what failed and how to retry.
+    STRATEGIC_STATE.lastResp = null;
+    STRATEGIC_STATE.respSeq = (Number(STRATEGIC_STATE.respSeq) || 0) + 1;
+    STRATEGIC_STATE._meta = null;
+    STRATEGIC_STATE._tileMap = null;
+    try { if (STRATEGIC_STATE.isoLayer) STRATEGIC_STATE.isoLayer.clear(); } catch (_) {}
+    try {
+      if (STRATEGIC_STATE.windLayer) {
+        STRATEGIC_STATE.windLayer.stop();
+        STRATEGIC_STATE.windLayer.clear();
+      }
+    } catch (_) {}
+    try { _updateStrategicLegend(); } catch (_) {}
+    const reason = (err && err.name === 'StrategicGridBusyError')
+      ? 'the server stayed busy'
+      : String((err && err.message) || 'unknown error').replace(/^Aggregation failed:\s*/i, '');
+    _setExploreOverlayStatus('error', `${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()} could not be loaded (${reason}). Select the period again to retry.`);
+  }
+
+  async function _strategicLoadAndRender(why) {
+    // One load = fetch (or cache) → draw → ready. A newer load supersedes this one
+    // via the ticket; superseded loads never touch status, data or the map.
+    const S = STRATEGIC_STATE;
+    const ticket = (S.loadTicket = (Number(S.loadTicket) || 0) + 1);
+    S.loadingReq = { identity: _strategicSelectionIdentity(), bounds: _strategicRequestBounds() };
+    _setExploreOverlayStatus('loading', `Loading ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+    try {
+      const landed = await _fetchStrategicGrid(ticket);
+      if (ticket !== S.loadTicket || !S.active) return;
+      if (!landed) throw new Error('no data returned');
+      _setExploreOverlayStatus('drawing', `Drawing ${_exploreOverlayLabel()} · ${_exploreSelectedPeriodLabel()}…`);
+      await _strategicNextFrame();
+      if (ticket !== S.loadTicket || !S.active) return;
+      _renderStrategic();
+      try { _updateStrategicLegend(); } catch (_) {}
+      _setExploreOverlayStatus('ready', `${_exploreOverlayLabel()} · ${_exploreRespPeriodLabel(S.lastResp)}`);
+      S.loadingReq = null;
+      // The user may have panned beyond this request while it was loading.
+      try {
+        const got = S.lastResp && S.lastResp._requestBounds;
+        const want = _strategicRequestBounds();
+        const same = got && ['latMin', 'latMax', 'lonMin', 'lonMax'].every((k) => got[k] === want[k]);
+        if (!same && _strategicViewNeedsFetch()) _scheduleStrategicFetch('viewport');
+      } catch (_) {}
+
+      // Best-effort prefetch only for timeline scrubbing (not for pan/zoom).
+      if (why === 'doy' || why === 'range') {
+        setTimeout(() => {
+          try {
+            if (_strategicUsingRangeUI()) {
+              _prefetchStrategicRangeNeighbor(-1);
+              _prefetchStrategicRangeNeighbor(+1);
+              return;
+            }
+            const ts = String(S.timescale || 'daily');
+            if (ts !== 'daily') return;
+            _prefetchStrategicNeighbor(-1);
+            _prefetchStrategicNeighbor(+1);
+          } catch (_) {}
+        }, 0);
+      }
+    } catch (e) {
+      if (ticket !== S.loadTicket || !S.active) return;
+      S.loadingReq = null;
+      if (e && e.name === 'AbortError') return;
+      _strategicShowLoadError(e);
     }
   }
 
@@ -20814,37 +20994,11 @@
     const dt = now - (STRATEGIC_STATE.lastFetchAt || 0);
     const delay = Math.max(0, STRATEGIC_FETCH_THROTTLE_MS - dt);
     try { STRATEGIC_STATE.pendingFetchReason = String(reason || ''); } catch (_) { STRATEGIC_STATE.pendingFetchReason = ''; }
-    STRATEGIC_STATE.pendingFetch = setTimeout(async () => {
+    STRATEGIC_STATE.pendingFetch = setTimeout(() => {
       const why = String(STRATEGIC_STATE.pendingFetchReason || '');
       STRATEGIC_STATE.pendingFetch = null;
       STRATEGIC_STATE.pendingFetchReason = '';
-      try {
-        await _fetchStrategicGrid();
-        _renderStrategic();
-
-        // Best-effort prefetch only for timeline scrubbing (not for pan/zoom).
-        if (why === 'doy' || why === 'range') {
-          setTimeout(() => {
-            try {
-              if (_strategicUsingRangeUI()) {
-                _prefetchStrategicRangeNeighbor(-1);
-                _prefetchStrategicRangeNeighbor(+1);
-                return;
-              }
-              const ts = String(STRATEGIC_STATE.timescale || 'daily');
-              if (ts !== 'daily') return;
-              _prefetchStrategicNeighbor(-1);
-              _prefetchStrategicNeighbor(+1);
-            } catch (_) {}
-          }, 0);
-        }
-      } catch (e) {
-        // Ignore abort noise during scrubbing.
-        if (!(e && (
-          e.name === 'AbortError'
-          || e.name === 'StrategicGridBusyError'
-        ))) console.error('strategic fetch', e);
-      }
+      _strategicLoadAndRender(why).catch((e) => console.error('strategic fetch', e));
     }, delay);
   }
 
@@ -20862,18 +21016,21 @@
     if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return;
     // Ensure we don't have a delayed fetch queued that would redraw old state later.
     _cancelStrategicPendingFetch();
-    try {
-      await _fetchStrategicGrid();
-      _renderStrategic();
-    } catch (e) {
-      // Ignore abort noise during scrubbing/playback.
-      if (!(e && (e.name === 'AbortError'))) throw e;
-    }
+    await _strategicLoadAndRender(String(reason || ''));
   }
 
   function _strategicViewNeedsFetch() {
     try {
       if (!STRATEGIC_STATE || !STRATEGIC_STATE.active) return false;
+      // A load already in progress for the same data whose request covers the view
+      // will deliver what is needed; asking again would only collide with it.
+      const pending = STRATEGIC_STATE.loadingReq;
+      if (pending && pending.identity === _strategicSelectionIdentity() && map && map.getBounds) {
+        const vb = map.getBounds();
+        const rb = pending.bounds;
+        if (rb && vb.getSouth() >= rb.latMin && vb.getNorth() <= rb.latMax
+            && vb.getWest() >= rb.lonMin && vb.getEast() <= rb.lonMax) return false;
+      }
       const resp = STRATEGIC_STATE.lastResp;
       if (!resp || !resp.points || !resp.points.length) return true;
 
@@ -20891,12 +21048,6 @@
         const wantMode = _strategicGetMode();
         const gotMode = (resp && typeof resp.mode === 'string') ? String(resp.mode) : STRATEGIC_DEFAULT_MODE;
         if (wantMode && gotMode && String(wantMode) !== String(gotMode)) return true;
-      } catch (_) {}
-      try {
-        const wantLuckyVariant = _strategicLuckyVariant();
-        const gotLuckyVariant = String((resp && resp._luckyVariant) || '');
-        if (wantLuckyVariant && gotLuckyVariant && wantLuckyVariant !== gotLuckyVariant) return true;
-        if (wantLuckyVariant && !gotLuckyVariant) return true;
       } catch (_) {}
       try {
         const gotTs = String(resp.timescale || 'daily');
@@ -20926,6 +21077,14 @@
         lonMax: Number(vb.getEast()),
       };
       if (![view.latMin, view.latMax, view.lonMin, view.lonMax].every(Number.isFinite)) return true;
+      // Covered when the view lies inside the bounds that were requested. Where the
+      // offline data ends (e.g. east of 33°E) the points never reach the view edge,
+      // so comparing with the point extent would ask for the same data forever.
+      const rq = resp._requestBounds;
+      if (rq) {
+        return !(view.latMin >= rq.latMin && view.latMax <= rq.latMax
+          && view.lonMin >= rq.lonMin && view.lonMax <= rq.lonMax);
+      }
       // Use the actual coverage of the returned points (not the DB's global bbox).
       const outer = (resp && resp._coverage_bbox) ? resp._coverage_bbox : _coverageBBoxFromPoints(resp.points);
       if (!outer) return true;
@@ -21000,7 +21159,6 @@
         );
         STRATEGIC_STATE.timescale = ts;
         if (strategicTimescaleSelect) strategicTimescaleSelect.value = ts;
-        _syncExplorePreferencesTimescale();
       } catch (_) {
         STRATEGIC_STATE.timescale = 'year';
         try { if (strategicTimescaleSelect) strategicTimescaleSelect.value = 'year'; } catch (_) {}
@@ -21015,7 +21173,11 @@
         const d0 = new Date(Date.UTC(y, today.getUTCMonth(), today.getUTCDate()));
         const start = new Date(Date.UTC(y, 0, 1));
         const doy = 1 + Math.floor((d0 - start) / (24 * 3600 * 1000));
-        const d = Math.max(1, Math.min(365, doy));
+        let d = Math.max(1, Math.min(365, doy));
+        // Year / quarter / month: restore the period the user selected last time.
+        const tsNow = String(STRATEGIC_STATE.timescale || 'year');
+        if (tsNow === 'year') d = 1;
+        else if (tsNow === 'quarter' || tsNow === 'month') d = _clampDOYInt(Number(SETTINGS && SETTINGS.climatePeriodDoy) || 1);
         if (_strategicUsingRangeUI()) {
           const cur = _strategicGetRangeDOY();
           const dur = Math.max(1, Math.round(Number(cur.durationDays) || 14));
@@ -21037,6 +21199,9 @@
         _strategicSyncTemporalPeriodSelect();
         _strategicApplyTemporalSelection({ skipFetch: true });
       } catch (_) {}
+      try { _syncExplorePreferencesTimescale(); } catch (_) {}
+      STRATEGIC_STATE.layer = _strategicNormalizeLayer((SETTINGS && SETTINGS.exploreOverlay) || STRATEGIC_STATE.layer);
+      try { if (exploreOverlaySelect) exploreOverlaySelect.value = STRATEGIC_STATE.layer; } catch (_) {}
       if (strategicLayerSelect) {
         STRATEGIC_STATE.layer = _strategicNormalizeLayer(strategicLayerSelect.value);
         try { strategicLayerSelect.value = STRATEGIC_STATE.layer; } catch (_) {}
@@ -21121,6 +21286,9 @@
         try { clearTimeout(STRATEGIC_STATE.pendingFetch); } catch (_) {}
         STRATEGIC_STATE.pendingFetch = null;
       }
+      // Supersede any running load so it cannot write status, data or the map.
+      STRATEGIC_STATE.loadTicket = (Number(STRATEGIC_STATE.loadTicket) || 0) + 1;
+      STRATEGIC_STATE.loadingReq = null;
       try {
         if (STRATEGIC_STATE.fetchAbort) STRATEGIC_STATE.fetchAbort.abort();
       } catch (_) {}
@@ -21450,7 +21618,7 @@
   }
   // Speed slider removed in Phase 1.
 
-  map.on('moveend zoomend', () => {
+  map.on('moveend', () => {
     if (!STRATEGIC_STATE.active) return;
     // Always redraw immediately; Leaflet resets canvases on zoom/pan.
     _renderStrategic();
@@ -25818,4 +25986,11 @@
       console.warn('debugComfortDays error', e);
     }
   };
+
+  // The early startup sync of the Preferences form runs before later top-level
+  // constants exist (temperature slider scale, strategic year choices) and stops at
+  // the first of them, leaving later fields (Interpolation, Include sea, Strategic
+  // years, …) at their HTML defaults; the first live apply then wrote those defaults
+  // back into the settings. Sync once more now that everything is initialised.
+  try { applySettingsToForm(SETTINGS); } catch (_) {}
 })();
