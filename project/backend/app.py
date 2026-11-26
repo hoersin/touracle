@@ -3229,26 +3229,23 @@ def api_explore_climate_profile():
             tile_ids_by_year[int(year)] = str(candidate)
     timings_ms['tile_resolution'] = max(0.0, (time.perf_counter() - t_tile0) * 1000.0)
 
+    # Each year uses its own nearest real tile. The yearly databases do not share
+    # one grid layout, so the same place can carry different tile ids per year (and
+    # the same id can name different places); requiring one shared id would either
+    # fail or mix places.
     if not tile_id:
-        all_tiles = sorted(set(tile_ids_by_year.values()))
-        if len(all_tiles) != 1:
-            return _api_error_response(
-                422,
-                'tile-mismatch-across-years',
-                'Selected location resolves to different tile ids across reference years',
-                details={'tile_ids_by_year': {str(y): t for y, t in tile_ids_by_year.items()}},
-            )
-        tile_id = all_tiles[0]
+        tile_id = tile_ids_by_year[int(reference_years[0])]
 
     t_rows0 = time.perf_counter()
     for year in reference_years:
-        rows = _fetch_tile_climatology_rows(stores_by_year[int(year)], tile_id)
+        year_tile = tile_ids_by_year[int(year)]
+        rows = _fetch_tile_climatology_rows(stores_by_year[int(year)], year_tile)
         if not rows:
             return _api_error_response(
                 422,
                 'missing-climatology-data',
-                f'No climatology data for tile {tile_id} in year {year}',
-                details={'tile_id': tile_id, 'year': int(year)},
+                f'No climatology data for tile {year_tile} in year {year}',
+                details={'tile_id': year_tile, 'year': int(year)},
             )
         year_rows[int(year)] = rows
     timings_ms['sqlite_row_fetch'] = max(0.0, (time.perf_counter() - t_rows0) * 1000.0)
@@ -3280,6 +3277,7 @@ def api_explore_climate_profile():
         {
             'meta': {
                 'tile_id': str(tile_id),
+                'tile_ids_by_year': {str(y): str(t) for y, t in tile_ids_by_year.items()},
                 'point': {
                     'lat': _finite_float(point_lat) if point_lat is not None else center_lat,
                     'lon': _finite_float(point_lon) if point_lon is not None else center_lon,
