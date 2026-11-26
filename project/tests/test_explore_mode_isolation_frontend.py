@@ -111,7 +111,10 @@ def test_explore_workspace_charts_share_wind_panel_height():
 def test_explore_overlays_use_spatial_rasters_and_wind_arrows():
     source = _source()
     assert "const a255 = Math.max(0, Math.min(255, Math.round(255 * 0.58)))" in source
-    assert "drawArrows(resp.points, sampleFn)" in source
+    # Wind visualization: dominant-direction arrows (wind roses) on the wind layer,
+    # together with the flow lines; the old mean-direction arrow grid is gone.
+    assert "drawStatic((ctx, w, h) => _drawWindRoses(ctx, resp, w, h))" in source
+    assert "drawArrows(" not in source
     assert "a: 0.78" in source
 
 

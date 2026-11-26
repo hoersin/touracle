@@ -23,7 +23,7 @@ LAND = [(48.5, 10.0), (47.0, 2.5), (51.0, 19.0), (45.5, 10.5)]   # inland points
 @pytest.fixture
 def grid_server(server, monkeypatch):
     """Server whose Strategic Grid computation is synthetic and slow on demand."""
-    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, rain=None, wind=None, fail_months=set(), calls=[])
+    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, rain=None, wind=None, wave=False, fail_months=set(), calls=[])
 
     def impl():
         args = request.args.to_dict()
@@ -31,7 +31,7 @@ def grid_server(server, monkeypatch):
         time.sleep(cfg.delay)
         if xs.period_month(args) in cfg.fail_months:
             return jsonify({'error': 'Aggregation failed: synthetic failure'}), 500
-        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed, rain=cfg.rain, wind=cfg.wind))
+        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed, rain=cfg.rain, wind=cfg.wind, wave=cfg.wave))
 
     monkeypatch.setattr(server.module, '_api_strategic_grid_impl', impl)
     server.grid = cfg
@@ -427,6 +427,29 @@ def test_selected_period_and_overlay_survive_reload(explore):
     assert all(px[3] > 0 and px[2] > px[1] for px in rain), rain
 
 
+# ------------------------------------------------------------------- isolines
+@pytest.mark.parametrize('mixed', [False, 'overlap'])
+def test_temperature_isolines_never_jump_between_grid_layouts(explore, mixed):
+    """Isolines connect only real neighbours.
+
+    The offline databases mix two column layouts under the same row/col numbers.
+    A marching-squares grid keyed by col number connected tiles ~17 deg apart and
+    drew long straight dark lines across the map (seen over Hungary and Croatia).
+    """
+    explore.srv.grid.mixed = mixed
+    explore.srv.grid.wave = True                  # non-linear field: 10 and 20 degC isolines every few degrees
+    page = explore()
+    wait_ready(page)
+    select_overlay(page, 'temperature')
+    wait_ready(page)
+    for view in ('[45.3, 12.0], 6', '[45.3, 12.0], 5', '[47.0, 16.0], 7'):
+        page.evaluate(f"window.__WM_LEAFLET_MAP__.setView({view}, {{animate: false}})")
+        wait_ready(page)
+        page.wait_for_timeout(300)
+        seg = page.evaluate("window.__WM_EXPLORE_DIAG__.isolineMaxSegmentKm")
+        assert seg is not None and 0 < seg <= 90, f'{view}: longest isoline segment {seg} km'
+
+
 # ------------------------------------------------------------------- wind ----
 def test_wind_field_stays_on_across_overlay_switches(explore):
     page = explore()
@@ -480,11 +503,22 @@ def angle_diff(a, b):
     return abs((a - b + 180) % 360 - 180)
 
 
-def show_wind(page):
-    select_overlay(page, 'wind_absolute')
+def wind_viz(page, on):
+    if page.evaluate("document.getElementById('strategicWindOn').checked") != on:
+        page.click('#strategicWindOn')
+    page.wait_for_timeout(400)
+
+
+def show_wind(page, overlay='wind_absolute'):
+    """Overlay plus Wind visualization on; returns the drawn wind roses."""
+    select_overlay(page, overlay)
     wait_ready(page)
+    wind_viz(page, True)
     page.wait_for_timeout(300)
     return page.evaluate(ROSES)
+
+
+ROSE_CANVAS = "document.querySelectorAll('.wm-strategic-wind canvas')[1]"   # static arrows, not the flow
 
 
 def test_wind_roses_point_downwind_with_one_or_two_arrows(explore):
@@ -510,7 +544,7 @@ def test_wind_rose_arrows_are_drawn_downwind_on_the_map(explore):
     wait_ready(page)
     roses = show_wind(page)
     r = next(r for r in roses if r['lon'] < 5)          # one arrow pointing SE
-    dark = page.evaluate("""([x, y]) => { const c = document.querySelector('.wm-strategic-heat canvas');
+    dark = page.evaluate("""([x, y]) => { const c = """ + ROSE_CANVAS + """;
         const k = c.width / c.clientWidth; const ctx = c.getContext('2d');
         const at = (dx, dy) => Array.from(ctx.getImageData(Math.round((x + dx) * k), Math.round((y + dy) * k), 1, 1).data);
         const s = Math.SQRT1_2 * 14;
@@ -528,7 +562,7 @@ def is_secondary_ink(px):          # lighter steel-blue secondary arrow
 
 
 def canvas_px(page, x, y):
-    return page.evaluate("""([x, y]) => { const c = document.querySelector('.wm-strategic-heat canvas');
+    return page.evaluate("""([x, y]) => { const c = """ + ROSE_CANVAS + """;
         const k = c.width / c.clientWidth;
         return Array.from(c.getContext('2d').getImageData(Math.round(x * k), Math.round(y * k), 1, 1).data); }""", [x, y])
 
@@ -636,43 +670,123 @@ def test_wind_roses_follow_the_selected_period(explore):
     assert not any(r['lon'] < 5 for r in july), 'west is diffuse in July and must not get roses'
 
 
-def test_wind_roses_belong_to_the_wind_overlay_and_ignore_the_wind_field(explore):
+WIND_DIAG = "() => ({ roses: window.__WM_EXPLORE_DIAG__.roses, draws: window.__WM_EXPLORE_DIAG__.windDraws })"
+
+
+def rose_coverage(page):
+    return page.evaluate("""() => { const c = """ + ROSE_CANVAS + """; let n = 0, hit = 0;
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        for (let i = 3; i < d.length; i += 4 * 31) { n++; if (d[i] > 8) hit++; } return hit / n; }""")
+
+
+@pytest.mark.parametrize('overlay', ['temperature', 'precipitation', 'wind_absolute', 'none'])
+def test_wind_visualization_switch_controls_flow_and_arrows_over_any_overlay(explore, overlay):
+    """One switch: flow lines and dominant-direction arrows together, on every overlay."""
     page = explore()
     wait_ready(page)
-    assert page.evaluate(ROSES) == []                 # Temperature: no roses
-    roses = show_wind(page)
-    page.click('#strategicWindOn')
-    page.wait_for_timeout(800)
-    assert [(r['lat'], r['lon']) for r in page.evaluate(ROSES)] == [(r['lat'], r['lon']) for r in roses]
-    assert page.evaluate("document.getElementById('strategicWindOn').checked")
-    select_overlay(page, 'temperature')
+    select_overlay(page, overlay)
     wait_ready(page)
+    page.wait_for_timeout(300)
+    assert page.evaluate(ROSES) == [] and rose_coverage(page) == 0          # off by default
+    d0 = page.evaluate(WIND_DIAG)['draws']
+    wind_viz(page, True)
+    page.wait_for_timeout(1000)
+    on = page.evaluate(WIND_DIAG)
+    assert on['draws'] == d0 + 1, on['draws'] - d0                          # one wind draw per toggle
+    west = [r for r in on['roses'] if r['lon'] < 5]
+    assert west and all(angle_diff(r['modes'][0]['to_deg'], 135) < 10 for r in west)   # NW wind pushes SE
+    assert rose_coverage(page) > 0.0005, 'arrows not drawn'
+    assert coverage(page, 'wm-strategic-wind') > 0.0005, 'flow lines not drawn'
+    if overlay != 'none':
+        assert coverage(page, 'wm-strategic-heat') > 0.05, 'overlay must stay visible below the wind layer'
+    wind_viz(page, False)
+    page.wait_for_timeout(600)
     assert page.evaluate(ROSES) == []
-    assert page.evaluate("document.getElementById('strategicWindOn').checked")     # field stays independent
+    assert coverage(page, 'wm-strategic-wind') < 0.0001, 'flow and arrows must both disappear'
 
 
-def test_wind_legend_says_where_the_wind_pushes(explore):
+def test_switching_the_overlay_keeps_the_wind_visualization_without_redrawing_it(explore):
     page = explore()
     wait_ready(page)
-    show_wind(page)
-    text = page.evaluate("() => document.querySelector('.wm-map-legend').innerText")
-    assert 'pushes towards' in text.lower(), text
+    roses = show_wind(page, 'temperature')
+    d0 = page.evaluate(WIND_DIAG)['draws']
+    for overlay in ('precipitation', 'wind_absolute', 'none', 'temperature'):
+        select_overlay(page, overlay)
+        wait_ready(page)
+        page.wait_for_timeout(500)
+        st = page.evaluate(WIND_DIAG)
+        assert page.evaluate("document.getElementById('strategicWindOn').checked"), overlay
+        assert st['draws'] == d0, f'wind layer redrawn on overlay switch to {overlay}'
+        assert [(r['lat'], r['lon']) for r in st['roses']] == [(r['lat'], r['lon']) for r in roses], overlay
+        assert rose_coverage(page) > 0.0005, overlay
+
+
+def test_wind_visualization_follows_the_period(explore):
+    page = explore()
+    wait_ready(page)
+    year = show_wind(page, 'temperature')
+    d0 = page.evaluate(WIND_DIAG)['draws']
+    click_time(page, 'month', 7)
+    wait_ready(page)
+    page.wait_for_timeout(500)
+    st = page.evaluate(WIND_DIAG)
+    assert st['draws'] == d0 + 1, st['draws'] - d0
+    assert any(r['lon'] < 5 for r in year) and not any(r['lon'] < 5 for r in st['roses'])
+
+
+def test_legend_explains_the_arrows_only_while_the_wind_visualization_is_on(explore):
+    page = explore()
+    wait_ready(page)
+    select_overlay(page, 'wind_absolute')
+    wait_ready(page)
+    text = lambda: page.evaluate("() => document.querySelector('.wm-map-legend').innerText").lower()
+    assert 'pushes' not in text(), text()
+    show_wind(page, 'temperature')
+    assert 'where the wind pushes (downwind)' in text(), text()
 
 
 def test_climate_profile_wind_roses_show_downwind(explore, monkeypatch, tmp_path):
-    """Profile roses (12 months) follow the same rule: wind from W is drawn pushing towards E."""
+    """12 monthly roses, 4 x 3, with the map's arrows and classifier (downwind).
+
+    Synthetic daily wind: from W every day (-> one arrow pushing E), except April
+    (directions scattered: no dominant direction, no arrow) and July (from N on 19
+    days, from W on 10: primary pushes S, secondary pushes E).
+    """
+    import sqlite3
     import test_offline_tile_lookup as tl
     srv = explore.srv
-    stores = {y: tl.make_store(tmp_path / f'offline_weather_{y}.sqlite', y, tl.NEAR_B) for y in (2025, 2024, 2023)}
+    stores = {}
+    for y in (2025, 2024, 2023):
+        path = tmp_path / f'offline_weather_{y}.sqlite'
+        stores[y] = tl.make_store(path, y, tl.NEAR_B)
+        con = sqlite3.connect(path)
+        con.execute("UPDATE climatology SET wind_dir_deg = (day * 97) % 360 WHERE month = 4")
+        con.execute("UPDATE climatology SET wind_dir_deg = CASE WHEN day <= 19 THEN 0 WHEN day <= 29 THEN 270 ELSE 135 END WHERE month = 7")
+        con.commit()
+        con.close()
     monkeypatch.setattr(srv.module, '_resolve_complete_reference_years', lambda n=3: ([2025, 2024, 2023][:n], []))
     monkeypatch.setattr(srv.module, '_resolve_offline_store_for_year', lambda y, **k: stores.get(int(y)))
     page = explore()
     page.wait_for_function("() => document.querySelectorAll('.wm-climate-wind-rose-svg').length === 12", timeout=20000)
-    roses = page.evaluate("""() => [...document.querySelectorAll('.wm-climate-wind-rose-svg')].map(s => {
-        const l = s.querySelector('.wm-climate-wind-dominant-marker line');
-        return { conv: s.dataset.directionConvention, dom: s.dataset.dominantSector,
-                 dx: Number(l.getAttribute('x2')) - Number(l.getAttribute('x1')), dy: Number(l.getAttribute('y2')) - Number(l.getAttribute('y1')) }; })""")
-    assert all(r['conv'] == 'downwind' and r['dom'] == 'E' for r in roses), roses
-    assert all(r['dx'] > 5 and abs(r['dy']) < 1 for r in roses), roses          # marker points east
+    roses = page.evaluate("""() => [...document.querySelectorAll('.wm-climate-wind-rose-svg')].map(s => ({
+        conv: s.dataset.directionConvention, modes: Number(s.dataset.modes), dom: s.dataset.dominantSector,
+        p: Number(s.dataset.primaryToDeg), s2: Number(s.dataset.secondaryToDeg),
+        arrows: [...s.querySelectorAll('.wm-climate-wind-arrow')].map(a => [a.classList.contains('is-primary'), a.getBBox().width * a.getBBox().height]) }))""")
+    assert all(r['conv'] == 'downwind' for r in roses)
+    for i, r in enumerate(roses, start=1):
+        if i == 4:
+            assert r['modes'] == 0 and r['arrows'] == [] and r['dom'] == '', r          # diffuse: no arrow
+        elif i == 7:
+            assert r['modes'] == 2 and angle_diff(r['p'], 180) < 6 and angle_diff(r['s2'], 90) < 6, r
+            prim = [a for a in r['arrows'] if a[0]][0][1]
+            sec = [a for a in r['arrows'] if not a[0]][0][1]
+            assert sec < 0.6 * prim, r                                                 # secondary visibly smaller
+        else:
+            assert r['modes'] == 1 and r['dom'] == 'E' and angle_diff(r['p'], 90) < 1, (i, r)   # from W -> pushes E
+    grid = page.evaluate("""() => { const cards = [...document.querySelectorAll('.wm-climate-wind-rose-card')].map(c => c.getBoundingClientRect());
+        return { cols: new Set(cards.map(c => Math.round(c.left))).size, rows: new Set(cards.map(c => Math.round(c.top))).size,
+                 widths: cards.map(c => Math.round(c.width)), heights: cards.map(c => Math.round(c.height)) }; }""")
+    assert grid['cols'] == 4 and grid['rows'] == 3, grid
+    assert max(grid['widths']) - min(grid['widths']) <= 1 and max(grid['heights']) - min(grid['heights']) <= 1, grid
     meta = page.evaluate("() => document.querySelector('.wm-climate-wind-meta').textContent")
     assert 'pushes towards' in meta

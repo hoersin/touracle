@@ -88,6 +88,8 @@ try:
 except Exception:  # pragma: no cover
     OfflineWeatherStore = None  # type: ignore
 
+from wind_modes import WindRoseAccumulator as _WindRoseAccumulator
+
 try:
     from stage_naming import compute_stage_name, build_stage_names
 except Exception:  # pragma: no cover
@@ -1561,6 +1563,9 @@ def _aggregate_wind_monthly_roses(rows_by_year: dict[int, list[dict[str, Any]]])
     out: list[dict[str, Any]] = []
     for month in range(1, 13):
         sectors = [{'count': 0, 'speed_counts': [0, 0, 0, 0]} for _ in range(16)]
+        # Dominant directions with the classifier of the map wind roses (wind_modes.py),
+        # fed with the same daily observations (calm days included, as on the map).
+        modes_acc = _WindRoseAccumulator()
         total_valid = 0
         calm_count = 0
         represented_years: set[int] = set()
@@ -1589,6 +1594,8 @@ def _aggregate_wind_monthly_roses(rows_by_year: dict[int, list[dict[str, Any]]])
                 if speed is None:
                     continue
                 speed_f = float(speed)
+                if direction is not None:
+                    modes_acc.add('m', direction, speed_f)
                 if speed_f < 0.5:
                     total_valid += 1
                     represented_years.add(int(year))
@@ -1645,6 +1652,7 @@ def _aggregate_wind_monthly_roses(rows_by_year: dict[int, list[dict[str, Any]]])
             'calm_pct': (calm_count / total_valid * 100.0) if total_valid > 0 else None,
             'represented_years': sorted(represented_years, reverse=True),
             'sectors': sector_rows,
+            'wind_modes': modes_acc.modes('m'),
         })
     return out
 

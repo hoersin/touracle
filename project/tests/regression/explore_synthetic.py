@@ -37,8 +37,10 @@ def period_month(args) -> int | None:
     return mm
 
 
-def temperature(month, lon, gradient):
+def temperature(month, lon, gradient, wave=False):
     base = YEAR_TEMP if month is None else MONTH_TEMP[month]
+    if wave:      # non-linear in lon: isolines every few degrees, like a real field
+        return base + 9.0 * math.sin(math.radians(lon * 40.0))
     return base + gradient * (lon - 10.0)
 
 
@@ -101,7 +103,7 @@ def mallorca_wind(point, month):
     return modes_for(wind_region(point['lon'], month))
 
 
-def grid(args, *, gradient=0.0, mixed=False, rain=None, wind=None):
+def grid(args, *, gradient=0.0, mixed=False, rain=None, wind=None, wave=False):
     lat_min = float(args['lat_min']) - 0.6
     lat_max = float(args['lat_max']) + 0.6
     lon_min = float(args['lon_min']) - 0.8
@@ -117,7 +119,11 @@ def grid(args, *, gradient=0.0, mixed=False, rain=None, wind=None):
             break
         if lat_min <= lat <= lat_max:
             step_lon = TILE_KM / (111.32 * max(0.05, math.cos(math.radians(lat))))
-            mix = mixed and MIXED_LAT[0] <= lat <= MIXED_LAT[1]
+            band = MIXED_LAT[0] <= lat <= MIXED_LAT[1]
+            mix = (mixed is True) and band
+            # 'overlap': as in the merged multi-year data, the band rows hold BOTH layouts
+            # over the whole row, with overlapping col numbers (distinct tile ids).
+            overlap = (mixed == 'overlap') and band
             cells = []          # (col, lon) of the row, in the layout(s) the row uses
             col = 0
             while LON_ORIGIN + (col + 0.5) * step_lon <= BBOX[3]:
@@ -132,11 +138,19 @@ def grid(args, *, gradient=0.0, mixed=False, rain=None, wind=None):
                 while BBOX[2] + (col + 0.5) * step_lon <= BBOX[3]:
                     cells.append((col, BBOX[2] + (col + 0.5) * step_lon))
                     col += 1
+            if overlap:
+                col = 0
+                while BBOX[2] + (col + 0.5) * step_lon <= BBOX[3]:
+                    cells.append((('B', col), BBOX[2] + (col + 0.5) * step_lon))
+                    col += 1
             for tile_col, lon in cells:
+                tid_suffix = ''
+                if isinstance(tile_col, tuple):
+                    tid_suffix, tile_col = '@' + tile_col[0], tile_col[1]
                 if lon_min <= lon <= lon_max:
-                    t = temperature(month, lon, gradient)
+                    t = temperature(month, lon, gradient, wave)
                     points.append({
-                        'tile_id': f'r{row}_c{tile_col}', 'row': row, 'col': tile_col, 'lat': lat, 'lon': lon,
+                        'tile_id': f'r{row}_c{tile_col}{tid_suffix}', 'row': row, 'col': tile_col, 'lat': lat, 'lon': lon,
                         'temperature_c': t, 'temp_day_median': t, 'temp_day_p25': t - 1, 'temp_day_p75': t + 1,
                         'precipitation_mm': rain, 'rain_probability': 0.4, 'rain_typical_mm': rain,
                         'wind_speed_ms': 7.0, 'wind_dir_deg': 270.0, 'wind_var_deg': 0.5,

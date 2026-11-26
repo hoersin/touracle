@@ -2298,8 +2298,9 @@
       overflow: hidden;
     }
     body[data-mode="climate"] .wm-climate-wind-grid {
+      /* the space left below title and legend (100% would overflow the panel) */
       min-height: 0;
-      height: 100%;
+      flex: 1 1 0;
     }
     body[data-mode="climate"] .wm-climate-workspace-panel-charts {
       display: grid;
@@ -2367,6 +2368,7 @@
     }
     .wm-climate-workspace-panel-wind {
       min-height: 0;
+      box-sizing: border-box;   /* height 100% includes the padding: the last row is not clipped */
     }
     .wm-climate-wind-meta {
       font-size: 10px;
@@ -2386,25 +2388,22 @@
       margin-top: -2px;
     }
     .wm-climate-wind-legend {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 4px 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0 12px;
       font-size: 10px;
-      color: #475569;
+      color: #334155;
     }
     .wm-climate-wind-legend span {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
+      gap: 4px;
       white-space: nowrap;
     }
-    .wm-climate-wind-legend i {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 2px;
-      border: 1px solid rgba(15,23,42,0.15);
-      box-sizing: border-box;
+    .wm-climate-wind-legend-arrow {
+      width: 22px;
+      height: 12px;
+      flex: none;
     }
     .wm-climate-wind-grid {
       display: grid;
@@ -2417,32 +2416,42 @@
       min-height: 0;
     }
     .wm-climate-wind-rose-card {
-      display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      justify-content: flex-start;
-      gap: 2px;
+      container: wmrose / size;
+      position: relative;
       min-width: 0;
       min-height: 0;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid rgba(148,163,184,0.26);
+      border-radius: 8px;
+      overflow: hidden;
     }
     .wm-climate-wind-rose-label {
+      position: absolute;
+      top: 3px;
+      left: 5px;
       font-size: 10px;
       font-weight: 700;
-      color: #334155;
-      line-height: 1.1;
-      text-align: left;
+      color: #1e293b;
+      line-height: 1;
+      pointer-events: none;
     }
     .wm-climate-wind-rose-svg {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 1px;
+      margin: 0 auto;
+      height: calc(100% - 12px);
       width: 100%;
-      max-width: none;
-      aspect-ratio: 1 / 1;
-      height: 0;
-      flex: 1 1 auto;
-      min-height: 0;
+      max-width: calc(100% - 2px);
       display: block;
-      background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.88) 100%);
-      border: 1px solid rgba(148,163,184,0.2);
-      border-radius: 8px;
+    }
+    @container wmrose (max-width: 88px) {
+      .wm-rose-cardinal { display: none; }
+    }
+    @container wmrose (min-width: 110px) {
+      .wm-climate-wind-rose-label { font-size: 12px; top: 5px; left: 7px; }
+      .wm-climate-wind-rose-svg { height: calc(100% - 4px); }
     }
     .wm-climate-wind-rose-meta {
       font-size: 9px;
@@ -4086,12 +4095,11 @@
                       </div>
                       <label class="wm-explore-ctl wm-explore-ctl-toggle" for="strategicWindOn">
                         <span class="wm-explore-ctl-copy">
-                          <span class="wm-explore-ctl-name">Wind field</span>
-                          <span class="wm-explore-ctl-note">Animated flow lines on top of any overlay. Independent of the Wind overlay.</span>
+                          <span class="wm-explore-ctl-name">Wind visualization</span>
+                          <span class="wm-explore-ctl-note">Animated flow lines and dominant wind directions. Can be shown over any climate overlay.</span>
                         </span>
-                        <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind field" />
+                        <input type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind visualization" />
                       </label>
-                      <p class="wm-explore-ctl-note wm-explore-hint">Wind roses appear with the Wind overlay: arrows show where the wind pushes (downwind), at most two per place.</p>
                     </div>
                   </details>
                 </div>
@@ -4407,7 +4415,7 @@
                 <details class="wm-explore-group wm-explore-fold" id="exploreAdvanced" data-explore-level="advanced">
                   <summary>Advanced</summary>
                   <div class="wm-explore-fold-body wm-explore-adv">
-                    <div class="wm-explore-adv-title" data-wm-scope="climate">Wind field look</div>
+                    <div class="wm-explore-adv-title" data-wm-scope="climate">Wind visualization look</div>
                       <div class="wm-pref-row" data-wm-scope="climate">
                         <label class="wm-pref-label" for="setWindDensity">
                           <span class="wm-pref-name">Wind density</span>

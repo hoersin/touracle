@@ -7615,155 +7615,104 @@
     </svg>`;
   }
 
-  function _climateWindSpeedClassFill(key) {
-    if (key === '0.5-<2') return '#d7bc7a';
-    if (key === '2-<5') return '#b897d6';
-    if (key === '5-<8') return '#8f6cc0';
-    return '#5e3f9f';
-  }
-
-  const CLIMATE_WIND_ROSE_RADIAL_MAX_PCT = 30;
-
-  function _climateWindDominanceColor(pctTotal) {
-    const pct = Number(pctTotal);
-    if (!Number.isFinite(pct) || pct <= 0) return 'rgba(100,116,139,0.45)';
-    if (pct < 20) return '#7b6ea8';   // muted violet
-    if (pct < 30) return '#c58a3b';   // warm ochre/amber
-    if (pct < 40) return '#dd7a2a';   // strong orange
-    return '#b42318';                 // very strong deep red
-  }
-
-  function _climateRoseWedgePath(cx, cy, r0, r1, startDeg, endDeg) {
-    let s = Number(startDeg);
-    let e = Number(endDeg);
-    if (!Number.isFinite(s) || !Number.isFinite(e)) return '';
-    while (e < s) e += 360;
-    if ((e - s) <= 0.0001 || r1 <= r0) return '';
-    const toXY = (r, deg) => {
-      const a = ((deg - 90) * Math.PI) / 180;
-      return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
-    };
-    const [x0, y0] = toXY(r0, s);
-    const [x1, y1] = toXY(r1, s);
-    const [x2, y2] = toXY(r1, e);
-    const [x3, y3] = toXY(r0, e);
-    const largeArc = (e - s) > 180 ? 1 : 0;
-    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} L ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r1.toFixed(2)} ${r1.toFixed(2)} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)} L ${x3.toFixed(2)} ${y3.toFixed(2)} A ${r0.toFixed(2)} ${r0.toFixed(2)} 0 ${largeArc} 0 ${x0.toFixed(2)} ${y0.toFixed(2)} Z`;
-  }
-
-  // Touracle wind roses show where the wind pushes TOWARDS (downwind). The backend
-  // sectors are meteorological (FROM); every drawn angle and label is rotated by 180°.
+  // Touracle wind roses show where the wind pushes TOWARDS (downwind): to_deg of the
+  // backend wind_modes is the meteorological FROM direction rotated by exactly 180°.
   const WIND_SECTOR_LABELS_16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
-  function _downwindDeg(fromDeg) {
-    return (((Number(fromDeg) + 180) % 360) + 360) % 360;
+
+  function _compassLabel16(deg) {
+    return WIND_SECTOR_LABELS_16[Math.round((((Number(deg) % 360) + 360) % 360) / 22.5) % 16];
   }
-  function _downwindSectorLabel(fromLabel) {
-    const i = WIND_SECTOR_LABELS_16.indexOf(String(fromLabel || ''));
-    return i < 0 ? String(fromLabel || '') : WIND_SECTOR_LABELS_16[(i + 8) % 16];
+
+  function _climateWindArrowSvg(cx, cy, mode, style, len, cls, monthLabel, rank) {
+    const share = Math.max(0, Math.min(1, Number(mode.share) || 0));
+    const width = style.width * (0.85 + 0.3 * share);
+    const toDeg = Number(mode.to_deg);
+    const d = _windArrowPathD(cx, cy, toDeg, len, width);
+    const [r, g, b] = style.rgb;
+    const title = `${monthLabel} · ${rank} direction: wind pushes towards ${_compassLabel16(toDeg)} `
+      + `(from ${_compassLabel16(mode.from_deg)}) · ${Math.round(share * 100)}% of the wind (speed-weighted) · `
+      + `mean ${fmt(Number(mode.mean_speed_ms), 1)} m/s`;
+    return `<path class="wm-climate-wind-arrow ${cls}" data-to-deg="${toDeg.toFixed(1)}" d="${d}"
+      fill="rgba(${r},${g},${b},${style.alpha})" stroke="rgba(255,255,255,${style.edge})" stroke-width="1.2"
+      stroke-linejoin="round"><title>${_htmlEsc(title)}</title></path>`;
   }
 
   function _climateWindMonthRoseMarkup(monthData) {
+    // Same visual language and classification as the map wind roses: deep indigo
+    // primary and lighter steel-blue secondary arrow pointing where the wind pushes
+    // (downwind), from the dominant directions of the daily wind (wind_modes).
+    // A month without a dominant direction shows no arrow.
     const monthLabels = _climateExploreMonthLabels();
     const monthIdx = Math.max(1, Math.min(12, Number(monthData && monthData.month) || 1)) - 1;
     const monthLabel = monthLabels[monthIdx];
-    const sectors = Array.isArray(monthData && monthData.sectors) ? monthData.sectors : [];
+    const modes = (Array.isArray(monthData && monthData.wind_modes) ? monthData.wind_modes : []).slice(0, 2);
     const W = 128;
     const H = 128;
     const cx = 64;
     const cy = 64;
-    const rMax = 46;
-    const ringGuides = [0.25, 0.5, 0.75, 1.0].map((r) => `<circle cx="${cx}" cy="${cy}" r="${(r * rMax).toFixed(2)}" fill="none" stroke="rgba(148,163,184,0.22)" stroke-width="1"></circle>`).join('');
-    const petals = [];
-    let dominantSector = null;
-    let maxCount = -1;
-    for (const sector of sectors) {
-      const count = Number(sector && sector.count);
-      if (Number.isFinite(count) && count > maxCount) {
-        maxCount = count;
-        dominantSector = sector;
-      }
+    const rMax = 50;
+    const rings = [0.45, 0.75, 1.0].map((k) => `<circle cx="${cx}" cy="${cy}" r="${(k * rMax).toFixed(1)}" fill="none" stroke="rgba(148,163,184,${k === 1 ? 0.38 : 0.24})" stroke-width="1"></circle>`).join('');
+    const tick = (x1, y1, x2, y2) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(148,163,184,0.26)" stroke-width="1"></line>`;
+    const axes = tick(cx, cy - rMax, cx, cy + rMax) + tick(cx - rMax, cy, cx + rMax, cy);
+    // North marker on the outer ring (always visible); letters only where the card is large enough.
+    const north = `<path class="wm-rose-north" d="M ${cx - 4} ${cy - rMax + 1} L ${cx} ${cy - rMax - 6} L ${cx + 4} ${cy - rMax + 1} Z" fill="rgba(100,116,139,0.7)"></path>`;
+    const lab = (x, y, t) => `<text class="wm-rose-cardinal" x="${x}" y="${y}" text-anchor="middle" font-size="9" font-weight="500" fill="rgba(100,116,139,0.8)">${t}</text>`;
+    const compass = lab(cx + rMax + 7, cy + 3, 'E') + lab(cx, cy + rMax + 11, 'S') + lab(cx - rMax - 7, cy + 3, 'W');
+    const lens = modes.map((m, i) => {
+      const share = Math.max(0, Math.min(1, Number(m.share) || 0));
+      return rMax * (i === 0 ? (0.6 + 0.4 * share) : (0.36 + 0.4 * share));
+    });
+    let halo = '';
+    if (modes.length) {
+      let hx = 0, hy = 0, ws = 0;
+      modes.forEach((m, i) => {
+        const a = Number(m.to_deg) * Math.PI / 180;
+        const wt = i === 0 ? 2 : 1;
+        hx += wt * (cx + Math.sin(a) * lens[i] * 0.5);
+        hy += wt * (cy - Math.cos(a) * lens[i] * 0.5);
+        ws += wt;
+      });
+      hx /= ws; hy /= ws;
+      const hr = Math.max(...modes.map((m, i) => {
+        const a = Number(m.to_deg) * Math.PI / 180;
+        return Math.hypot(cx + Math.sin(a) * lens[i] - hx, cy - Math.cos(a) * lens[i] - hy);
+      }), Math.hypot(cx - hx, cy - hy)) + 6;
+      halo = `<circle class="wm-climate-wind-halo" cx="${hx.toFixed(1)}" cy="${hy.toFixed(1)}" r="${hr.toFixed(1)}" fill="url(#wmWindHalo)"></circle>`;
     }
-    const totalValid = Number(monthData && monthData.total_valid_observations);
-    const calmPct = _finiteOrNull(monthData && monthData.calm_pct);
-    const overlays = [];
-    for (const sector of sectors) {
-      const pctTotal = Number(sector && sector.pct_total);
-      if (!Number.isFinite(pctTotal) || pctTotal <= 0) continue;
-      const start = _downwindDeg(sector.start_deg);
-      const end = _downwindDeg(sector.end_deg);
-      const clipped = pctTotal > CLIMATE_WIND_ROSE_RADIAL_MAX_PCT;
-      let r0 = 0;
-      const speedClasses = Array.isArray(sector.speed_classes) ? sector.speed_classes : [];
-      for (const cls of speedClasses) {
-        const pctSector = Number(cls && cls.pct_sector);
-        if (!Number.isFinite(pctSector) || pctSector <= 0) continue;
-        const clsPctTotal = pctTotal * (pctSector / 100);
-        const r1Raw = r0 + rMax * (clsPctTotal / CLIMATE_WIND_ROSE_RADIAL_MAX_PCT);
-        const r1 = Math.min(rMax, r1Raw);
-        const path = _climateRoseWedgePath(cx, cy, r0, r1, start, end);
-        if (path) petals.push(`<path d="${path}" fill="${_climateWindSpeedClassFill(String(cls && cls.key || ''))}" stroke="rgba(15,23,42,0.15)" stroke-width="0.35"></path>`);
-        r0 = r1;
-        if (r0 >= rMax - 0.001) break;
-      }
-      const clippedMax = Math.min(1, pctTotal / CLIMATE_WIND_ROSE_RADIAL_MAX_PCT);
-      const overlayPath = _climateRoseWedgePath(cx, cy, 0, rMax * clippedMax, start, end);
-      if (overlayPath) {
-        const speedDistText = speedClasses.map((cls) => {
-          const c = Number(cls && cls.count);
-          const p = Number(cls && cls.pct_sector);
-          const label = String(cls && cls.label || '');
-          return `${label}: ${Number.isFinite(c) ? c : 0}${Number.isFinite(p) ? ` (${fmt(p, 1)}%)` : ''}`;
-        }).join('\n');
-        const count = Number(sector && sector.count);
-        const fromLabel = String(sector && sector.label || '');
-        const sectorLabel = `wind pushes towards ${_downwindSectorLabel(fromLabel)} (from ${fromLabel})`;
-        const clipText = clipped ? `\nVisual scale clipped at ${CLIMATE_WIND_ROSE_RADIAL_MAX_PCT}%` : '';
-        overlays.push(`<path d="${overlayPath}" fill="rgba(255,255,255,0.001)" stroke="none">
-            <title>${monthLabel} • ${sectorLabel}\nDirectional frequency: ${fmt(pctTotal, 1)}% (${Number.isFinite(count) ? count : 0}/${Number.isFinite(totalValid) ? totalValid : 0})\nSpeed distribution within sector:\n${speedDistText}\nCalm: ${Number.isFinite(Number(calmPct)) ? `${fmt(Number(calmPct), 1)}%` : '—'}${clipText}</title>
-          </path>`);
-      }
-    }
-    let dominantMarker = '';
-    if (dominantSector && Number(maxCount) > 0) {
-      const domPct = Number(dominantSector.pct_total);
-      const domStart = _downwindDeg(dominantSector.start_deg);
-      const domEnd = _downwindDeg(dominantSector.end_deg);
-      const domMid = (domStart <= domEnd) ? (domStart + domEnd) * 0.5 : (((domStart + (domEnd + 360)) * 0.5) % 360);
-      const domRatio = Math.min(1, Math.max(0, domPct / CLIMATE_WIND_ROSE_RADIAL_MAX_PCT));
-      const domLen = rMax * domRatio;
-      const domColor = _climateWindDominanceColor(domPct);
-      const rad = ((domMid - 90) * Math.PI) / 180;
-      const x2 = cx + (domLen + 2) * Math.cos(rad);
-      const y2 = cy + (domLen + 2) * Math.sin(rad);
-      dominantMarker = `<g class="wm-climate-wind-dominant-marker" data-dominant-sector="${_htmlEsc(_downwindSectorLabel(dominantSector.label))}" data-dominant-share-pct="${Number.isFinite(domPct) ? fmt(domPct, 1) : ''}">
-        <line x1="${cx}" y1="${cy}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" stroke="${domColor}" stroke-width="2.1" stroke-linecap="round" opacity="0.88"></line>
-        <circle cx="${x2.toFixed(2)}" cy="${y2.toFixed(2)}" r="1.8" fill="${domColor}" opacity="0.92"></circle>
-      </g>`;
-    }
-    const dominantSectorLabel = _downwindSectorLabel((dominantSector && dominantSector.label) || '');
-    const dominantPct = Number(dominantSector && dominantSector.pct_total);
-    const roseClipped = sectors.some((s) => Number(s && s.pct_total) > CLIMATE_WIND_ROSE_RADIAL_MAX_PCT);
+    const arrows = modes.map((m, i) => _climateWindArrowSvg(cx, cy, m,
+      _climateRoseArrowStyle(i), lens[i],
+      i === 0 ? 'is-primary' : 'is-secondary', monthLabel, i === 0 ? 'Primary' : 'Secondary'));
+    const primary = modes[0] || null;
+    const summary = primary
+      ? `${monthLabel}: wind pushes towards ${_compassLabel16(primary.to_deg)}`
+        + (modes[1] ? `, secondary towards ${_compassLabel16(modes[1].to_deg)}` : '')
+      : `${monthLabel}: no dominant wind direction`;
     return `
-      <div class="wm-climate-wind-rose-card">
+      <div class="wm-climate-wind-rose-card${primary ? '' : ' is-diffuse'}">
         <div class="wm-climate-wind-rose-label">${monthLabel}</div>
-        <svg class="wm-climate-wind-rose-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${monthLabel} wind rose, direction the wind pushes towards"
-             data-radial-max-pct="${CLIMATE_WIND_ROSE_RADIAL_MAX_PCT}"
+        <svg class="wm-climate-wind-rose-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="${_htmlEsc(summary)}"
              data-direction-convention="downwind"
-             data-dominant-sector="${_htmlEsc(dominantSectorLabel)}"
-             data-dominant-share-pct="${Number.isFinite(dominantPct) ? fmt(dominantPct, 1) : ''}"
-             data-clipped="${roseClipped ? 'true' : 'false'}">
-          ${ringGuides}
-          <line x1="${cx}" y1="${(cy - rMax - 4).toFixed(1)}" x2="${cx}" y2="${(cy + rMax + 4).toFixed(1)}" stroke="rgba(148,163,184,0.26)" stroke-width="1"></line>
-          <line x1="${(cx - rMax - 4).toFixed(1)}" y1="${cy}" x2="${(cx + rMax + 4).toFixed(1)}" y2="${cy}" stroke="rgba(148,163,184,0.26)" stroke-width="1"></line>
-          <text x="${cx}" y="${(cy - rMax - 8).toFixed(1)}" text-anchor="middle" font-size="8.5" fill="rgba(51,65,85,0.66)">N</text>
-          <text x="${(cx + rMax + 8).toFixed(1)}" y="${(cy + 3).toFixed(1)}" text-anchor="middle" font-size="8.5" fill="rgba(51,65,85,0.66)">E</text>
-          <text x="${cx}" y="${(cy + rMax + 13).toFixed(1)}" text-anchor="middle" font-size="8.5" fill="rgba(51,65,85,0.66)">S</text>
-          <text x="${(cx - rMax - 8).toFixed(1)}" y="${(cy + 3).toFixed(1)}" text-anchor="middle" font-size="8.5" fill="rgba(51,65,85,0.66)">W</text>
-          ${petals.join('')}
-          ${dominantMarker}
-          ${overlays.join('')}
+             data-modes="${modes.length}"
+             data-dominant-sector="${primary ? _compassLabel16(primary.to_deg) : ''}"
+             data-primary-to-deg="${primary ? Number(primary.to_deg).toFixed(1) : ''}"
+             data-secondary-to-deg="${modes[1] ? Number(modes[1].to_deg).toFixed(1) : ''}">
+          <title>${_htmlEsc(summary)}</title>
+          ${rings}${axes}${north}${compass}${halo}
+          ${arrows.slice().reverse().join('')}
+          <circle cx="${cx}" cy="${cy}" r="2.4" fill="rgb(${WIND_ARROW_STYLE.primary.rgb.join(',')})" stroke="#fff" stroke-width="1"></circle>
         </svg>
       </div>`;
+  }
+
+  // Panel roses are drawn small: the map arrow styles, slightly broader. A function
+  // because WIND_ARROW_STYLE is defined further down in this file.
+  function _climateRoseArrowStyle(rank) {
+    return rank === 0 ? { ...WIND_ARROW_STYLE.primary, width: 12 } : { ...WIND_ARROW_STYLE.secondary, width: 8 };
+  }
+
+  function _climateWindLegendArrow(style, len, width) {
+    const [r, g, b] = style.rgb;
+    return `<svg class="wm-climate-wind-legend-arrow" viewBox="0 0 30 16" aria-hidden="true"><path d="${_windArrowPathD(3, 13, 62, len, width)}" fill="rgba(${r},${g},${b},${style.alpha})"></path></svg>`;
   }
 
   function _climateWindPanelMarkup(months) {
@@ -7771,14 +7720,16 @@
     if (!windMonths.length) return '<div class="wm-climate-monthly-chart-note">No wind climatology data available.</div>';
     const roses = windMonths.slice(0, 12).map((m) => _climateWindMonthRoseMarkup(m)).join('');
     return `
-      <div class="wm-climate-wind-meta">Wind pushes towards (downwind), from daily dominant directions; colour = daily mean speed</div>
+      <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+        <radialGradient id="wmWindHalo"><stop offset="0" stop-color="rgb(232,236,255)" stop-opacity="0.75"></stop>
+          <stop offset="0.65" stop-color="rgb(232,236,255)" stop-opacity="0.38"></stop>
+          <stop offset="1" stop-color="rgb(232,236,255)" stop-opacity="0"></stop></radialGradient>
+      </defs></svg>
       <div class="wm-climate-wind-legend">
-        <span><i style="background:${_climateWindSpeedClassFill('0.5-<2')}"></i>0.5–&lt;2</span>
-        <span><i style="background:${_climateWindSpeedClassFill('2-<5')}"></i>2–&lt;5</span>
-        <span><i style="background:${_climateWindSpeedClassFill('5-<8')}"></i>5–&lt;8</span>
-        <span><i style="background:${_climateWindSpeedClassFill('>=8')}"></i>&gt;=8 m/s</span>
+        <span>${_climateWindLegendArrow(WIND_ARROW_STYLE.primary, 26, 9)}Primary</span>
+        <span>${_climateWindLegendArrow(WIND_ARROW_STYLE.secondary, 20, 6)}Secondary</span>
       </div>
-      <div class="wm-climate-wind-meta">Radial scale is fixed at 0–${CLIMATE_WIND_ROSE_RADIAL_MAX_PCT}% (values above are visually clipped).</div>
+      <div class="wm-climate-wind-meta">Arrows show where the wind pushes towards (downwind); none: no dominant direction.</div>
       <div class="wm-climate-wind-grid">${roses}</div>
     `;
   }
@@ -14390,6 +14341,9 @@
       }
 
       const parts = [];
+      if (!_tourIsActive() && STRATEGIC_STATE && STRATEGIC_STATE.windOn) {
+        parts.push('Wind visualization: arrows show where the wind pushes (downwind), at most two dominant directions; no arrow where directions are diffuse');
+      }
       if (yearsTxt) parts.push(`Years: ${yearsTxt}`);
       if (modeTxt) parts.push(`${_tourIsActive() ? 'Profile' : 'Mode'}: ${modeTxt}`);
       if (rangeTxt) parts.push(rangeTxt);
@@ -14575,14 +14529,11 @@
       return;
     }
     if ((layer === 'wind_speed' || layer === 'wind_absolute') && !_tourIsActive()) {
-      const arrows = 'Arrows: wind pushes towards (downwind). Longer and darker = more frequent; '
-        + 'at most two dominant directions; no arrow where directions are diffuse.';
-      _setLegend('Wind pushes towards · speed (m/s)', PAL_EXPLORE_WIND, ['0', '3', '6', '10', '14+'],
-        metaNote ? `${arrows}  |  ${metaNote}` : arrows);
+      _setLegend('Wind speed (m/s)', PAL_EXPLORE_WIND, ['0', '3', '6', '10', '14+'], metaNote || null);
       _setLegendTooltips(
-        'Arrows show where the wind pushes a cyclist (downwind), i.e. the meteorological direction rotated by 180°.',
         'Colour encodes the mean wind speed (m/s) of the selected period.',
-        'Directions come from daily wind of the selected period and reference years.'
+        'Directions: switch on Wind visualization (flow lines and arrows showing where the wind pushes).',
+        'Values come from daily wind of the selected period and reference years.'
       );
       return;
     }
@@ -14655,12 +14606,7 @@
     _syncStrategicQuickLayer();
     _updateStrategicLegend();
     try { _applyStrategicBasemap(); } catch (_) {}
-    try {
-      if (STRATEGIC_STATE.windLayer) {
-        STRATEGIC_STATE.windLayer.stop();
-        STRATEGIC_STATE.windLayer.clear();
-      }
-    } catch (_) {}
+    // The wind visualization is independent of the overlay: it is left running.
     try {
       if (!STRATEGIC_STATE.isoLayer) STRATEGIC_STATE.isoLayer = _makeHeatLayer();
       if (!map.hasLayer(STRATEGIC_STATE.isoLayer)) STRATEGIC_STATE.isoLayer.addTo(map);
@@ -14939,6 +14885,7 @@
         }
       },
       clear: function() {
+        STRATEGIC_STATE._lastWindSig = null;
         const ctx = this._canvas.getContext('2d');
         if (ctx) {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -14950,8 +14897,8 @@
           staticCtx.clearRect(0, 0, this._staticCanvas.width, this._staticCanvas.height);
         }
       },
-      drawArrows: function(points, sampleFn) {
-        this.stop();
+      drawStatic: function(drawFn) {
+        // Static annotations above the overlay (the dominant-direction arrows).
         this._reset();
         const m = this._map;
         if (!m) return;
@@ -14961,54 +14908,9 @@
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, this._staticCanvas.width, this._staticCanvas.height);
         ctx.scale(dpr, dpr);
-
-        const z = m.getZoom();
-        const baseStep = Math.max(1, Math.round(60 - Math.min(10, Math.max(0, z - 5)) * 4));
-        const density = Math.max(1, Number(SETTINGS.windDensity) || 40);
-        const stride = Math.max(1, Math.round(baseStep * 40 / density));
-        const col = 'rgba(90,115,140,0.65)';
-        ctx.strokeStyle = col;
-        ctx.fillStyle = col;
-        ctx.lineWidth = 1.2;
-
-        let i = 0;
-        for (const p of (points || [])) {
-          i++;
-          if (stride > 1 && (i % stride) !== 0) continue;
-          const lat = Number(p.lat);
-          const lon = Number(p.lon);
-          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-          const s = sampleFn(lat, lon);
-          if (!s || !Number.isFinite(s.wind_speed_ms) || !Number.isFinite(s.wind_dir_deg)) continue;
-          const pt = m.latLngToContainerPoint([lat, lon]);
-          const x = pt.x;
-          const y = pt.y;
-          const sp = Math.max(0, Number(s.wind_speed_ms));
-          const varDeg = Number(s.wind_var_deg);
-          const alpha = (Number.isFinite(varDeg) ? _clamp01(1 - (varDeg / 90)) : 0.7);
-          const len = 8 + Math.min(18, sp * 1.6);
-          // wind_dir_deg is FROM; show TO
-          const theta = ((Number(s.wind_dir_deg) + 180) % 360) * Math.PI / 180;
-          const dx = Math.sin(theta) * len;
-          const dy = -Math.cos(theta) * len;
-          ctx.globalAlpha = 0.25 + 0.65 * alpha;
-          ctx.beginPath();
-          ctx.moveTo(x - dx * 0.5, y - dy * 0.5);
-          ctx.lineTo(x + dx * 0.5, y + dy * 0.5);
-          ctx.stroke();
-          // arrow head
-          const hx = x + dx * 0.5;
-          const hy = y + dy * 0.5;
-          const a = Math.atan2(dy, dx);
-          const ah = 4;
-          ctx.beginPath();
-          ctx.moveTo(hx, hy);
-          ctx.lineTo(hx - Math.cos(a - 0.6) * ah, hy - Math.sin(a - 0.6) * ah);
-          ctx.lineTo(hx - Math.cos(a + 0.6) * ah, hy - Math.sin(a + 0.6) * ah);
-          ctx.closePath();
-          ctx.fill();
-        }
-        ctx.globalAlpha = 1;
+        const size = m.getSize();
+        drawFn(ctx, size.x, size.y);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
       },
       startFlow: function(sampleFn, opts) {
         this.stop();
@@ -19467,20 +19369,31 @@
     return accept(blended);
   }
 
-  function _gridFromPoints(points, valueKey) {
+  function _gridFromPoints(points, valueKey, tileKm) {
+    // Grid for marching squares. Columns are geographic: one common longitude
+    // lattice per row (node k at lon = k * tile width). The offline databases mix
+    // two column layouts under the same r{row}_c{col} ids (origin -11 and -28 deg),
+    // so grid neighbours by col id can be ~17 deg apart and isolines drawn between
+    // them become long straight lines across the map. On the common lattice every
+    // neighbour is a real neighbour; of two points on one node the closer one wins.
+    const km = Number(tileKm) > 0 ? Number(tileKm) : 50;
     const mp = new Map();
     let rowMin = Infinity, rowMax = -Infinity, colMin = Infinity, colMax = -Infinity;
     for (const p of (points || [])) {
       if (!p) continue;
       const r = Number(p.row);
-      const c = Number(p.col);
       const lat = Number(p.lat);
       const lon = Number(p.lon);
       const v = Number(p[valueKey]);
-      if (!Number.isFinite(r) || !Number.isFinite(c) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      if (!Number.isFinite(r) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
       if (!Number.isFinite(v)) continue;
+      const stepLon = km / (111.32 * Math.max(0.05, Math.cos(lat * Math.PI / 180)));
+      const c = Math.round(lon / stepLon);
+      const off = Math.abs(lon / stepLon - c);
       const key = `${r}|${c}`;
-      mp.set(key, { r, c, lat, lon, v });
+      const prev = mp.get(key);
+      if (prev && prev.off <= off) continue;
+      mp.set(key, { r, c, lat, lon, v, off });
       rowMin = Math.min(rowMin, r);
       rowMax = Math.max(rowMax, r);
       colMin = Math.min(colMin, c);
@@ -19854,11 +19767,17 @@
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
+    let maxSegKm = 0;
     for (const thr of thresholds) {
       const paths = _marchingSquaresPaths(grid, thr);
       if (!paths || !paths.length) continue;
       for (const path of paths) {
         if (!path || path.length < 2) continue;
+        for (let i = 1; i < path.length; i++) {
+          const kmLat = 111.32 * (path[i].lat - path[i - 1].lat);
+          const kmLon = 111.32 * Math.cos(path[i].lat * Math.PI / 180) * (path[i].lon - path[i - 1].lon);
+          maxSegKm = Math.max(maxSegKm, Math.hypot(kmLat, kmLon));
+        }
         let pts = [];
         for (let i = 0; i < path.length; i++) {
           const q = map.latLngToContainerPoint([path[i].lat, path[i].lon]);
@@ -19891,6 +19810,7 @@
       }
     }
     ctx.restore();
+    EXPLORE_DIAG.isolineMaxSegmentKm = Math.round(maxSegKm);
   }
 
   function _drawBandedCellFill(ctx, grid, thresholds, bandColors, alpha) {
@@ -20175,40 +20095,41 @@
     secondary: { len0: 15, lenK: 22, width: 6.5, rgb: [56, 128, 196], alpha: 0.9, edge: 0.75 },
   };
 
-  function _drawWindArrow(ctx, x, y, toDeg, len, width, rgb, alpha, edgeAlpha) {
-    // Tapered arrow from (x, y) towards toDeg (compass bearing: 0 = north, 90 = east).
+  function _windArrowPathD(x, y, toDeg, len, width) {
+    // Touracle wind arrow outline (SVG path data), shared by the map (canvas, via
+    // Path2D) and the climate panel (SVG): a tapered, slightly organic shaft from
+    // (x, y) to a swept-back arrowhead pointing towards toDeg (0 = north, 90 = east).
     const a = Number(toDeg) * Math.PI / 180;
     const ux = Math.sin(a);
     const uy = -Math.cos(a);
-    const px = -uy;                              // perpendicular
+    const px = -uy;
     const py = ux;
-    const P = (along, side) => [x + ux * along + px * side, y + uy * along + py * side];
+    const P = (along, side) => `${(x + ux * along + px * side).toFixed(2)} ${(y + uy * along + py * side).toFixed(2)}`;
     const headLen = Math.min(len * 0.42, width * 1.55);
-    const neck = len - headLen;                  // where the head starts
+    const neck = len - headLen;
     const tailW = width * 0.07;
     const neckW = width * 0.27;
     const barbW = width * 0.56;
+    return `M ${P(0, tailW)}`
+      + ` Q ${P(neck * 0.55, neckW * 0.85)} ${P(neck, neckW)}`
+      + ` L ${P(neck - headLen * 0.22, barbW)}`
+      + ` Q ${P(neck + headLen * 0.55, barbW * 0.62)} ${P(len, 0)}`
+      + ` Q ${P(neck + headLen * 0.55, -barbW * 0.62)} ${P(neck - headLen * 0.22, -barbW)}`
+      + ` L ${P(neck, -neckW)}`
+      + ` Q ${P(neck * 0.55, -neckW * 0.85)} ${P(0, -tailW)}`
+      + ` Q ${P(-tailW * 1.6, 0)} ${P(0, tailW)} Z`;
+  }
+
+  function _drawWindArrow(ctx, x, y, toDeg, len, width, rgb, alpha, edgeAlpha) {
+    const path = new Path2D(_windArrowPathD(x, y, toDeg, len, width));
     ctx.save();
     ctx.lineJoin = 'round';
-    ctx.beginPath();
-    let q = P(0, tailW); ctx.moveTo(q[0], q[1]);
-    // shaft widens gently (slightly convex sides) towards the head
-    let c = P(neck * 0.55, neckW * 0.85); q = P(neck, neckW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
-    // swept-back barb, curved flank to the tip
-    q = P(neck - headLen * 0.22, barbW); ctx.lineTo(q[0], q[1]);
-    c = P(neck + headLen * 0.55, barbW * 0.62); q = P(len, 0); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
-    c = P(neck + headLen * 0.55, -barbW * 0.62); q = P(neck - headLen * 0.22, -barbW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
-    q = P(neck, -neckW); ctx.lineTo(q[0], q[1]);
-    c = P(neck * 0.55, -neckW * 0.85); q = P(0, -tailW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
-    // rounded tail
-    c = P(-tailW * 1.6, 0); q = P(0, tailW); ctx.quadraticCurveTo(c[0], c[1], q[0], q[1]);
-    ctx.closePath();
     ctx.globalAlpha = 1;
     ctx.strokeStyle = `rgba(255,255,255,${edgeAlpha})`;   // thin light edge for dark/sea basemaps
     ctx.lineWidth = 1.6;
-    ctx.stroke();
+    ctx.stroke(path);
     ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
-    ctx.fill();
+    ctx.fill(path);
     ctx.restore();
   }
 
@@ -20231,7 +20152,7 @@
   }
 
   function _drawWindRoses(ctx, resp, w, h) {
-    // Reusable on top of any overlay; Phase 3 draws it with the Wind overlay only.
+    // Part of the Wind visualization (with the flow lines); drawn over any overlay.
     const roses = _selectWindRoses(resp, w, h);
     for (const r of roses) {
       const arrows = r.modes.map((m, i) => {
@@ -20279,14 +20200,35 @@
       Boolean(STRATEGIC_STATE.windOn), view, settings].join('|');
   }
 
-  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [], roseSpacingPx: null, roseSeaSpacingPx: null };
+  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [], windRoses: [], windDraws: 0,
+    roseSpacingPx: null, roseSeaSpacingPx: null, isolineMaxSegmentKm: null };
+
+  function _strategicWindSignature() {
+    // Inputs of the wind visualization only (not the overlay).
+    let view = '';
+    try {
+      const c = map.getCenter();
+      const sz = map.getSize();
+      view = `${c.lat.toFixed(7)},${c.lng.toFixed(7)},${map.getZoom()},${sz.x}x${sz.y}`;
+    } catch (_) {}
+    let look = '';
+    try { look = JSON.stringify([SETTINGS.windDensity, SETTINGS.animSpeed, SETTINGS.interpolation]); } catch (_) {}
+    let coast = '-';      // land/sea choice of the arrows depends on the loaded coastline
+    try {
+      const src = _strategicLandSourceForCurrentZoom();
+      coast = (src === STRATEGIC_ULTRA_LAND) ? 'u' : ((src === STRATEGIC_SHORE_LAND) ? 'h' : (src ? 'l' : '-'));
+    } catch (_) {}
+    return [STRATEGIC_STATE.respSeq, view, look, coast].join('|');
+  }
   try {
     window.__WM_EXPLORE_DIAG__ = Object.defineProperties({}, {
       renders: { get: () => EXPLORE_DIAG.renders },
       lastRenderMs: { get: () => EXPLORE_DIAG.lastRenderMs },
       roses: { get: () => EXPLORE_DIAG.roses.slice() },
+      windDraws: { get: () => EXPLORE_DIAG.windDraws },
       roseSpacingPx: { get: () => EXPLORE_DIAG.roseSpacingPx },
       roseSeaSpacingPx: { get: () => EXPLORE_DIAG.roseSeaSpacingPx },
+      isolineMaxSegmentKm: { get: () => EXPLORE_DIAG.isolineMaxSegmentKm },
       sampleAt: { value: (lat, lon) => _strategicSampleAt(Number(lat), Number(lon)) },
     });
   } catch (_) {}
@@ -20305,6 +20247,7 @@
     if (!(opts && opts.force) && renderSig === STRATEGIC_STATE._lastRenderSig) return;
     const renderStartedAt = performance.now();
     EXPLORE_DIAG.roses = [];
+    EXPLORE_DIAG.isolineMaxSegmentKm = null;
     try { STRATEGIC_STATE._lastLandSource = _strategicLandSourceForCurrentZoom(); } catch (_) {}
 
     const bboxRaw = _bboxFromResp(resp);
@@ -20315,10 +20258,6 @@
     if (layer === 'none') {
       try {
         if (STRATEGIC_STATE.isoLayer) STRATEGIC_STATE.isoLayer.clear();
-        if (STRATEGIC_STATE.windLayer) {
-          STRATEGIC_STATE.windLayer.stop();
-          STRATEGIC_STATE.windLayer.clear();
-        }
       } catch (_) {}
     }
 
@@ -20374,7 +20313,7 @@
           }
         })();
         const valueKey = (String(modeRaw) === 'full_day') ? 'temperature_c' : 'temp_day_median';
-        const grid = _gridFromPoints(resp.points, valueKey);
+        const grid = _gridFromPoints(resp.points, valueKey, resp.tile_km);
         if (meta) {
           const sc = (typeof window !== 'undefined') ? window.WM_TEMP_SCALE : null;
           const bounds = (sc && Array.isArray(sc.TEMP_BOUNDS)) ? sc.TEMP_BOUNDS : [-Infinity, 5, 10, 15, 20, 25, 30, 35, Infinity];
@@ -20752,7 +20691,6 @@
         }
         if (clipped) ctx.restore();
         _strokeStrategicShoreline(ctx);
-        _drawWindRoses(ctx, resp, w, h);
         return;
       }
 
@@ -20911,20 +20849,31 @@
       _strokeStrategicShoreline(ctx);
     });
 
-    // Wind field (animated flow): a separate optional visualization that follows
-    // only its own toggle, independent of the selected overlay.
+    // Wind visualization: animated flow lines plus dominant-direction arrows (wind
+    // roses), one optional layer with its own switch, over any overlay.
     const wantWind = Boolean(STRATEGIC_STATE.windOn);
     if (STRATEGIC_STATE.windLayer) {
       if (!wantWind) {
         STRATEGIC_STATE.windLayer.stop();
         STRATEGIC_STATE.windLayer.clear();
       } else {
-        const sampleFn = (lat, lon) => _sampleInterpolated(tileMap, meta, lat, lon);
-        STRATEGIC_STATE.windLayer.clear();
-        STRATEGIC_STATE.windLayer.drawArrows(resp.points, sampleFn);
-        STRATEGIC_STATE.windLayer.startFlow(sampleFn, { speedHint: _meanWindSpeed(resp.points) });
+        // Unchanged data, view and look (e.g. only the overlay changed): keep the
+        // running flow and the arrows instead of restarting them.
+        const windSig = _strategicWindSignature();
+        if (windSig !== STRATEGIC_STATE._lastWindSig || !STRATEGIC_STATE.windLayer._anim) {
+          const sampleFn = (lat, lon) => _sampleInterpolated(tileMap, meta, lat, lon);
+          STRATEGIC_STATE.windLayer.clear();
+          STRATEGIC_STATE.windLayer.drawStatic((ctx, w, h) => _drawWindRoses(ctx, resp, w, h));
+          STRATEGIC_STATE.windLayer.startFlow(sampleFn, { speedHint: _meanWindSpeed(resp.points) });
+          STRATEGIC_STATE._lastWindSig = windSig;
+          EXPLORE_DIAG.windDraws += 1;
+          EXPLORE_DIAG.windRoses = EXPLORE_DIAG.roses;
+        } else {
+          EXPLORE_DIAG.roses = EXPLORE_DIAG.windRoses;
+        }
       }
     }
+    if (!wantWind) EXPLORE_DIAG.windRoses = [];
     // Recomputed: clearing a layer during this draw (overlay None) bumps the epoch.
     STRATEGIC_STATE._lastRenderSig = _strategicRenderSignature();
     EXPLORE_DIAG.renders += 1;
