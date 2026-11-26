@@ -18890,31 +18890,52 @@
     }
   }
 
+  // Column/row index of a Strategic Grid response, built from the points themselves.
+  // The yearly offline stores do not share one column origin, and it differs from
+  // the reported bbox, so tile positions must never be derived from bbox.lonMin.
+  const STRATEGIC_RC_KEY = 65536;
+  const STRATEGIC_SAMPLE_KEYS = [
+    'temperature_c', 'precipitation_mm', 'rain_probability', 'rain_typical_mm',
+    'wind_speed_ms', 'wind_dir_deg', 'wind_var_deg',
+    'temp_day_median', 'temp_day_p25', 'temp_day_p75',
+    'lucky_day_count', 'lucky_ride_count',
+  ];
+
   function _makeTileMap(points) {
     const m = new Map();
-    m.__points = Array.isArray(points) ? points.filter(p => p && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon))) : [];
-    let rowMin = Infinity;
-    let rowMax = -Infinity;
-    let colMin = Infinity;
-    let colMax = -Infinity;
+    const byRC = new Map();
+    const rows = new Map();
     for (const p of (points || [])) {
       if (!(p && p.tile_id)) continue;
       m.set(String(p.tile_id), p);
       const row = Number(p.row);
       const col = Number(p.col);
-      if (Number.isFinite(row)) {
-        rowMin = Math.min(rowMin, row);
-        rowMax = Math.max(rowMax, row);
-      }
-      if (Number.isFinite(col)) {
-        colMin = Math.min(colMin, col);
-        colMax = Math.max(colMax, col);
+      const lat = Number(p.lat);
+      const lon = Number(p.lon);
+      if (!Number.isInteger(row) || !Number.isInteger(col) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      byRC.set(row * STRATEGIC_RC_KEY + col, p);
+      const r = rows.get(row);
+      if (!r) {
+        rows.set(row, { lat, colA: col, lonA: lon, colB: col, lonB: lon });
+      } else {
+        if (col < r.colA) { r.colA = col; r.lonA = lon; }
+        if (col > r.colB) { r.colB = col; r.lonB = lon; }
       }
     }
-    m.__rowMin = Number.isFinite(rowMin) ? rowMin : null;
-    m.__rowMax = Number.isFinite(rowMax) ? rowMax : null;
-    m.__colMin = Number.isFinite(colMin) ? colMin : null;
-    m.__colMax = Number.isFinite(colMax) ? colMax : null;
+    let rowA = null;
+    let rowB = null;
+    for (const row of rows.keys()) {
+      if (rowA === null || row < rowA) rowA = row;
+      if (rowB === null || row > rowB) rowB = row;
+    }
+    for (const r of rows.values()) {
+      r.step = (r.colB > r.colA) ? (r.lonB - r.lonA) / (r.colB - r.colA) : null;
+    }
+    m.__byRC = byRC;
+    m.__rows = rows;
+    m.__rowRef = rowA;
+    m.__latRef = (rowA !== null) ? rows.get(rowA).lat : null;
+    m.__latStep = (rowA !== null && rowB > rowA) ? (rows.get(rowB).lat - rows.get(rowA).lat) / (rowB - rowA) : null;
     return m;
   }
 
@@ -19072,178 +19093,69 @@
     return { mapScaled: m, pointsForContours, sigma };
   }
 
-  function _sampleInterpolated(tileMap, meta, lat, lon) {
-    if (!tileMap || !meta) return null;
-    const directPoints = Array.isArray(tileMap.__points) ? tileMap.__points : null;
-    if (directPoints && directPoints.length) {
-      const cosLat = Math.max(0.05, Math.cos(Number(lat) * Math.PI / 180));
-      const nearest = [];
-      for (const p of directPoints) {
-        const plat = Number(p.lat);
-        const plon = Number(p.lon);
-        if (!Number.isFinite(plat) || !Number.isFinite(plon)) continue;
-        const dLat = plat - Number(lat);
-        const dLon = ((plon - Number(lon) + 540) % 360) - 180;
-        const d2 = dLat * dLat + (dLon * cosLat) * (dLon * cosLat);
-        nearest.push({ p, d2 });
-      }
-      nearest.sort((a, b) => a.d2 - b.d2);
-      const selected = nearest.slice(0, 4);
-      if (selected.length) {
-        const keys = [
-          'temperature_c','precipitation_mm','rain_probability','rain_typical_mm',
-          'wind_speed_ms','wind_dir_deg','wind_var_deg',
-          'temp_day_median','temp_day_p25','temp_day_p75',
-          'lucky_day_count','lucky_ride_count',
-        ];
-        const out = {};
-        for (const k of keys) {
-          if (k === 'wind_dir_deg') {
-            let sx = 0, sy = 0, sw = 0;
-            for (const item of selected) {
-              const v = Number(item.p[k]);
-              if (!Number.isFinite(v)) continue;
-              const w = 1 / Math.max(1e-8, item.d2);
-              const a = v * Math.PI / 180;
-              sx += w * Math.cos(a);
-              sy += w * Math.sin(a);
-              sw += w;
-            }
-            if (!sw) { out[k] = null; continue; }
-            let deg = Math.atan2(sy / sw, sx / sw) * 180 / Math.PI;
-            if (deg < 0) deg += 360;
-            out[k] = deg;
-            continue;
-          }
-          let acc = 0, weight = 0;
-          for (const item of selected) {
-            const v = Number(item.p[k]);
-            if (!Number.isFinite(v)) continue;
-            const w = 1 / Math.max(1e-8, item.d2);
-            acc += w * v;
-            weight += w;
-          }
-          out[k] = weight ? acc / weight : null;
-        }
-        return out;
-      }
-    }
-    const bbox = meta.bbox;
-    const tileKm = meta.tile_km;
-    if (!bbox || !Number.isFinite(tileKm)) return null;
-    const latMin = bbox.latMin;
-    const lonMin = bbox.lonMin;
-    const stepLat = tileKm / 111.32;
-    const rowMin = Number.isFinite(Number(tileMap.__rowMin)) ? Number(tileMap.__rowMin) : null;
-    const rowMax = Number.isFinite(Number(tileMap.__rowMax)) ? Number(tileMap.__rowMax) : null;
-    const colMinBound = Number.isFinite(Number(tileMap.__colMin)) ? Number(tileMap.__colMin) : null;
-    const colMaxBound = Number.isFinite(Number(tileMap.__colMax)) ? Number(tileMap.__colMax) : null;
-    const row0Raw = Math.floor((lat - latMin) / stepLat);
-    const row0 = (rowMin !== null && rowMax !== null)
-      ? Math.max(rowMin, Math.min(Math.max(rowMin, rowMax - 1), row0Raw))
-      : row0Raw;
-    const latC0 = latMin + (row0 + 0.5) * stepLat;
-    const latC1 = latC0 + stepLat;
-    const tLat = _clamp01((lat - latC0) / Math.max(1e-9, (latC1 - latC0)));
-
-    function rowValue(row, latC) {
-      const c = Math.max(0.05, Math.cos(latC * Math.PI / 180));
-      const stepLon = tileKm / (111.32 * c);
-      const col0Raw = Math.floor((lon - lonMin) / stepLon);
-      const col0 = (colMinBound !== null && colMaxBound !== null)
-        ? Math.max(colMinBound, Math.min(Math.max(colMinBound, colMaxBound - 1), col0Raw))
-        : col0Raw;
-      const lonC0 = lonMin + (col0 + 0.5) * stepLon;
-      const lonC1 = lonC0 + stepLon;
-      const tLon = _clamp01((lon - lonC0) / Math.max(1e-9, (lonC1 - lonC0)));
-      const id00 = `r${row}_c${col0}`;
-      const id01 = `r${row}_c${col0 + 1}`;
-      const p00 = tileMap.get(id00);
-      const p01 = tileMap.get(id01);
-      if (!p00 && !p01) return null;
-
-      // Optional nearest-neighbor sampling (debug setting)
-      if (SETTINGS && SETTINGS.interpolation === false) {
-        const p = p00 || p01;
-        if (!p) return null;
-        return {
-          temperature_c: Number(p.temperature_c),
-          precipitation_mm: Number(p.precipitation_mm),
-          rain_probability: Number(p.rain_probability),
-          rain_typical_mm: Number(p.rain_typical_mm),
-          wind_speed_ms: Number(p.wind_speed_ms),
-          wind_dir_deg: Number(p.wind_dir_deg),
-          wind_var_deg: Number(p.wind_var_deg),
-          temp_day_median: Number(p.temp_day_median),
-          temp_day_p25: Number(p.temp_day_p25),
-          temp_day_p75: Number(p.temp_day_p75),
-          lucky_day_count: (p && (p.lucky_day_count !== undefined)) ? Number(p.lucky_day_count) : null,
-          lucky_ride_count: (p && (p.lucky_ride_count !== undefined)) ? Number(p.lucky_ride_count) : null,
-        };
-      }
-
-      function num(p, k) {
-        if (!p) return null;
-        const v = Number(p[k]);
-        return Number.isFinite(v) ? v : null;
-      }
-
-      const keys = [
-        'temperature_c','precipitation_mm','rain_probability','rain_typical_mm',
-        'wind_speed_ms','wind_dir_deg','wind_var_deg',
-        'temp_day_median','temp_day_p25','temp_day_p75',
-        'lucky_day_count','lucky_ride_count',
-      ];
-      const out = {};
-      for (const k of keys) {
-        const a = num(p00, k);
-        const b = num(p01, k);
-        if (a === null && b === null) { out[k] = null; continue; }
-        if (a === null) { out[k] = b; continue; }
-        if (b === null) { out[k] = a; continue; }
-        // Special handling for circular wind direction
-        if (k === 'wind_dir_deg') {
-          const ang0 = a * Math.PI / 180;
-          const ang1 = b * Math.PI / 180;
-          const x = _lerp(Math.cos(ang0), Math.cos(ang1), tLon);
-          const y = _lerp(Math.sin(ang0), Math.sin(ang1), tLon);
-          let deg = (Math.atan2(y, x) * 180 / Math.PI);
-          if (deg < 0) deg += 360;
-          out[k] = deg;
-          continue;
-        }
-        out[k] = _lerp(a, b, tLon);
-      }
-      return out;
-    }
-
-    const v0 = rowValue(row0, latC0);
-    const v1 = rowValue(row0 + 1, latC1);
-    if (!v0 && !v1) return null;
-    if (!v0) return v1;
-    if (!v1) return v0;
-
-    const keys = Object.keys(v0);
+  function _strategicMixSamples(a, b, t) {
+    // Linear blend of two samples (null-tolerant, circular for wind direction).
+    if (!a) return b;
+    if (!b) return a;
     const out = {};
-    for (const k of keys) {
-      const a = v0[k];
-      const b = v1[k];
-      if (a === null && b === null) { out[k] = null; continue; }
-      if (a === null) { out[k] = b; continue; }
-      if (b === null) { out[k] = a; continue; }
+    for (const k of STRATEGIC_SAMPLE_KEYS) {
+      const va = a[k];
+      const vb = b[k];
+      if (va === null) { out[k] = vb; continue; }
+      if (vb === null) { out[k] = va; continue; }
       if (k === 'wind_dir_deg') {
-        const ang0 = a * Math.PI / 180;
-        const ang1 = b * Math.PI / 180;
-        const x = _lerp(Math.cos(ang0), Math.cos(ang1), tLat);
-        const y = _lerp(Math.sin(ang0), Math.sin(ang1), tLat);
-        let deg = (Math.atan2(y, x) * 180 / Math.PI);
+        const ang0 = va * Math.PI / 180;
+        const ang1 = vb * Math.PI / 180;
+        let deg = Math.atan2(_lerp(Math.sin(ang0), Math.sin(ang1), t), _lerp(Math.cos(ang0), Math.cos(ang1), t)) * 180 / Math.PI;
         if (deg < 0) deg += 360;
         out[k] = deg;
         continue;
       }
-      out[k] = _lerp(a, b, tLat);
+      out[k] = _lerp(va, vb, t);
     }
     return out;
+  }
+
+  function _strategicTileSample(p) {
+    if (!p) return null;
+    const out = {};
+    for (const k of STRATEGIC_SAMPLE_KEYS) {
+      const v = (p[k] === undefined || p[k] === null) ? NaN : Number(p[k]);
+      out[k] = Number.isFinite(v) ? v : null;
+    }
+    return out;
+  }
+
+  function _sampleInterpolated(tileMap, meta, lat, lon) {
+    // Bilinear interpolation between the four surrounding tile centres (O(1) per
+    // sample); nearest tile when the Interpolation setting is off.
+    if (!tileMap || !tileMap.__rows || tileMap.__rowRef === null) return null;
+    const rows = tileMap.__rows;
+    const byRC = tileMap.__byRC;
+    const tileKm = Number(meta && meta.tile_km) || 50;
+    const latStep = Number(tileMap.__latStep) || (tileKm / 111.32);
+    const smooth = !(SETTINGS && SETTINGS.interpolation === false);
+    const fr = tileMap.__rowRef + (Number(lat) - tileMap.__latRef) / latStep;
+    const row0 = Math.floor(fr);
+    const tLat = fr - row0;
+
+    function rowSample(row) {
+      const r = rows.get(row);
+      if (!r) return null;
+      const step = r.step || (tileKm / (111.32 * Math.max(0.05, Math.cos(r.lat * Math.PI / 180))));
+      const fc = r.colA + (Number(lon) - r.lonA) / step;
+      const col0 = Math.floor(fc);
+      const tLon = fc - col0;
+      const p0 = _strategicTileSample(byRC.get(row * STRATEGIC_RC_KEY + col0));
+      const p1 = _strategicTileSample(byRC.get(row * STRATEGIC_RC_KEY + col0 + 1));
+      if (!smooth) return (tLon < 0.5) ? (p0 || p1) : (p1 || p0);
+      return _strategicMixSamples(p0, p1, tLon);
+    }
+
+    const v0 = rowSample(row0);
+    const v1 = rowSample(row0 + 1);
+    if (!smooth) return (tLat < 0.5) ? (v0 || v1) : (v1 || v0);
+    return _strategicMixSamples(v0, v1, tLat);
   }
 
   function _heatColorFor(layer, s) {
