@@ -13,11 +13,13 @@ This module intentionally does not fall back to any other provider.
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import os
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -190,31 +192,66 @@ class OfflineWeatherStore:
 
         return OfflineTileConfig(db_path=db_path, tile_km=tile_km, bbox=bbox, years=years)
 
+    # Tiles whose centre lies further than this (in tile widths) do not cover a point.
+    TILE_MATCH_MAX_TILES = 0.75
+    TILE_INDEX_REFRESH_S = 60.0
+
+    def _load_tile_index(self) -> Dict[int, List[Tuple[float, float, str]]]:
+        """Tile centres per row, sorted by longitude: {row: [(lon, lat, tile_id), ...]}."""
+        index: Dict[int, List[Tuple[float, float, str]]] = {}
+        with self._lock:
+            rows = self._conn.execute("SELECT tile_id, lat, lon, row FROM tiles").fetchall()
+        for tile_id, lat, lon, row in rows:
+            try:
+                index.setdefault(int(row), []).append((float(lon), float(lat), str(tile_id)))
+            except Exception:
+                continue
+        for lst in index.values():
+            lst.sort()
+        self._tile_index = index
+        self._tile_index_loaded_at = time.monotonic()
+        return index
+
+    def _nearest_tile(self, lat: float, lon: float, index: Dict[int, List[Tuple[float, float, str]]]) -> Optional[str]:
+        lat_min = self.cfg.bbox[0]
+        step_lat = self.cfg.tile_km / 111.32
+        row = int(math.floor((lat - lat_min) / step_lat))
+        coslat = max(0.05, math.cos(math.radians(lat)))
+        best: Optional[Tuple[float, str]] = None
+        for r in (row - 1, row, row + 1):
+            lst = index.get(r)
+            if not lst:
+                continue
+            i = bisect.bisect_left(lst, (lon, -math.inf, ""))
+            for j in (i - 1, i):
+                if 0 <= j < len(lst):
+                    tlon, tlat, tid = lst[j]
+                    d_km = 111.32 * math.hypot(tlat - lat, (tlon - lon) * coslat)
+                    if best is None or d_km < best[0]:
+                        best = (d_km, tid)
+        if best is None or best[0] > self.TILE_MATCH_MAX_TILES * self.cfg.tile_km:
+            return None
+        return best[1]
+
     def _tile_id_for_point(self, lat: float, lon: float) -> Optional[str]:
+        """Id of the real tile whose centre is nearest to the point.
+
+        The tile id must not be computed from bbox/row/col: the yearly databases
+        contain tiles of two grid layouts under the same r{row}_c{col} naming (column
+        origin -11 deg and -28 deg), so a computed id can name a tile ~10-17 deg away.
+        Rows are consistent, so only the computed row and its neighbours are searched.
+        """
         lat_min, lat_max, lon_min, lon_max = self.cfg.bbox
         if not (lat_min <= lat <= lat_max and lon_min <= lon <= lon_max):
             return None
-
-        step_lat = self.cfg.tile_km / 111.32
-        row = int(math.floor((lat - lat_min) / step_lat))
-        if row < 0:
-            return None
-
-        lat_c = lat_min + (row + 0.5) * step_lat
-        if lat_c > lat_max + 1e-9:
-            return None
-
-        c = max(0.05, math.cos(math.radians(lat_c)))
-        step_lon = self.cfg.tile_km / (111.32 * c)
-        col = int(math.floor((lon - lon_min) / step_lon))
-        if col < 0:
-            return None
-
-        lon_c = lon_min + (col + 0.5) * step_lon
-        if lon_c > lon_max + 1e-9:
-            return None
-
-        return f"r{row}_c{col}"
+        index = getattr(self, "_tile_index", None)
+        if index is None:
+            index = self._load_tile_index()
+        tid = self._nearest_tile(float(lat), float(lon), index)
+        if tid is None and time.monotonic() - getattr(self, "_tile_index_loaded_at", 0.0) > self.TILE_INDEX_REFRESH_S:
+            # The offline builder may have added tiles since the index was loaded.
+            tid = self._nearest_tile(float(lat), float(lon), self._load_tile_index())
+        return tid
 
     def get_stats(self, lat: float, lon: float, month: int, day: int) -> Optional[Dict[str, Any]]:
         tile_id = self._tile_id_for_point(float(lat), float(lon))

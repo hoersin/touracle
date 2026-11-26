@@ -872,6 +872,56 @@ def _fetch_rows_for_mmdd_multi(
     return _store_readonly_fetchall(store, sql, params)
 
 
+PLACE_MERGE_MAX_TILES = 0.3
+
+
+def _place_keys_by_store(
+    stores: List[Tuple[int, Any]],
+    lat_min: float,
+    lat_max: float,
+    lon_min: float,
+    lon_max: float,
+) -> Dict[Tuple[int, str], str]:
+    """Map (store index, tile_id) to a place key shared by tiles of the same place.
+
+    The yearly databases contain tiles of two grid layouts under the same
+    r{row}_c{col} naming (column origin -11 deg and -28 deg), and even one layout is
+    shifted slightly between databases (up to ~0.15 tile). Merging years by tile id
+    therefore mixes places up to ~17 deg apart. Instead, per row, tile centres closer
+    than PLACE_MERGE_MAX_TILES tile widths are one place; tiles of one layout are a
+    full tile apart and never merge.
+    """
+    by_row: Dict[int, List[Tuple[float, float, int, str]]] = {}
+    tile_km = 50.0
+    for idx, (_y, st) in enumerate(stores):
+        try:
+            tile_km = float(getattr(getattr(st, "cfg", None), "tile_km", tile_km) or tile_km)
+        except Exception:
+            pass
+        rows = _store_readonly_fetchall(
+            st,
+            "SELECT tile_id, lat, lon, row FROM tiles WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?",
+            [float(lat_min), float(lat_max), float(lon_min), float(lon_max)],
+        )
+        for tile_id, lat, lon, row in rows or []:
+            try:
+                by_row.setdefault(int(row), []).append((float(lon), float(lat), idx, str(tile_id)))
+            except Exception:
+                continue
+    out: Dict[Tuple[int, str], str] = {}
+    for row, items in by_row.items():
+        items.sort()
+        key = None
+        last_lon = None
+        for lon, lat, idx, tile_id in items:
+            step_lon = tile_km / (111.32 * max(0.05, math.cos(math.radians(lat))))
+            if key is None or last_lon is None or (lon - last_lon) > PLACE_MERGE_MAX_TILES * step_lon:
+                key = f"{tile_id}@{lat:.4f},{lon:.4f}"
+            out[(idx, tile_id)] = key
+            last_lon = lon
+    return out
+
+
 def _aggregate_multi_for_mmdd(
     *,
     stores: List[Tuple[int, Any]],
@@ -1000,6 +1050,8 @@ def _aggregate_multi_for_mmdd(
             and float(w) <= float(lucky_wind_max)
         )
 
+    place_of = _place_keys_by_store(stores or [], lat_min, lat_max, lon_min, lon_max)
+
     # Query and accumulate per store.
     for idx, (_y, st) in enumerate(stores or []):
         rows = _fetch_rows_for_mmdd_multi(
@@ -1036,10 +1088,11 @@ def _aggregate_multi_for_mmdd(
             except Exception:
                 continue
 
-            tid = str(tile_id)
+            # Merge years by place, not by tile name (see _place_keys_by_store).
+            tid = place_of.get((idx, str(tile_id)), str(tile_id))
             if tid not in base:
                 base[tid] = {
-                    "tile_id": tid,
+                    "tile_id": str(tile_id),
                     "lat": float(lat),
                     "lon": float(lon),
                     "row": int(row),
@@ -1098,9 +1151,18 @@ def _aggregate_multi_for_mmdd(
             if int(lucky_ride_vote.get(day_key, 0)) >= max(1, math.ceil(int(sample_count) / 2.0)):
                 lucky_ride_majority_cnt[day_key[0]] = lucky_ride_majority_cnt.get(day_key[0], 0) + 1
 
+    # Tile ids stay unchanged unless one id names several places; then each
+    # place gets a unique id (the frontend keys points by tile_id).
+    name_count: Dict[str, int] = {}
+    for tid in order:
+        name = str(base[tid]["tile_id"])
+        name_count[name] = name_count.get(name, 0) + 1
+
     out: List[Dict[str, Any]] = []
     for tid in order:
         d = dict(base.get(tid, {"tile_id": tid}))
+        if name_count.get(str(d.get("tile_id")), 0) > 1:
+            d["tile_id"] = tid
 
         # Medians
         d["temperature_c"] = _median(temp_full.get(tid, []))
