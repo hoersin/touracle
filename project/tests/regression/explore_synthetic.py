@@ -75,7 +75,33 @@ def modes_for(kind):
     return _MODES[kind]
 
 
-def grid(args, *, gradient=0.0, mixed=False, rain=None):
+# Mallorca-like case (as observed in March 2024): south-westerly wind everywhere, but
+# much stronger over the sea than over the island, so sea tiles are more significant.
+# Tile centres r12_c23 (39.61 N 2.70 E) and r12_c24 (39.61 N 3.28 E) lie on Mallorca.
+MALLORCA_LAND_TILES = {(12, 23), (12, 24)}
+MALLORCA_ROWS = range(9, 16)
+MALLORCA_COLS = range(19, 29)
+
+
+def mallorca_observations(on_land, seed=3):
+    rnd = random.Random(seed)
+    if on_land:
+        return [(225.0, 4.5)] * 17 + [(292.5, 4.0)] * 7 + [(rnd.uniform(0, 360), 3.0) for _ in range(7)]
+    return [(240.0, 9.0)] * 20 + [(rnd.uniform(0, 360), 6.0) for _ in range(11)]
+
+
+def mallorca_wind(point, month):
+    """wind_modes override: Mallorca-like tiles near the Balearics, default elsewhere."""
+    rc = (point['row'], point['col'])
+    if rc[0] in MALLORCA_ROWS and rc[1] in MALLORCA_COLS:
+        key = 'mallorca_land' if rc in MALLORCA_LAND_TILES else 'mallorca_sea'
+        if key not in _MODES:
+            _MODES[key] = wind_modes.classify_observations(mallorca_observations(key == 'mallorca_land'))
+        return _MODES[key]
+    return modes_for(wind_region(point['lon'], month))
+
+
+def grid(args, *, gradient=0.0, mixed=False, rain=None, wind=None):
     lat_min = float(args['lat_min']) - 0.6
     lat_max = float(args['lat_max']) + 0.6
     lon_min = float(args['lon_min']) - 0.8
@@ -117,6 +143,8 @@ def grid(args, *, gradient=0.0, mixed=False, rain=None):
                         'lucky_day_count': 10, 'lucky_ride_count': 10,
                         'wind_modes': modes_for(wind_region(lon, month)),
                     })
+                    if wind is not None:
+                        points[-1]['wind_modes'] = wind(points[-1], month)
         row += 1
     ts = args.get('timescale', 'year')
     return {

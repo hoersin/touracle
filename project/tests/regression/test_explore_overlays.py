@@ -23,7 +23,7 @@ LAND = [(48.5, 10.0), (47.0, 2.5), (51.0, 19.0), (45.5, 10.5)]   # inland points
 @pytest.fixture
 def grid_server(server, monkeypatch):
     """Server whose Strategic Grid computation is synthetic and slow on demand."""
-    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, rain=None, fail_months=set(), calls=[])
+    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, rain=None, wind=None, fail_months=set(), calls=[])
 
     def impl():
         args = request.args.to_dict()
@@ -31,7 +31,7 @@ def grid_server(server, monkeypatch):
         time.sleep(cfg.delay)
         if xs.period_month(args) in cfg.fail_months:
             return jsonify({'error': 'Aggregation failed: synthetic failure'}), 500
-        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed, rain=cfg.rain))
+        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed, rain=cfg.rain, wind=cfg.wind))
 
     monkeypatch.setattr(server.module, '_api_strategic_grid_impl', impl)
     server.grid = cfg
@@ -528,8 +528,70 @@ def test_germany_at_country_zoom_shows_at_most_five_roses(explore):
     roses = show_wind(page)
     in_de = [r for r in roses if 47.3 <= r['lat'] <= 55.0 and 5.9 <= r['lon'] <= 15.0]
     assert 1 <= len(in_de) <= 5, in_de
-    xs_ = [(r['x'], r['y']) for r in roses]
-    assert all(((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 >= 219 for i, a in enumerate(xs_) for b in xs_[i + 1:])
+    assert page.evaluate("window.__WM_EXPLORE_DIAG__.roseSpacingPx") == 220     # country zoom: fixed spacing
+    assert min_gap(roses) >= 219
+
+
+def min_gap(roses):
+    pts = [(r['x'], r['y']) for r in roses]
+    return min((((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5 for i, a in enumerate(pts) for b in pts[i + 1:]),
+               default=float('inf'))
+
+
+MALLORCA = (39.62, 2.99)
+
+
+def show_mallorca(explore, zoom):
+    explore.srv.grid.wind = xs.mallorca_wind
+    page = explore()
+    wait_ready(page)
+    page.evaluate(f"window.__WM_LEAFLET_MAP__.setView([{MALLORCA[0]}, {MALLORCA[1]}], {zoom}, {{animate: false}})")
+    wait_ready(page)
+    roses = show_wind(page)
+    # the coastline for this zoom may arrive after the first draw; it triggers a redraw
+    page.wait_for_timeout(1500)
+    return page, page.evaluate(ROSES)
+
+
+def is_island_tile(r):
+    return abs(r['lat'] - 39.61) < 0.05 and (abs(r['lon'] - 2.70) < 0.05 or abs(r['lon'] - 3.28) < 0.05)
+
+
+def test_land_tile_is_chosen_before_a_more_significant_sea_tile(explore):
+    land = xs.wind_modes.classify_observations(xs.mallorca_observations(True))
+    sea = xs.wind_modes.classify_observations(xs.mallorca_observations(False))
+    assert land and sea and sea[0]['significance'] > land[0]['significance']     # sea would win on score alone
+    page, roses = show_mallorca(explore, 8)
+    assert page.evaluate("window.__WM_EXPLORE_DIAG__.roseSpacingPx") == 220      # zoom 8: tiles ~105 px apart
+    island = [r for r in roses if is_island_tile(r)]
+    assert len(island) == 1 and island[0]['land'], roses
+    assert any(not r['land'] for r in roses), 'sea roses should still fill the gaps'
+    assert min_gap(roses) >= 219                                                  # sea keeps distance to land
+    for r in island:                                                              # from SW -> pushes NE
+        assert 30 <= r['modes'][0]['to_deg'] <= 60, r
+
+
+def test_neighbouring_land_tiles_both_get_a_rose_at_zoom_9(explore):
+    page, roses = show_mallorca(explore, 9)
+    spacing = page.evaluate("window.__WM_EXPLORE_DIAG__.roseSpacingPx")
+    assert 140 <= spacing < 220, spacing                                          # 0.9 x ~205 px tile spacing
+    island = [r for r in roses if is_island_tile(r)]
+    assert len(island) == 2 and all(r['land'] for r in island), roses
+    assert all(30 <= r['modes'][0]['to_deg'] <= 60 for r in island), island
+    assert min_gap(roses) >= spacing - 1                                          # one rose per tile, no overlap
+    assert len(roses) <= 14
+
+
+def test_wide_european_view_keeps_the_rose_limit(explore):
+    explore.srv.grid.wind = xs.mallorca_wind
+    page = explore(viewport=(2560, 1440))
+    wait_ready(page)
+    page.evaluate("window.__WM_LEAFLET_MAP__.setView([50.0, 8.0], 5, {animate: false})")
+    wait_ready(page)
+    roses = show_wind(page)
+    assert 1 <= len(roses) <= 14, len(roses)
+    assert page.evaluate("window.__WM_EXPLORE_DIAG__.roseSpacingPx") == 220
+    assert min_gap(roses) >= 219
 
 
 def test_wind_roses_follow_the_selected_period(explore):

@@ -17492,7 +17492,15 @@
     if (!src || !src.features) {
       return false;
     }
+    ctx.save();
+    _traceStrategicLandPath(ctx, src);
+    // Use even-odd so holes (lakes) punch out correctly even if ring winding varies.
+    try { ctx.clip('evenodd'); } catch (_) { try { ctx.clip(); } catch (_) {} }
+    return true;
+  }
 
+  function _traceStrategicLandPath(ctx, src) {
+    // Current path = the land polygons of src in view, in container pixels.
     let view = null;
     try {
       const b = map.getBounds();
@@ -17504,7 +17512,6 @@
       };
     } catch (_) {}
 
-    ctx.save();
     ctx.beginPath();
 
     const drawRing = (ring) => {
@@ -17554,10 +17561,6 @@
       }
       drawFeature(f);
     }
-
-    // Use even-odd so holes (lakes) punch out correctly even if ring winding varies.
-    try { ctx.clip('evenodd'); } catch (_) { try { ctx.clip(); } catch (_) {} }
-    return true;
   }
 
   function _strokeStrategicShoreline(ctx) {
@@ -20070,6 +20073,57 @@
   const WIND_ROSE_MIN_SPACING_PX = 220;   // ~4-5 roses for Germany at country zoom
   const WIND_ROSE_EDGE_MARGIN_PX = 24;
   const WIND_ROSE_MAX = 14;
+  // Zoomed in (tiles >= 160 px apart, zoom ~9+), 220 px would block the direct
+  // neighbour tile; the spacing then shrinks to 0.9 tile spacings so each tile can
+  // carry its own rose. Below that the fixed 220 px keeps country views sparse.
+  const WIND_ROSE_ADAPT_FROM_TILE_PX = 160;
+  const WIND_ROSE_TILE_SPACING_FACTOR = 0.9;
+  const WIND_ROSE_LAND_RASTER_SCALE = 0.25;
+
+  function _windRoseTileSpacingPx(tileKm) {
+    try {
+      const c = map.getCenter();
+      const dLat = (Number(tileKm) || 50) / 111.32;
+      const a = map.latLngToContainerPoint([Number(c.lat) - dLat / 2, Number(c.lng)]);
+      const b = map.latLngToContainerPoint([Number(c.lat) + dLat / 2, Number(c.lng)]);
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      return Number.isFinite(d) ? d : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  function _windRoseMinSpacingPx(tileKm) {
+    const s = _windRoseTileSpacingPx(tileKm);
+    if (!(s >= WIND_ROSE_ADAPT_FROM_TILE_PX)) return WIND_ROSE_MIN_SPACING_PX;
+    return Math.min(WIND_ROSE_MIN_SPACING_PX, WIND_ROSE_TILE_SPACING_FACTOR * s);
+  }
+
+  function _windRoseLandTest(w, h) {
+    // Land/sea per screen point from the coastline polygons the map already draws,
+    // rasterised once per draw at 1/4 resolution. null when no coastline is loaded.
+    const src = _strategicLandSourceForCurrentZoom();
+    if (!src || !src.features) return null;
+    const k = WIND_ROSE_LAND_RASTER_SCALE;
+    const w2 = Math.max(1, Math.ceil(w * k));
+    const h2 = Math.max(1, Math.ceil(h * k));
+    const off = (STRATEGIC_STATE._windRoseLandRaster || (STRATEGIC_STATE._windRoseLandRaster = document.createElement('canvas')));
+    off.width = w2;
+    off.height = h2;
+    const octx = off.getContext('2d', { willReadFrequently: true });
+    if (!octx) return null;
+    octx.setTransform(k, 0, 0, k, 0, 0);
+    _traceStrategicLandPath(octx, src);
+    octx.fillStyle = '#000';
+    try { octx.fill('evenodd'); } catch (_) { octx.fill(); }
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    const data = octx.getImageData(0, 0, w2, h2).data;
+    return (x, y) => {
+      const xi = Math.min(w2 - 1, Math.max(0, Math.floor(x * k)));
+      const yi = Math.min(h2 - 1, Math.max(0, Math.floor(y * k)));
+      return data[(yi * w2 + xi) * 4 + 3] > 127;
+    };
+  }
 
   function _selectWindRoses(resp, w, h) {
     const cands = [];
@@ -20082,16 +20136,25 @@
           || pt.x > w - WIND_ROSE_EDGE_MARGIN_PX || pt.y > h - WIND_ROSE_EDGE_MARGIN_PX) continue;
       const score = Number(modes[0].significance) || 0;
       if (!(score > 0)) continue;
-      cands.push({ x: pt.x, y: pt.y, lat: Number(p.lat), lon: Number(p.lon), modes: modes.slice(0, 2), score });
+      cands.push({ x: pt.x, y: pt.y, lat: Number(p.lat), lon: Number(p.lon), modes: modes.slice(0, 2), score, land: true });
     }
-    // Most significant first; ties by position so the choice is stable while panning.
-    cands.sort((a, b) => (b.score - a.score) || (a.lat - b.lat) || (a.lon - b.lon));
+    let isLand = null;
+    if (cands.length) {
+      try { isLand = _windRoseLandTest(w, h); } catch (_) { isLand = null; }
+    }
+    // Without a coastline every candidate counts as land: plain ranking by significance.
+    if (isLand) for (const c of cands) c.land = isLand(c.x, c.y);
+    // Land first (where people ride), most significant first; ties by position so the
+    // choice is stable while panning. Sea roses only fill the gaps between land roses.
+    cands.sort((a, b) => ((b.land ? 1 : 0) - (a.land ? 1 : 0)) || (b.score - a.score) || (a.lat - b.lat) || (a.lon - b.lon));
     const out = [];
-    const d2 = WIND_ROSE_MIN_SPACING_PX * WIND_ROSE_MIN_SPACING_PX;
+    const spacing = _windRoseMinSpacingPx(resp && resp.tile_km);
+    const d2 = spacing * spacing;
     for (const c of cands) {
       if (out.length >= WIND_ROSE_MAX) break;
       if (out.every((o) => ((o.x - c.x) * (o.x - c.x) + (o.y - c.y) * (o.y - c.y)) >= d2)) out.push(c);
     }
+    EXPLORE_DIAG.roseSpacingPx = spacing;
     return out;
   }
 
@@ -20151,7 +20214,7 @@
       ctx.stroke();
       ctx.restore();
     }
-    EXPLORE_DIAG.roses = roses.map((r) => ({ lat: r.lat, lon: r.lon, x: r.x, y: r.y,
+    EXPLORE_DIAG.roses = roses.map((r) => ({ lat: r.lat, lon: r.lon, x: r.x, y: r.y, land: r.land,
       modes: r.modes.map((m) => ({ from_deg: m.from_deg, to_deg: m.to_deg, share: m.share, mean_speed_ms: m.mean_speed_ms })) }));
   }
 
@@ -20174,12 +20237,13 @@
       Boolean(STRATEGIC_STATE.windOn), view, settings].join('|');
   }
 
-  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [] };
+  const EXPLORE_DIAG = { renders: 0, lastRenderMs: 0, roses: [], roseSpacingPx: null };
   try {
     window.__WM_EXPLORE_DIAG__ = Object.defineProperties({}, {
       renders: { get: () => EXPLORE_DIAG.renders },
       lastRenderMs: { get: () => EXPLORE_DIAG.lastRenderMs },
       roses: { get: () => EXPLORE_DIAG.roses.slice() },
+      roseSpacingPx: { get: () => EXPLORE_DIAG.roseSpacingPx },
       sampleAt: { value: (lat, lon) => _strategicSampleAt(Number(lat), Number(lon)) },
     });
   } catch (_) {}
