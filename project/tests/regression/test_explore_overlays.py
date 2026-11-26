@@ -23,7 +23,7 @@ LAND = [(48.5, 10.0), (47.0, 2.5), (51.0, 19.0), (45.5, 10.5)]   # inland points
 @pytest.fixture
 def grid_server(server, monkeypatch):
     """Server whose Strategic Grid computation is synthetic and slow on demand."""
-    cfg = SimpleNamespace(delay=0.0, gradient=0.0, fail_months=set(), calls=[])
+    cfg = SimpleNamespace(delay=0.0, gradient=0.0, mixed=False, fail_months=set(), calls=[])
 
     def impl():
         args = request.args.to_dict()
@@ -31,7 +31,7 @@ def grid_server(server, monkeypatch):
         time.sleep(cfg.delay)
         if xs.period_month(args) in cfg.fail_months:
             return jsonify({'error': 'Aggregation failed: synthetic failure'}), 500
-        return jsonify(xs.grid(args, gradient=cfg.gradient))
+        return jsonify(xs.grid(args, gradient=cfg.gradient, mixed=cfg.mixed))
 
     monkeypatch.setattr(server.module, '_api_strategic_grid_impl', impl)
     server.grid = cfg
@@ -190,6 +190,21 @@ def test_interpolation_uses_the_tiles_at_the_sampled_position(explore):
         s = page.evaluate("([a, b]) => window.__WM_EXPLORE_DIAG__.sampleAt(a, b)", [lat, lon])
         want = xs.temperature(None, lon, 1.0)
         assert s and abs(s['temperature_c'] - want) < 0.6, (lat, lon, s and s['temperature_c'], want)
+
+
+def test_rows_mixing_two_grid_layouts_are_sampled_and_drawn(explore):
+    """Real offline databases mix two grid layouts within one row (Pyrenees, Gulf of Lion)."""
+    explore.srv.grid.gradient = 1.0
+    explore.srv.grid.mixed = True
+    page = explore()
+    wait_ready(page)
+    for lat in (44.3, 45.0, 45.7):
+        for lon in (4.0, 7.0, 8.2, 9.5, 12.0, 15.0):
+            s = page.evaluate("([a, b]) => window.__WM_EXPLORE_DIAG__.sampleAt(a, b)", [lat, lon])
+            want = xs.temperature(None, lon, 1.0)
+            assert s and abs(s['temperature_c'] - want) < 0.6, (lat, lon, s and s['temperature_c'], want)
+    band = [(44.6, 6.0), (45.2, 9.0), (45.4, 12.0), (45.4, 15.6)]   # inland points
+    assert all(px[3] > 0 for px in pixels(page, 'wm-strategic-heat', band)), pixels(page, 'wm-strategic-heat', band)
 
 
 def test_interpolation_setting_switches_to_nearest_tile(explore):

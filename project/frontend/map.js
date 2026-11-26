@@ -17977,7 +17977,7 @@
       STRATEGIC_STATE._meta = meta;
     }
     if (!tileMap) {
-      tileMap = _makeTileMap(resp.points);
+      tileMap = _makeTileMap(resp.points, resp.tile_km);
       STRATEGIC_STATE._tileMap = tileMap;
     }
     if (!meta || !tileMap) return null;
@@ -18926,7 +18926,6 @@
   // Column/row index of a Strategic Grid response, built from the points themselves.
   // The yearly offline stores do not share one column origin, and it differs from
   // the reported bbox, so tile positions must never be derived from bbox.lonMin.
-  const STRATEGIC_RC_KEY = 65536;
   const STRATEGIC_SAMPLE_KEYS = [
     'temperature_c', 'precipitation_mm', 'rain_probability', 'rain_typical_mm',
     'wind_speed_ms', 'wind_dir_deg', 'wind_var_deg',
@@ -18934,9 +18933,13 @@
     'lucky_day_count', 'lucky_ride_count',
   ];
 
-  function _makeTileMap(points) {
+  function _makeTileMap(points, tileKm) {
+    // Row index of tile centres per grid layout. The offline databases hold tiles of
+    // two grid layouts (column origin -11 deg and -28 deg) under the same
+    // r{row}_c{col} naming, sometimes in the same row; each layout is identified by
+    // the column origin implied by its points and indexed separately.
+    const km = Number(tileKm) || 50;
     const m = new Map();
-    const byRC = new Map();
     const rows = new Map();
     for (const p of (points || [])) {
       if (!(p && p.tile_id)) continue;
@@ -18946,14 +18949,21 @@
       const lat = Number(p.lat);
       const lon = Number(p.lon);
       if (!Number.isInteger(row) || !Number.isInteger(col) || !Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      byRC.set(row * STRATEGIC_RC_KEY + col, p);
-      const r = rows.get(row);
+      let r = rows.get(row);
       if (!r) {
-        rows.set(row, { lat, colA: col, lonA: lon, colB: col, lonB: lon });
-      } else {
-        if (col < r.colA) { r.colA = col; r.lonA = lon; }
-        if (col > r.colB) { r.colB = col; r.lonB = lon; }
+        r = { lat, step: km / (111.32 * Math.max(0.05, Math.cos(lat * Math.PI / 180))), layouts: [] };
+        rows.set(row, r);
       }
+      const origin = lon - (col + 0.5) * r.step;
+      let g = null;
+      for (const cand of r.layouts) {
+        if (Math.abs(cand.origin - origin) < 0.05 * r.step) { g = cand; break; }
+      }
+      if (!g) {
+        g = { origin, cols: new Map() };
+        r.layouts.push(g);
+      }
+      g.cols.set(col, p);
     }
     let rowA = null;
     let rowB = null;
@@ -18961,10 +18971,6 @@
       if (rowA === null || row < rowA) rowA = row;
       if (rowB === null || row > rowB) rowB = row;
     }
-    for (const r of rows.values()) {
-      r.step = (r.colB > r.colA) ? (r.lonB - r.lonA) / (r.colB - r.colA) : null;
-    }
-    m.__byRC = byRC;
     m.__rows = rows;
     m.__rowRef = rowA;
     m.__latRef = (rowA !== null) ? rows.get(rowA).lat : null;
@@ -19164,7 +19170,6 @@
     // sample); nearest tile when the Interpolation setting is off.
     if (!tileMap || !tileMap.__rows || tileMap.__rowRef === null) return null;
     const rows = tileMap.__rows;
-    const byRC = tileMap.__byRC;
     const tileKm = Number(meta && meta.tile_km) || 50;
     const latStep = Number(tileMap.__latStep) || (tileKm / 111.32);
     const smooth = !(SETTINGS && SETTINGS.interpolation === false);
@@ -19175,14 +19180,28 @@
     function rowSample(row) {
       const r = rows.get(row);
       if (!r) return null;
-      const step = r.step || (tileKm / (111.32 * Math.max(0.05, Math.cos(r.lat * Math.PI / 180))));
-      const fc = r.colA + (Number(lon) - r.lonA) / step;
-      const col0 = Math.floor(fc);
-      const tLon = fc - col0;
-      const p0 = _strategicTileSample(byRC.get(row * STRATEGIC_RC_KEY + col0));
-      const p1 = _strategicTileSample(byRC.get(row * STRATEGIC_RC_KEY + col0 + 1));
-      if (!smooth) return (tLon < 0.5) ? (p0 || p1) : (p1 || p0);
-      return _strategicMixSamples(p0, p1, tLon);
+      // Per layout: the two tile centres bracketing lon. Prefer a layout with both
+      // neighbours, otherwise the one whose existing neighbour is closest.
+      let best = null;
+      let bestDist = Infinity;
+      for (const g of r.layouts) {
+        const fc = (Number(lon) - g.origin) / r.step - 0.5;
+        const col0 = Math.floor(fc);
+        const tLon = fc - col0;
+        const q0 = g.cols.get(col0);
+        const q1 = g.cols.get(col0 + 1);
+        if (!q0 && !q1) continue;
+        const dist = (q0 && q1) ? 0 : (q0 ? tLon : 1 - tLon);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { q0, q1, tLon };
+        }
+      }
+      if (!best) return null;
+      const p0 = _strategicTileSample(best.q0);
+      const p1 = _strategicTileSample(best.q1);
+      if (!smooth) return (best.tLon < 0.5) ? (p0 || p1) : (p1 || p0);
+      return _strategicMixSamples(p0, p1, best.tLon);
     }
 
     const v0 = rowSample(row0);
@@ -20302,7 +20321,7 @@
     const bboxRaw = _bboxFromResp(resp);
     const tileKm = Number(resp.tile_km || 50);
     const meta = bboxRaw ? { bbox: bboxRaw, tile_km: tileKm } : null;
-    const tileMap = _makeTileMap(resp.points);
+    const tileMap = _makeTileMap(resp.points, resp.tile_km);
     const layer = _strategicNormalizeLayer(STRATEGIC_STATE.layer);
     if (layer === 'none') {
       try {

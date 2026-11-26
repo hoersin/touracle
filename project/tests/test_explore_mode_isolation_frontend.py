@@ -129,7 +129,8 @@ def test_explore_uses_24h_only_and_preferences_overlay_control():
     # Phase 2: the per-pixel nearest-point search was replaced by an indexed bilinear
     # lookup (performance and correctness: regression/test_explore_overlays.py).
     assert "const directPoints = Array.isArray(tileMap.__points)" not in source
-    assert "m.__byRC = byRC;" in source
+    assert "m.__rows = rows;" in source
+    assert "r.layouts" in source
     assert "_strategicSelectionIdentity()" in source
 
 

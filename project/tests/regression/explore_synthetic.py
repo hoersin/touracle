@@ -39,7 +39,13 @@ def temperature(month, lon, gradient):
     return base + gradient * (lon - 10.0)
 
 
-def grid(args, *, gradient=0.0):
+# Rows in this band mix two layouts, as in the real databases: tiles east of 8 E use
+# the bbox origin (-28 deg) while the rest of the row uses LON_ORIGIN.
+MIXED_LAT = (44.0, 46.5)
+MIXED_FROM_LON = 8.0
+
+
+def grid(args, *, gradient=0.0, mixed=False):
     lat_min = float(args['lat_min']) - 0.6
     lat_max = float(args['lat_max']) + 0.6
     lon_min = float(args['lon_min']) - 0.8
@@ -54,21 +60,31 @@ def grid(args, *, gradient=0.0):
             break
         if lat_min <= lat <= lat_max:
             step_lon = TILE_KM / (111.32 * max(0.05, math.cos(math.radians(lat))))
+            mix = mixed and MIXED_LAT[0] <= lat <= MIXED_LAT[1]
+            cells = []          # (col, lon) of the row, in the layout(s) the row uses
             col = 0
-            while True:
+            while LON_ORIGIN + (col + 0.5) * step_lon <= BBOX[3]:
                 lon = LON_ORIGIN + (col + 0.5) * step_lon
-                if lon > BBOX[3]:
+                if mix and lon >= MIXED_FROM_LON:
                     break
+                cells.append((col, lon))
+                col += 1
+            if mix:
+                last_lon = cells[-1][1] if cells else MIXED_FROM_LON
+                col = math.floor((last_lon - BBOX[2]) / step_lon - 0.5) + 1   # first B tile east of A's last
+                while BBOX[2] + (col + 0.5) * step_lon <= BBOX[3]:
+                    cells.append((col, BBOX[2] + (col + 0.5) * step_lon))
+                    col += 1
+            for tile_col, lon in cells:
                 if lon_min <= lon <= lon_max:
                     t = temperature(month, lon, gradient)
                     points.append({
-                        'tile_id': f'r{row}_c{col}', 'row': row, 'col': col, 'lat': lat, 'lon': lon,
+                        'tile_id': f'r{row}_c{tile_col}', 'row': row, 'col': tile_col, 'lat': lat, 'lon': lon,
                         'temperature_c': t, 'temp_day_median': t, 'temp_day_p25': t - 1, 'temp_day_p75': t + 1,
                         'precipitation_mm': rain, 'rain_probability': 0.4, 'rain_typical_mm': rain,
                         'wind_speed_ms': 7.0, 'wind_dir_deg': 270.0, 'wind_var_deg': 0.5,
                         'lucky_day_count': 10, 'lucky_ride_count': 10,
                     })
-                col += 1
         row += 1
     ts = args.get('timescale', 'year')
     return {
