@@ -93,7 +93,13 @@ def test_weather_profile_year_switch_matrix_live(live_climate_profile_backend, l
     assert response.status_code == 200, (label, years_selected, response.get_data(as_text=True))
 
     payload = response.get_json()
-    assert payload['meta']['years'] == years_selected, (label, years_selected, payload['meta'])
+    # Only years whose database has a tile at the point contribute. (The incomplete
+    # 2021 database has no tile near Zurich; the earlier coordinate lookup silently
+    # used a tile at 47.25 N 25.72 E instead.)
+    covered = [int(y) for y in years_selected
+               if backend_app._resolve_offline_store_for_year(int(y))._tile_id_for_point(float(lat), float(lon))]
+    assert covered, (label, years_selected)
+    assert payload['meta']['years'] == covered, (label, years_selected, payload['meta'])
     assert payload['meta']['point'] == {'lat': float(lat), 'lon': float(lon)}
     assert payload['meta']['location']
     assert payload['meta']['tile_center']['lat'] is not None
