@@ -1245,6 +1245,36 @@ def _start_reference_year_warmup(reference_year_count: int = 3) -> threading.Thr
     return thread
 
 
+def _start_period_arrays_warmup() -> threading.Thread:
+    """Build the Explore period arrays of every yearly database in the background.
+
+    One-time work per database (~10-15 s each, derived files next to the databases,
+    see period_arrays.py); afterwards an Explore period switch takes well under a
+    second instead of up to a minute. Requests arriving earlier use the SQL path.
+    """
+    def run() -> None:
+        try:
+            import re
+            import period_arrays
+            stores = []
+            seen: set[int] = set()
+            for p in sorted((BASE_DIR / 'cache').glob('offline_weather_*.sqlite'), reverse=True):
+                m = re.fullmatch(r'offline_weather_(\d{4})\.sqlite', p.name)
+                if not m:
+                    continue
+                st = _resolve_offline_store_for_year(int(m.group(1)))
+                if st is not None and id(st) not in seen:
+                    seen.add(id(st))
+                    stores.append(st)
+            period_arrays.ensure_async(stores)
+        except Exception:
+            app.logger.exception('Explore period arrays warm-up failed')
+
+    thread = threading.Thread(target=run, name='period-arrays-warmup', daemon=True)
+    thread.start()
+    return thread
+
+
 def _store_has_tile(store: Any, tile_id: str) -> bool:
     try:
         cfg = getattr(store, 'cfg', None)
@@ -7500,6 +7530,7 @@ if __name__ == '__main__':
     # Attempt restoring session on startup
     restore_gpx_on_start()
     _start_reference_year_warmup()
+    _start_period_arrays_warmup()
     if use_ssl_adhoc:
         app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False, ssl_context='adhoc', threaded=True)
     else:

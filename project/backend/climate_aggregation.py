@@ -17,8 +17,10 @@ import math
 
 try:
     from wind_modes import WindRoseAccumulator
+    import period_arrays as _period_arrays
 except ImportError:  # pragma: no cover - package-relative import
     from .wind_modes import WindRoseAccumulator  # type: ignore
+    from . import period_arrays as _period_arrays  # type: ignore
 import sqlite3
 import threading
 import time
@@ -245,6 +247,10 @@ def _median(vals: List[float]) -> Optional[float]:
     if (n % 2) == 1:
         return float(xs[mid])
     return 0.5 * (float(xs[mid - 1]) + float(xs[mid]))
+
+
+def _any_lucky(*thresholds: Optional[float]) -> bool:
+    return any(t is not None for t in thresholds)
 
 
 def _cache_key_range(
@@ -600,6 +606,16 @@ def aggregate_climate(
         return cached
 
     mmdd = list(_iter_mmdd_for_window(year, center_doy, ts))
+
+    # Fast path: precomputed column arrays (see period_arrays.py), same semantics.
+    if not _any_lucky(lucky_temp_cold, lucky_temp_hot, lucky_rain_max, lucky_wind_max):
+        arr = _period_arrays.get(store)
+        if arr is not None:
+            out = _period_arrays.aggregate_single(arr, None if ts == "year" else mmdd,
+                                                  float(lat_min), float(lat_max), float(lon_min), float(lon_max))
+            _CACHE.set(cache_key, out)
+            return out
+        _period_arrays.ensure_async([store])
 
     # Build query: tile centers within bbox LEFT JOIN climatology rows in the window.
     # Special-case year: no month/day filtering needed.
@@ -1373,6 +1389,15 @@ def aggregate_climate_multi(
         return cached
 
     mmdd = list(_iter_mmdd_for_window(year, center_doy, ts))
+    if not _any_lucky(lucky_temp_cold, lucky_temp_hot, lucky_rain_max, lucky_wind_max):
+        arrs = [_period_arrays.get(st) for (_y, st) in stores or []]
+        if arrs and all(a is not None for a in arrs):
+            place_of = _place_keys_by_store(stores, float(lat_min), float(lat_max), float(lon_min), float(lon_max))
+            pts = _period_arrays.aggregate_multi(arrs, place_of, mmdd, float(lat_min), float(lat_max),
+                                                 float(lon_min), float(lon_max))
+            _CACHE.set(cache_key, pts)
+            return pts
+        _period_arrays.ensure_async([st for (_y, st) in stores or []])
     pts = _aggregate_multi_for_mmdd(
         stores=stores,
         mmdd=mmdd,
