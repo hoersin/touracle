@@ -1134,12 +1134,11 @@ def _evaluate_offline_year_database(path: Path) -> dict[str, Any]:
               OR wind_speed_ms IS NOT NULL
             )
         """
-        result['usable_row_count'] = int(cur.execute(f'SELECT COUNT(*) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
-        result['usable_tiles'] = int(cur.execute(f'SELECT COUNT(DISTINCT tile_id) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
-        result['distinct_usable_mmdd'] = int(cur.execute(f'SELECT COUNT(DISTINCT printf("%02d-%02d", month, day)) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
+        # One pass over the usable rows per tile gives row count, tile count and the
+        # per-tile minimum/maximum (previously three separate full-table scans).
         per_tile = cur.execute(
             f"""
-            SELECT MIN(c), MAX(c)
+            SELECT COUNT(*), SUM(c), MIN(c), MAX(c)
             FROM (
               SELECT tile_id, COUNT(*) AS c
               FROM climatology
@@ -1148,8 +1147,11 @@ def _evaluate_offline_year_database(path: Path) -> dict[str, Any]:
             )
             """
         ).fetchone()
-        result['min_usable_rows_per_tile'] = int(per_tile[0] or 0) if per_tile else 0
-        result['max_usable_rows_per_tile'] = int(per_tile[1] or 0) if per_tile else 0
+        result['usable_tiles'] = int(per_tile[0] or 0) if per_tile else 0
+        result['usable_row_count'] = int(per_tile[1] or 0) if per_tile else 0
+        result['min_usable_rows_per_tile'] = int(per_tile[2] or 0) if per_tile else 0
+        result['max_usable_rows_per_tile'] = int(per_tile[3] or 0) if per_tile else 0
+        result['distinct_usable_mmdd'] = int(cur.execute(f'SELECT COUNT(DISTINCT printf("%02d-%02d", month, day)) FROM climatology WHERE {usable_where}').fetchone()[0] or 0)
 
         complete = (
             result['total_tiles'] > 0
@@ -1221,6 +1223,26 @@ def _resolve_complete_reference_years(reference_year_count: int = 3) -> tuple[li
             _OFFLINE_REFERENCE_YEARS_CACHE_IN_FLIGHT.discard(signature)
             _OFFLINE_REFERENCE_YEARS_CACHE_COND.notify_all()
         raise
+
+
+def _start_reference_year_warmup(reference_year_count: int = 3) -> threading.Thread:
+    """Audit the offline year databases in the background after server start.
+
+    The audit reads every yearly database completely (about 20 s on a cold disk
+    cache) and is cached in memory only, so without warm-up the first Explore
+    climate-profile request after each start pays for it. A request arriving while
+    the warm-up runs waits for it (in-flight handling in
+    _resolve_complete_reference_years) instead of repeating the work.
+    """
+    def run() -> None:
+        try:
+            _resolve_complete_reference_years(reference_year_count)
+        except Exception:
+            app.logger.exception('Offline reference-year warm-up failed')
+
+    thread = threading.Thread(target=run, name='offline-reference-year-warmup', daemon=True)
+    thread.start()
+    return thread
 
 
 def _store_has_tile(store: Any, tile_id: str) -> bool:
@@ -7479,6 +7501,7 @@ if __name__ == '__main__':
     use_ssl_adhoc = str(os.environ.get('WM_SSL_ADHOC', '')).strip().lower() in ('1', 'true', 'yes', 'on')
     # Attempt restoring session on startup
     restore_gpx_on_start()
+    _start_reference_year_warmup()
     if use_ssl_adhoc:
         app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False, ssl_context='adhoc', threaded=True)
     else:
