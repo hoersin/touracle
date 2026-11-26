@@ -2370,6 +2370,30 @@
       min-height: 0;
       box-sizing: border-box;   /* height 100% includes the padding: the last row is not clipped */
     }
+    .wm-gradient-legend {
+      /* inside the map container, below the zoom buttons: clear of the map
+         legend (bottom left) and of the TourBook panel (right) */
+      position: absolute;
+      left: 12px;
+      top: 84px;
+      z-index: 1600;
+      padding: 6px 8px 7px;
+      background: rgba(255,255,255,0.94);
+      border: 1px solid rgba(15,23,42,0.12);
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(15,23,42,0.12);
+      font-size: 11px;
+      color: #1e293b;
+      pointer-events: none;
+    }
+    body:not([data-mode="tour"]) .wm-gradient-legend { display: none; }
+    .wm-gradient-legend-title { font-weight: 700; font-size: 11px; margin-bottom: 4px; }
+    .wm-gradient-legend-rows { display: grid; gap: 1px; }
+    .wm-gradient-legend-row { display: grid; grid-template-columns: 14px auto 1fr; gap: 6px; align-items: center; white-space: nowrap; }
+    .wm-gradient-legend-row i { width: 14px; height: 8px; border-radius: 2px; display: block; }
+    .wm-gradient-legend-row span { font-variant-numeric: tabular-nums; }
+    .wm-gradient-legend-row .lbl { color: #475569; }
+    .wm-gradient-legend-note { max-width: 180px; color: #475569; white-space: normal; }
     .wm-climate-wind-meta {
       font-size: 10px;
       line-height: 1.2;
@@ -4170,6 +4194,23 @@
                               <button id="tourSummaryFitAll" class="wm-tour-inline-toggle" type="button">Fit Entire Tour</button>
                             </div>
                           </div>
+                        </div>
+                      </div>
+
+                      <div class="wm-pref-row" data-wm-scope="tour" id="routeColoringRow">
+                        <label class="wm-pref-label" for="routeColoringMode">
+                          <span class="wm-pref-name">Route colors</span>
+                          <span class="wm-pref-sub">Stage colors or the local gradient in the direction of travel.</span>
+                        </label>
+                        <div class="wm-pref-control wm-pref-stack">
+                          <div class="wm-pref-segmented" role="group" aria-label="Route colors">
+                            <button class="wm-pref-segmented-btn is-active" type="button" data-route-coloring="stage" aria-pressed="true">Stage colors</button>
+                            <button class="wm-pref-segmented-btn" type="button" data-route-coloring="gradient" aria-pressed="false">Gradient</button>
+                          </div>
+                          <select id="routeColoringMode" class="wm-pref-select wm-visually-hidden" aria-label="Route colors">
+                            <option value="stage" selected>Stage colors</option>
+                            <option value="gradient">Gradient</option>
+                          </select>
                         </div>
                       </div>
 

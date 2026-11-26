@@ -89,6 +89,7 @@ except Exception:  # pragma: no cover
     OfflineWeatherStore = None  # type: ignore
 
 from wind_modes import WindRoseAccumulator as _WindRoseAccumulator
+import route_gradient as _route_gradient
 
 try:
     from stage_naming import compute_stage_name, build_stage_names
@@ -5713,6 +5714,13 @@ def api_map_stream():
 
         # Emit profile event with necessary arrays
         if not weather_only_stream:
+            # Gradient colouring: sections of the original GPX elevation in the
+            # direction of travel (arrays are already reversed for a reversed tour).
+            try:
+                gradient_sections = _route_gradient.gradient_sections(elevation_source_dist_km, elevation_source_m)
+            except Exception:
+                log.exception('Route gradient sections failed')
+                gradient_sections = []
             try:
                 prof_msg = json.dumps({
                     "profile": {
@@ -5728,6 +5736,8 @@ def api_map_stream():
                             "elev_m": elevation_source_m,
                         },
                         "elevation_diagnostics": elevation_diagnostics,
+                        "gradient_sections": gradient_sections,
+                        "gradient_classes": _route_gradient.legend(),
                     }
                 })
                 # Cancel check before profile emit

@@ -12817,6 +12817,7 @@
       includeSea: false,
       interpolation: true,
       strategicWindOn: false,
+      routeColoring: 'stage',
       strategicWindMode: 'flow',
       windDensity: 40,
       animSpeed: 1.0,
@@ -12908,6 +12909,7 @@
         includeSea: (typeof j.includeSea === 'boolean') ? j.includeSea : defaults.includeSea,
         interpolation: (typeof j.interpolation === 'boolean') ? j.interpolation : defaults.interpolation,
         strategicWindOn: (typeof j.strategicWindOn === 'boolean') ? j.strategicWindOn : defaults.strategicWindOn,
+        routeColoring: (j.routeColoring === 'gradient') ? 'gradient' : 'stage',
         strategicWindMode: (typeof j.strategicWindMode === 'string') ? j.strategicWindMode : defaults.strategicWindMode,
         windDensity: Number(j.windDensity) || defaults.windDensity,
         animSpeed: Number(j.animSpeed) || defaults.animSpeed,
@@ -13669,6 +13671,7 @@
     if (m !== 'settings') LAST_NON_SETTINGS_MODE = m;
     try { document.body.dataset.mode = m; } catch (_) {}
     try { _setBottomPanelUiMode(m); } catch (_) {}
+    try { _updateRouteGradientLegend(); } catch (_) {}
 
     try {
       strategicSetActive && strategicSetActive(m === 'climate');
@@ -15121,6 +15124,14 @@
       routeLayer = L.layerGroup().addTo(map);
 
       const baseFeature = { type: 'Feature', geometry: { type: 'LineString', coordinates: ROUTE_COORDS } };
+      const gradientParts = (_routeColoringMode() === 'gradient') ? _routeGradientMultiLines() : null;
+      if (gradientParts) {
+        // Gradient colouring: an alternative to the stage colours, not drawn on top of them.
+        _drawGradientRoute(routeLayer, baseFeature, gradientParts, activeCoords);
+        _drawDayBoundaryMarkers(routeLayer);
+        try { _applyTourRouteLayerVisibility(); } catch (_) {}
+        return;
+      }
       L.geoJSON(baseFeature, { style: { color: CASE_COLOR, weight: 4.6, opacity: baseCaseOpacity } }).addTo(routeLayer);
       L.geoJSON(baseFeature, { style: { color: ROUTE_COLOR, weight: 2.4, opacity: baseLineOpacity } }).addTo(routeLayer);
       if (activeCoords.length >= 2) {
@@ -15128,6 +15139,8 @@
         L.geoJSON(activeFeature, { style: { color: 'rgba(255,255,255,0.99)', weight: 6.4, opacity: 1 } }).addTo(routeLayer);
         L.geoJSON(activeFeature, { style: { color: ACTIVE_COLOR, weight: 3.3, opacity: 1 } }).addTo(routeLayer);
       }
+      // Tour-day separators, as in Gradient mode (the stage colouring itself is unchanged).
+      _drawDayBoundaryMarkers(routeLayer);
 
       try { _applyTourRouteLayerVisibility(); } catch (_) {}
     } catch (_) {}
@@ -15137,6 +15150,165 @@
         CURRENT_LOAD_DIAG.summary.renderMs = Number(CURRENT_LOAD_DIAG.summary.renderMs || 0) + Number(m.duration);
       }
     }
+  }
+
+  // --- Route colouring: stage colours (default) or gradient --------------------
+  // Gradient sections come from the backend (route_gradient.py) with the profile:
+  // [start_km, end_km, class, grade_pct] along the direction of travel, so a
+  // reversed tour turns climbs into descents. Nine discrete classes, palette and
+  // labels from profile.gradient_classes.
+  const ROUTE_GRADIENT_FALLBACK_CLASSES = [
+    ['Strong descent', '#168C91', '≤ −8 %'], ['Descent', '#35B7A9', '−8 to −4 %'], ['Gentle descent', '#80C9A0', '−4 to −2 %'],
+    ['Flat', '#B7D477', '−2 to +2 %'], ['Gentle climb', '#E5D65B', '+2 to +4 %'], ['Moderate climb', '#F2B34B', '+4 to +6 %'],
+    ['Steep climb', '#ED843F', '+6 to +9 %'], ['Very steep climb', '#E65348', '+9 to +12 %'], ['Extreme climb', '#A92E91', '> +12 %'],
+  ];
+
+  function _routeColoringMode() {
+    const sel = document.getElementById('routeColoringMode');
+    const v = sel ? sel.value : (SETTINGS && SETTINGS.routeColoring);
+    return v === 'gradient' ? 'gradient' : 'stage';
+  }
+
+  function _syncRouteColoringControl(mode) {
+    const sel = document.getElementById('routeColoringMode');
+    if (sel) sel.value = (mode === 'gradient') ? 'gradient' : 'stage';
+    for (const b of document.querySelectorAll('[data-route-coloring]')) {
+      const on = b.dataset.routeColoring === ((mode === 'gradient') ? 'gradient' : 'stage');
+      b.classList.toggle('is-active', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    _updateRouteGradientLegend();
+  }
+
+  function _routeGradientClasses() {
+    const cls = Array.isArray(LAST_PROFILE && LAST_PROFILE.gradient_classes) ? LAST_PROFILE.gradient_classes : [];
+    return ROUTE_GRADIENT_FALLBACK_CLASSES.map((f, i) => ({
+      label: (cls[i] && cls[i].label) || f[0], color: (cls[i] && cls[i].color) || f[1], range: f[2] }));
+  }
+
+  function _routeKmScale() {
+    // Backend distances (GPX) -> frontend route distances (ROUTE_CUM_DISTS); both
+    // measure the same line, small differences in the distance formula are scaled out.
+    try {
+      const front = Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1]);
+      const secs = LAST_PROFILE.gradient_sections;
+      const back = Number(secs[secs.length - 1][1]);
+      return (front > 0 && back > 0) ? front / back : 1;
+    } catch (_) {
+      return 1;
+    }
+  }
+
+  function _routeGradientMultiLines() {
+    // One MultiLineString per class (9 layers at most, independent of the section count).
+    const secs = Array.isArray(LAST_PROFILE && LAST_PROFILE.gradient_sections) ? LAST_PROFILE.gradient_sections : [];
+    if (!secs.length || !Array.isArray(ROUTE_CUM_DISTS)) return null;
+    const k = _routeKmScale();
+    const parts = Array.from({ length: 9 }, () => []);
+    for (const s of secs) {
+      const c = Math.max(0, Math.min(8, Math.round(Number(s[2]))));
+      const coords = _routeCoordsSliceByDistance(Number(s[0]) * k, Number(s[1]) * k);
+      if (coords.length >= 2) parts[c].push(coords);
+    }
+    return parts;
+  }
+
+  function _drawGradientRoute(layer, baseFeature, parts, activeCoords) {
+    const classes = _routeGradientClasses();
+    // Casing: white halo; the active ride day gets a wider halo (instead of the
+    // orange stage highlight), so its gradient colours stay readable.
+    L.geoJSON(baseFeature, { style: { color: '#FFFFFF', weight: 6.2, opacity: 0.95 } }).addTo(layer);
+    if (activeCoords && activeCoords.length >= 2) {
+      L.geoJSON({ type: 'Feature', geometry: { type: 'LineString', coordinates: activeCoords } },
+        { style: { color: '#1e293b', weight: 9.5, opacity: 0.28 } }).addTo(layer);
+      L.geoJSON({ type: 'Feature', geometry: { type: 'LineString', coordinates: activeCoords } },
+        { style: { color: '#FFFFFF', weight: 7.2, opacity: 1 } }).addTo(layer);
+    }
+    parts.forEach((lines, c) => {
+      if (!lines.length) return;
+      L.geoJSON({ type: 'Feature', properties: { gradientClass: c }, geometry: { type: 'MultiLineString', coordinates: lines } },
+        { style: { color: classes[c].color, weight: 4.2, opacity: 1, lineCap: 'butt', lineJoin: 'round' } }).addTo(layer);
+    });
+    ROUTE_GRADIENT_DIAG.drawnClasses = parts.map((l) => l.length);
+  }
+
+  function _drawDayBoundaryMarkers(layer) {
+    // Subtle separators where one tour day ends and the next begins.
+    ROUTE_GRADIENT_DIAG.dayBoundaries = [];
+    try {
+      const bounds = Array.isArray(LAST_PROFILE && LAST_PROFILE.day_boundaries) ? LAST_PROFILE.day_boundaries : [];
+      const total = Array.isArray(ROUTE_CUM_DISTS) ? Number(ROUTE_CUM_DISTS[ROUTE_CUM_DISTS.length - 1]) : 0;
+      const secs = LAST_PROFILE && LAST_PROFILE.gradient_sections;
+      const k = (Array.isArray(secs) && secs.length) ? _routeKmScale() : 1;
+      for (const b of bounds) {
+        const km = Number(b && b.distance_km) * k;
+        if (!(km > 0.05 && km < total - 0.05)) continue;
+        const c = _routeCoordsSliceByDistance(km, Math.min(total, km + 0.01));
+        if (!c.length) continue;
+        const [lon, lat] = c[0];
+        L.circleMarker([lat, lon], { radius: 4.5, color: '#1e293b', weight: 1.6, fillColor: '#ffffff', fillOpacity: 1,
+          interactive: false }).addTo(layer);
+        ROUTE_GRADIENT_DIAG.dayBoundaries.push({ km, lat, lon, day: Number(b.day_index) });
+      }
+    } catch (_) {}
+  }
+
+  const ROUTE_GRADIENT_DIAG = { drawnClasses: [], dayBoundaries: [] };
+  try {
+    window.__WM_ROUTE_GRADIENT_DIAG__ = {
+      get mode() { return _routeColoringMode(); },
+      get sections() { return (LAST_PROFILE && LAST_PROFILE.gradient_sections) || []; },
+      get drawnClasses() { return ROUTE_GRADIENT_DIAG.drawnClasses.slice(); },
+      get dayBoundaries() { return ROUTE_GRADIENT_DIAG.dayBoundaries.slice(); },
+      get routeStyles() {
+        // Colours of everything drawn in the route layer (lines and markers).
+        const out = [];
+        const walk = (l) => {
+          if (l && typeof l.eachLayer === 'function') { l.eachLayer(walk); return; }
+          if (l && l.options) out.push({ color: String(l.options.color || '').toLowerCase(), fill: String(l.options.fillColor || '').toLowerCase(),
+            marker: typeof l.getRadius === 'function' });
+        };
+        if (routeLayer) walk(routeLayer);
+        return out;
+      },
+    };
+  } catch (_) {}
+
+  function _updateRouteGradientLegend() {
+    let el = document.getElementById('routeGradientLegend');
+    if (!el) {
+      const c = (map && map.getContainer) ? map.getContainer() : null;
+      if (!c) return;
+      el = document.createElement('div');
+      el.id = 'routeGradientLegend';
+      el.className = 'wm-gradient-legend';
+      el.setAttribute('aria-label', 'Gradient legend');
+      el.hidden = true;
+      c.appendChild(el);
+      try { L.DomEvent.disableClickPropagation(el); } catch (_) {}
+    }
+    const show = (_getAppMode() === 'tour') && (_routeColoringMode() === 'gradient');
+    el.hidden = !show;
+    if (!show) return;
+    const secs = LAST_PROFILE && LAST_PROFILE.gradient_sections;
+    const noElevation = Boolean(LAST_PROFILE) && !(Array.isArray(secs) && secs.length);
+    el.innerHTML = '<div class="wm-gradient-legend-title">Gradient (direction of travel)</div>'
+      + (noElevation
+        ? '<div class="wm-gradient-legend-note">This GPX has no elevation data: stage colours are shown.</div>'
+        : '<div class="wm-gradient-legend-rows">' + _routeGradientClasses().slice().reverse().map((c) =>
+          `<div class="wm-gradient-legend-row"><i style="background:${c.color}"></i><span>${c.range}</span><span class="lbl">${c.label}</span></div>`).join('') + '</div>');
+  }
+
+  function _setRouteColoring(mode) {
+    const m = (mode === 'gradient') ? 'gradient' : 'stage';
+    _syncRouteColoringControl(m);
+    try {
+      if (SETTINGS && SETTINGS.routeColoring !== m) {
+        SETTINGS.routeColoring = m;
+        saveSettings(SETTINGS);
+      }
+    } catch (_) {}
+    try { _renderActiveTourRouteLayer(); } catch (_) {}
   }
 
   let TOUR_BANDS_LAYER = null;
@@ -21306,6 +21478,11 @@
       _setStrategicLayer(String(exploreOverlaySelect.value || 'temperature'));
     });
   }
+  for (const b of document.querySelectorAll('[data-route-coloring]')) {
+    b.addEventListener('click', () => _setRouteColoring(b.dataset.routeColoring));
+  }
+  try { _syncRouteColoringControl(SETTINGS && SETTINGS.routeColoring); } catch (_) {}
+
   if (strategicWindOn) {
     strategicWindOn.addEventListener('change', () => {
       STRATEGIC_STATE.windOn = Boolean(strategicWindOn.checked);
@@ -21570,6 +21747,7 @@
     if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
     if (setInterpolation) setInterpolation.checked = Boolean(s.interpolation);
     if (strategicWindOn) strategicWindOn.checked = Boolean(s.strategicWindOn);
+    try { _syncRouteColoringControl(s.routeColoring); } catch (_) {}
     if (setWindDensity) setWindDensity.value = String(Number(s.windDensity || 40));
     if (setAnimSpeed) setAnimSpeed.value = String(Number(s.animSpeed || 1.0));
     const activeHours = _parseActiveHoursRange(_getActiveHoursValue(s));
@@ -21632,6 +21810,7 @@
     base.includeSea = Boolean(setIncludeSea && setIncludeSea.checked);
     base.interpolation = Boolean(setInterpolation && setInterpolation.checked);
     base.strategicWindOn = Boolean(strategicWindOn && strategicWindOn.checked);
+    base.routeColoring = _routeColoringMode();
     base.strategicWindMode = String(base.strategicWindMode || 'flow');
     base.windDensity = Number(setWindDensity && setWindDensity.value) || 40;
     base.animSpeed = Number(setAnimSpeed && setAnimSpeed.value) || 1.0;
@@ -22396,7 +22575,12 @@
 
   function drawProfile(profile) {
     if (!profileCanvas || !profileCtx || !profile || !profile.sampled_dist_km) return;
+    const gradientChanged = !LAST_PROFILE || LAST_PROFILE.gradient_sections !== profile.gradient_sections;
     LAST_PROFILE = profile;
+    if (gradientChanged) {
+      try { _updateRouteGradientLegend(); } catch (_) {}
+      if (_routeColoringMode() === 'gradient') { try { _renderActiveTourRouteLayer(); } catch (_) {} }
+    }
     try { _refreshProfileZoomControls(profile); } catch (_) {}
     try { _renderRoadbookPanel(); } catch (_) {}
     resizeProfileCanvas();
