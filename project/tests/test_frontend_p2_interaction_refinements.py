@@ -126,7 +126,7 @@ def test_drag_tooltip_shows_day_km_and_hm_on_second_line():
     source = _source()
     assert 'if (isDragging) {' in source
     assert 'const seg = _tourSegmentRange(profile, marker.prevRideIdx, { includeDrag: true });' in source
-    assert 'line2 = `${fmt(dayKm, 0)} km • ${fmt(dayHmSafe, 0)} hm`;' in source
+    assert "line2 = `${fmtN(dayKm, 0)} km • ${fmtN(dayHmSafe, 0)} ${i18nT('unit.ascent')}`;" in source
     assert 'const boxH = line2 ? 30 : 18;' in source
     assert 'if (line2) {' in source
     assert 'profileCtx.fillText(line2, boxX + textW / 2, boxY + 21);' in source

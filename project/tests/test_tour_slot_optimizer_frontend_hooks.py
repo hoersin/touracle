@@ -39,7 +39,7 @@ def test_tour_slot_optimizer_frontend_calls_backend_endpoints():
     assert "i18nMsg('status.sim.appliedSlotFromRefreshStarted'" in source
     assert 'Applied slot: {start} ({dir}) from {curveLabel}. Refresh started.' in FRONTEND_EN.read_text(encoding='utf-8')
     assert "'status.sim.simulationRunComplete'" in source and '"Simulation run complete."' in FRONTEND_EN.read_text(encoding='utf-8')
-    assert 'Simulation Run' in source
+    assert "i18nT('sim.chart.title')" in source                    # 'Simulation run' (en.js)
     assert 'loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });' in source
     assert "'sim.result.lowerBetter'" in source and "'sim.result.higherBetter'" in source   # score direction
     assert 'year_penalty_curve_bundle' in source

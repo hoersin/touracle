@@ -42,19 +42,24 @@ def test_explore_uses_sidebar_period_control_and_local_climate_loading_copy():
     assert "if (timescaleRow) timescaleRow.style.display = 'none';" in source
     assert 'Loading weather data...' not in source
     assert 'offline weather tiles' not in source
-    assert 'Loading local climate profile…' in source
+    assert "i18nT('climate.loading')" in source                  # 'Loading local climate profile…' (en.js)
     assert '/api/explore/climate_profile?lat=' in source
-    assert '&reference_years=' in source
+    # the exact selected reference years, not a count of latest years
+    assert "&years=${encodeURIComponent(_strategicGetSelectedYears().join(','))}" in source
     assert '_climateTemperatureThirdsChartSvg' in source
     assert '_climatePrecipitationThirdsChartSvg' in source
     assert '_climateWindPanelMarkup' in source
 
 
 def test_explore_climate_request_key_no_longer_depends_on_map_period_controls():
+    """The local climate profile depends on the point and the one reference-year option
+    (all / last three / single year), never on the map's period (month/quarter) controls."""
     source = _source()
-    assert "const refYears = Math.max(1, Number(CLIMATE_PROFILE_STATE.referenceYearCount)" in source
-    assert "&reference_years=" in source
-    assert "&years=" not in source[source.find("const url = `/api/explore/climate_profile?lat="):source.find("try {", source.find("const url = `/api/explore/climate_profile?lat="))]
+    key_fn = source[source.find("function _climateProfileRequestKey(point)"):source.find("function _climateRainStepColor")]
+    assert "_strategicGetSelectedYears().join(',')" in key_fn
+    assert "STRATEGIC_STATE.doy" not in key_fn and "rangeStartDoy" not in key_fn and "timescale" not in key_fn
+    url = source[source.find("const url = `/api/explore/climate_profile?lat="):source.find("try {", source.find("const url = `/api/explore/climate_profile?lat="))]
+    assert "&years=" in url and "&reference_years=" not in url
     assert "_scheduleClimateProfileForPoint(CLIMATE_PROFILE_STATE.selectedPoint, { force: true });" not in source
 
 
@@ -97,8 +102,9 @@ def test_explore_time_modes_are_complete_and_profile_stays_period_independent():
     assert 'data-time-kind="quarter"' in html
     assert 'data-time-kind="month"' in html
     assert "_applyExploreTimeButton" in source
-    assert "&reference_years=" in source
-    assert "&years=" not in source[source.find("const url = `/api/explore/climate_profile?lat="):source.find("try {", source.find("const url = `/api/explore/climate_profile?lat="))]
+    # the profile request carries the reference years only, never the period (month/quarter)
+    url = source[source.find("const url = `/api/explore/climate_profile?lat="):source.find("try {", source.find("const url = `/api/explore/climate_profile?lat="))]
+    assert "&years=" in url and "doy" not in url and "range" not in url and "month" not in url
 
 
 def test_explore_workspace_charts_share_wind_panel_height():

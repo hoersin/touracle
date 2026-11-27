@@ -75,12 +75,8 @@ def test_tour_plan_popup_is_overlayed_above_roadbook_shell():
     assert '.wm-roadbook-shell {' in html
     assert 'position: relative;' in html
     assert 'overflow: visible;' in html
-    assert '.wm-plan-manager {' in html
-    assert 'position: absolute;' in html
-    assert 'z-index: 1865;' in html
-    assert 'pointer-events: none;' in html
-    assert '.wm-plan-manager.is-open {' in html
-    assert 'pointer-events: auto;' in html
+    # the plan-variant manager popup was removed (one TourBook per tour); its overlay CSS is gone too
+    assert '.wm-plan-manager' not in html
 
 
 def test_fit_entire_tour_action_exists_in_route_summary():

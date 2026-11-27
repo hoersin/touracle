@@ -40,7 +40,7 @@ def test_sidebar_route_metric_validation_keeps_unknown_as_placeholder():
     assert 'const fallbackDistanceKm = _finiteOrNull(_tourRouteDistanceKm());' in source
     assert 'const fallbackElevationHm = (fallbackDistanceKm !== null) ? _finiteOrNull(_tourRouteElevationHm()) : null;' in source
     assert 'if (distanceKm === null) elevationHm = null;' in source
-    assert "tourSidebarRouteDistance.textContent = (distanceKm !== null) ? fmt(distanceKm, 0) : '—';" in source
+    assert "tourSidebarRouteDistance.textContent = (distanceKm !== null) ? fmtN(distanceKm, 0) : '—';" in source
     # the summary value is in hectometres; Sector 1 shows it in metres
     assert "tourSidebarRouteElevation.textContent = (elevationHm !== null) ? fmtN(Math.round(elevationHm * 100), 0) : '—';" in source
     assert 'Number.isFinite(Number(distanceKm))' not in source

@@ -31,7 +31,7 @@ def test_profile_draws_three_line_calendar_block_below_weather_tile():
     assert "const calDayY = stackTop + 66;" in source
     assert "const calDateY = stackTop + 78;" in source
     assert "const calYearY = stackTop + 89;" in source
-    assert "profileCtx.fillText(`Day ${dayIdx + 1}`, x, calDayY);" in source
+    assert "profileCtx.fillText(i18nT('tourbook.day', { n: dayIdx + 1 }), x, calDayY);" in source
     assert "profileCtx.fillText(calendarDateLabel || '—', x, calDateY);" in source
     assert "profileCtx.fillText(calendarYearLabel || '', x, calYearY);" in source
 

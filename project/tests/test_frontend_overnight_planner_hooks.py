@@ -72,7 +72,7 @@ def test_overnight_frontend_hooks_and_persistence_are_wired():
     assert 'const maxCandidatesPerZone = 80;' in source
     assert 'Delete this overnight option?' not in source
     assert "map.on('click', () => {" in source
-    assert 'Day ${idx} - Accomodation' in source
+    assert "return i18nT('overnight.stageLabel', { n: idx });" in source       # 'Day {n} – accommodation'
     assert 'function _overnightAssignableDays()' in source
     assert 'data-overnight-action="edit-title"' in source
     assert 'data-overnight-action="type"' in source
