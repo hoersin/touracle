@@ -4021,16 +4021,134 @@
         gap: 8px;
       }
     }
+
+    /* ===== Touracle UI consolidation: header, sectors, one visual language =========
+       Header = application mode. Sector 1 (white) = manage the tour / the map view,
+       Sector 2 (pale teal-grey) = work on it, Sector 3 (light grey, recedes, the only
+       scroll area) = configure the application. Separation comes from spacing,
+       background tone and a 36 px header per sector; one teal accent throughout. */
+    :root {
+      --wm-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --wm-ground: #e4e9ee;            /* sidebar ground, visible between sectors */
+      --wm-s1-bg: #ffffff;
+      --wm-s2-bg: #f2f7f7;             /* pale teal-grey */
+      --wm-s3-bg: #f5f6f8;             /* light grey */
+      --wm-sector-gap: 16px;
+      --wm-sector-head-h: 36px;
+      --wm-sector-pad: 12px;
+      --wm-accent-line: rgba(15,118,110,0.22);
+    }
+    @media (max-height: 1000px) {
+      :root { --wm-sector-gap: 10px; --wm-sector-head-h: 32px; }
+    }
+    #wmSidebar { font-family: var(--wm-font); background: var(--wm-ground); }
+    #wmSidebar button, #wmSidebar input, #wmSidebar select, #wmSidebar label, #wmSidebar textarea { font-family: var(--wm-font); }
+
+    /* Header: sidebar toggle, product name, application mode selector */
+    #wmSidebarHeader { background: #fff; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--wm-line); container: wmsidebar / inline-size; }
+    .wm-app-name { font: 750 15px/1 var(--wm-font); color: var(--wm-ink); letter-spacing: -.01em; white-space: nowrap; }
+    #wmSidebarHeader .wm-seg { margin-left: auto; flex: 0 1 auto; min-width: 0; padding: 3px; gap: 0; border-radius: 999px;
+      background: #eef2f4; border: 1px solid var(--wm-line); box-shadow: none; font-family: var(--wm-font); }
+    #wmSidebarHeader .wm-seg-pill { top: 3px; bottom: 3px; background: var(--wm-accent); box-shadow: 0 1px 3px rgba(15,118,110,0.30); }
+    #wmSidebarHeader .wm-seg-btn { padding: 6px 11px; font: 600 12.5px/1.1 var(--wm-font); color: var(--wm-ink-2); white-space: nowrap; }
+    #wmSidebarHeader .wm-seg-btn[aria-selected="true"] { color: #fff; font-weight: 700; }
+    #wmSidebarHeader .wm-seg-btn.wm-active-fallback { background: var(--wm-accent); }
+    #wmSidebarHeader .wm-seg-btn:focus-visible { outline: 2px solid var(--wm-accent-line); outline-offset: 2px; }
+    @container wmsidebar (max-width: 290px) { .wm-app-name { display: none; } }
+    body.wm-sidebar-collapsed .wm-app-name, body.wm-sidebar-collapsed #wmSidebarHeader .wm-seg { display: none; }
+
+    /* Sectors */
+    #wmSidebarZones { gap: var(--wm-sector-gap); padding-top: var(--wm-sector-gap); background: var(--wm-ground); }
+    .wm-zone { font-family: var(--wm-font); }
+    .wm-zone-primary, .wm-zone-context, #wmSidebarScroll { border-bottom: 0; box-shadow: 0 0 0 1px rgba(15,23,42,0.05); }
+    .wm-zone-primary { background: var(--wm-s1-bg); padding: 0 var(--wm-sector-pad) var(--wm-sector-pad); }
+    .wm-zone-context { background: var(--wm-s2-bg); padding: 0 var(--wm-sector-pad) var(--wm-sector-pad); }
+    #wmSidebarScroll { background: var(--wm-s3-bg); padding: 0 calc(var(--wm-sector-pad) + 12px) var(--wm-sector-pad) var(--wm-sector-pad); }
+    .wm-sector-head { display: flex; align-items: center; gap: 8px; height: var(--wm-sector-head-h); box-sizing: border-box;
+      margin: 0 calc(-1 * var(--wm-sector-pad)) 10px; padding: 0 var(--wm-sector-pad);
+      font: 750 11px/1 var(--wm-font); letter-spacing: .08em; text-transform: uppercase; }
+    .wm-sector-head .wm-ico { width: 15px; height: 15px; }
+    .wm-sector-label { display: inline-flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+    body[data-mode="climate"] .wm-sector-label[data-zone-mode="tour"],
+    body[data-mode="tour"] .wm-sector-label[data-zone-mode="climate"] { display: none; }
+    .wm-sector-head-1 { background: var(--wm-accent); color: #fff; }
+    .wm-sector-head-2 { background: rgba(15,118,110,0.10); color: var(--wm-accent-strong); border-bottom: 1px solid var(--wm-accent-line); }
+    .wm-sector-head-3 { background: #e9ecf0; color: #475569; border-bottom: 1px solid var(--wm-line);
+      position: sticky; top: 0; z-index: 3; margin-right: calc(-1 * (var(--wm-sector-pad) + 12px)); }
+    .wm-zone-primary .wm-s1-logo { display: none; }
+    .wm-zone-primary .wm-s1-menubar { grid-template-columns: repeat(4, minmax(0, max-content)); gap: 4px; }
+    .wm-zone-primary .wm-menu-btn { padding: 0 7px; gap: 4px; }
+    .wm-zone-primary .wm-menu-btn .wm-ico { width: 14px; height: 14px; }
+    .wm-sector-head + .wm-zone-part, .wm-sector-head + .wm-zone-part + .wm-zone-part { margin-top: 0; }
+    .wm-zone-primary .wm-s1-head { gap: 0; }
+
+    /* Sector 3 recedes: neutral accordion rows, no coloured surfaces */
+    #wmSidebarScroll .wm-pgroup { background: #fff; border: 1px solid var(--wm-line); border-radius: var(--wm-r); box-shadow: none; margin: 0 0 6px; }
+    #wmSidebarScroll .wm-pgroup > summary { min-height: 32px; box-sizing: border-box; padding: 6px 10px; font-size: 12.5px; font-weight: 650; color: var(--wm-ink-2); }
+    #wmSidebarScroll .wm-pgroup > summary .wm-ico { color: var(--wm-muted); }
+    #wmSidebarScroll .wm-pgroup[open] > summary { color: var(--wm-ink); }
+    #wmSidebarScroll .wm-section, #wmSidebarScroll .wm-pref-section { background: transparent; box-shadow: none; }
+    #wmSidebarScroll .wm-calc-card { background: #fff; border: 1px solid var(--wm-line); box-shadow: none; }
+
+    /* One language for controls: buttons, tabs, chips, segmented controls, sliders, switches */
+    #wmSidebar .wm-tabs { background: rgba(15,23,42,0.06); }
+    #wmSidebar .wm-tab { height: 30px; font: 600 12px/1 var(--wm-font); }
+    #wmSidebar .wm-tab[aria-selected="true"] { background: #fff; color: var(--wm-accent-strong); box-shadow: 0 1px 2px rgba(15,23,42,0.14), inset 0 -2px 0 var(--wm-accent); }
+    #wmSidebar .wm-tab:focus-visible { outline: 2px solid var(--wm-accent-line); outline-offset: 1px; }
+    #wmSidebar .wm-mini-btn { border-radius: var(--wm-r); border: 1px solid var(--wm-line-strong); background: #fff; color: var(--wm-ink-2);
+      font: 600 11.5px/1 var(--wm-font); min-height: 26px; padding: 4px 8px; box-shadow: none; }
+    #wmSidebar .wm-mini-btn:hover { border-color: var(--wm-accent); }
+    #wmSidebar .wm-mini-btn[aria-pressed="true"], #wmSidebar .wm-mini-btn[aria-checked="true"] {
+      background: var(--wm-accent); border-color: var(--wm-accent); color: #fff; }
+    #wmSidebar .wm-mini-btn:focus-visible { outline: 2px solid var(--wm-accent-line); outline-offset: 1px; }
+    #wmSidebar .wm-prefs-time-button { font-family: var(--wm-font); }
+    .wm-range-selected { background: var(--wm-accent); }
+    #wmSidebar .wm-overnight-radius input[type="range"] { accent-color: var(--wm-accent); }
+    #wmSidebar input[type="checkbox"]:not(.wm-toggle), #wmSidebar input[type="radio"] { accent-color: var(--wm-accent); }
+    .wm-slider-fill { background: var(--wm-accent); box-shadow: none; }
+    .wm-slider-shell[data-track="season"] .wm-slider-track, .wm-slider-shell[data-track="history"] .wm-slider-track { background: rgba(148,163,184,0.25); }
+    .wm-slider-shell[data-track="season"] .wm-slider-fill, .wm-slider-shell[data-track="history"] .wm-slider-fill { background: var(--wm-accent); }
+    #wmSidebarScrollbarThumb, body.wm-sidebar-scrolling #wmSidebarScrollbarThumb { background: rgba(71,85,105,0.45); }
+    #wmSidebarResizeHandle::after, body.wm-sidebar-resizing #wmSidebarResizeHandle::after { background: var(--wm-accent); }
+    .wm-climate-loading-bar-fill { background: var(--wm-accent); box-shadow: none; }
+
+    /* Reference years: seven mutually exclusive options in two rows */
+    .wm-ref-years { display: flex; flex-direction: column; gap: 4px; }
+    .wm-ref-years-row { display: grid; gap: 4px; }
+    .wm-ref-years-row-1 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .wm-ref-years-row-2 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    #wmSidebar .wm-ref-years .wm-mini-btn { width: 100%; min-width: 0; padding: 4px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wm-zone .wm-s2-years .wm-mini-btn { min-height: 24px; }
+
+    /* Explore climate panel: grid-resolution note under the annual values */
+    .wm-climate-grid-note { margin-top: 8px; padding: 6px 8px; border-left: 3px solid var(--wm-accent-line); background: rgba(15,118,110,0.05);
+      border-radius: 0 6px 6px 0; font-size: 11px; line-height: 1.4; color: #475569; }
+    /* Sector 1 metadata: wrap instead of clipping in long languages; the GPX file name
+       is a tooltip of the route line (the tour file name is in the header). */
+    .wm-s1-facts { flex-wrap: wrap; row-gap: 2px; }
+    .wm-zone-primary .wm-s1-gpx { display: none; }
+    /* Compact duration: value badge to the right of the track instead of above it */
+    .wm-s1-duration .wm-slider-shell { min-height: 26px; padding-top: 0; margin-right: 56px; }
+    .wm-s1-duration .wm-slider-track, .wm-s1-duration .wm-slider-fill { top: 9px; }
+    .wm-s1-duration .wm-slider-native { top: 0; }
+    .wm-s1-duration .wm-slider-badge, .wm-s1-duration .wm-slider-editor { left: calc(100% + 8px) !important; top: 1px; transform: none; min-width: 48px; }
+    .wm-s1-duration .wm-slider-badge:hover { transform: none; }
+    /* Reference years in the Weather task: label beside the two option rows */
+    .wm-zone .wm-s2-row-years { display: grid; grid-template-columns: 86px minmax(0, 1fr); align-items: start; gap: 8px; }
+    .wm-zone .wm-s2-row-years > .wm-s2-label { padding-top: 6px; }
+    /* the sticky Preferences header must never cover a control scrolled or tabbed into view */
+    #wmSidebarScroll { scroll-padding-top: calc(var(--wm-sector-head-h) + 6px); }
+    @media (max-height: 860px) {
+      :root { --wm-sector-gap: 8px; --wm-sector-head-h: 28px; }
+      /* explanatory notes in Explore Sector 2 become tooltips on small screens */
+      .wm-zone-context .wm-explore-ctl-note { display: none; }
+      #wmSidebarHeader { height: 44px; }
+      .wm-sector-head { margin-bottom: 8px; }
+      .wm-zone .wm-tabpanel { padding-top: 7px; gap: 6px; }
+    }
   </style>
 </head>
 <body>
-  <div id="topNav">
-    <div data-i18n-aria-label="nav.appMode" class="wm-seg" id="modeNav" role="tablist" aria-label="App mode">
-      <div class="wm-seg-pill" id="modeNavPill" aria-hidden="true"></div>
-      <button data-i18n="nav.explore" class="wm-seg-btn" id="navClimate" type="button" data-mode="climate" role="tab" aria-selected="false">Explore</button>
-      <button data-i18n="nav.tourPlanning" class="wm-seg-btn" id="navTour" type="button" data-mode="tour" role="tab" aria-selected="true">Tour Planning</button>
-    </div>
-  </div>
 
   <div id="appShell">
     <aside data-i18n-aria-label="explore.sidebar" id="wmSidebar" aria-label="Sidebar">
@@ -4042,9 +4160,16 @@
             <path d="M4 18h16" />
           </svg>
         </button>
+        <span class="wm-app-name" aria-hidden="true">Touracle</span>
+        <div data-i18n-aria-label="nav.appMode" class="wm-seg" id="modeNav" role="tablist" aria-label="App mode">
+          <div class="wm-seg-pill" id="modeNavPill" aria-hidden="true"></div>
+          <button data-i18n="nav.explore" class="wm-seg-btn" id="navClimate" type="button" data-mode="climate" role="tab" aria-selected="false">Explore</button>
+          <button data-i18n="nav.tourPlanning" class="wm-seg-btn" id="navTour" type="button" data-mode="tour" role="tab" aria-selected="true">Tour Planning</button>
+        </div>
       </div>
       <div id="wmSidebarZones">
 <section data-i18n-aria-label="explore.primaryControls" id="wmZonePrimary" class="wm-zone wm-zone-primary" aria-label="Primary controls">
+<header class="wm-sector-head wm-sector-head-1"><span class="wm-sector-label" data-zone-mode="climate"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6.5v13.5L9 17.5l6 2.5 6-2.5V4l-6 2.5z"/><path d="M9 4v13.5M15 6.5V20"/></svg><span data-i18n="sector.explore.map">Climate map</span></span><span class="wm-sector-label" data-zone-mode="tour"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="17" r="3.5"/><circle cx="18.5" cy="17" r="3.5"/><path d="M5.5 17 9 9h6l3.5 8M9 9 7.5 6H6m9 3-2.5 8H9"/></svg><span data-i18n="sector.tour">Tour</span></span></header>
 <div class="wm-zone-part" data-zone-mode="climate">
 <div class="wm-settings-scope">
 <div class="wm-explore-group" id="exploreAlways" data-explore-level="always">
@@ -4054,10 +4179,10 @@
                         <button data-i18n="explore.year" data-i18n-aria-label="explore.wholeYear" type="button" class="wm-prefs-time-button is-active" data-time-kind="year" data-time-value="year" aria-label="Whole year">Year</button>
                       </div>
                       <div class="wm-prefs-time-row" data-time-row="quarter">
-                        <button data-i18n-aria-label="explore.quarter1JanuaryToMarch" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="1" aria-label="Quarter 1, January to March">Q1</button>
-                        <button data-i18n-aria-label="explore.quarter2AprilToJune" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="2" aria-label="Quarter 2, April to June">Q2</button>
-                        <button data-i18n-aria-label="explore.quarter3JulyToSeptember" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="3" aria-label="Quarter 3, July to September">Q3</button>
-                        <button data-i18n-aria-label="explore.quarter4OctoberToDecember" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="4" aria-label="Quarter 4, October to December">Q4</button>
+                        <button data-i18n="explore.q1" data-i18n-aria-label="explore.quarter1JanuaryToMarch" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="1" aria-label="Quarter 1, January to March">Q1</button>
+                        <button data-i18n="explore.q2" data-i18n-aria-label="explore.quarter2AprilToJune" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="2" aria-label="Quarter 2, April to June">Q2</button>
+                        <button data-i18n="explore.q3" data-i18n-aria-label="explore.quarter3JulyToSeptember" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="3" aria-label="Quarter 3, July to September">Q3</button>
+                        <button data-i18n="explore.q4" data-i18n-aria-label="explore.quarter4OctoberToDecember" type="button" class="wm-prefs-time-button" data-time-kind="quarter" data-time-value="4" aria-label="Quarter 4, October to December">Q4</button>
                       </div>
                       <div class="wm-prefs-time-row" data-time-row="month">
                       <button data-i18n="explore.jan" data-i18n-aria-label="explore.january" type="button" class="wm-prefs-time-button" data-time-kind="month" data-time-value="1" aria-label="January">Jan</button>
@@ -4168,16 +4293,17 @@
 </div>
 </section>
 <section data-i18n-aria-label="explore.contextSettings" id="wmZoneContext" class="wm-zone wm-zone-context" aria-label="Context settings">
+<header class="wm-sector-head wm-sector-head-2"><span class="wm-sector-label" data-zone-mode="climate"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg><span data-i18n="sector.explore.data">Reference data</span></span><span class="wm-sector-label" data-zone-mode="tour"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v5"/></svg><span data-i18n="sector.tasks">Tasks</span></span></header>
 <div class="wm-zone-part" data-zone-mode="climate">
 <div class="wm-settings-scope wm-explore-context">
 <div class="wm-explore-ctl">
-  <span data-i18n="explore.referenceYears" class="wm-explore-ctl-name">Reference years</span>
+  <span data-i18n="explore.referenceYears" data-i18n-title="explore.yearsAveragedForTheMapMore" title="Years averaged for the map. More years: steadier climate picture." class="wm-explore-ctl-name">Reference years</span>
   <span data-i18n="explore.yearsAveragedForTheMapMore" class="wm-explore-ctl-note">Years averaged for the map. More years: steadier climate picture.</span>
   <div data-i18n-aria-label="explore.referenceYears" id="setStrategicYears" class="wm-pref-years" aria-label="Reference years"></div>
 </div>
 <label class="wm-explore-ctl wm-explore-ctl-toggle" for="strategicWindOn">
                         <span class="wm-explore-ctl-copy">
-                          <span data-i18n="explore.windVisualization" class="wm-explore-ctl-name">Wind visualization</span>
+                          <span data-i18n="explore.windVisualization" data-i18n-title="explore.animatedFlowLinesAndDominantWind" title="Animated flow lines and dominant wind directions. Can be shown over any climate overlay." class="wm-explore-ctl-name">Wind visualization</span>
                           <span data-i18n="explore.animatedFlowLinesAndDominantWind" class="wm-explore-ctl-note">Animated flow lines and dominant wind directions. Can be shown over any climate overlay.</span>
                         </span>
                         <input data-i18n-aria-label="explore.windVisualization" type="checkbox" id="strategicWindOn" class="wm-toggle" aria-label="Wind visualization" />
@@ -4285,7 +4411,7 @@
 </div>
 </section>
 <section data-i18n-aria-label="prefs.preferences" id="wmSidebarScroll" class="wm-zone wm-zone-prefs" aria-label="Preferences">
-<div class="wm-zone-title" data-i18n="prefs.title">Preferences</div>
+<header class="wm-sector-head wm-sector-head-3"><span class="wm-sector-label"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span data-i18n="prefs.title">Preferences</span></span></header>
 <details class="wm-pgroup" data-pgroup="language" data-mode-only="both">
   <summary><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg><span data-i18n="prefs.group.language">Language & Region</span><svg class="wm-ico wm-ico-chev" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary>
   <div class="wm-pgroup-body">
@@ -4773,7 +4899,7 @@
     </div>
   </div>
 
-    <main id="mainPane" aria-label="Main content">
+    <main id="mainPane" data-i18n-aria-label="nav.mainContent" aria-label="Main content">
       <div id="map"></div>
       <!-- Simulation results (chart, inspection, apply): too large for the fixed Sector 2 -->
       <section id="simResultsPanel" class="wm-float-panel" hidden aria-labelledby="simResultsTitle">
@@ -4816,7 +4942,7 @@
         <div id="profileTooltip"></div>
         <div id="tourSummaryBadgesItems"></div>
         <div id="tourSummaryLegends"></div>
-        <button id="share" class="wm-share-btn" type="button" aria-label="Share snapshot" title="Share snapshot" style="display:none">
+        <button id="share" class="wm-share-btn" type="button" data-i18n-aria-label="nav.shareSnapshot" data-i18n-title="nav.shareSnapshot" aria-label="Share snapshot" title="Share snapshot" style="display:none">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M12 16V3" />
             <path d="M8 7l4-4 4 4" />
@@ -4829,10 +4955,10 @@
     </div>
     <!-- Drag handle on the upper edge to resize the profile panel height -->
     <div id="profileResizeHandle" style="position:absolute; top:0; left:0; right:0; height:5px; z-index:1700; background:transparent;"></div>
-    <div id="profileZoomControls" aria-label="Profile zoom controls">
-      <button id="profileZoomOut" type="button" aria-label="Zoom out profile" title="Zoom out horizontally" disabled>Zoom -</button>
-      <button id="profileZoomIn" type="button" aria-label="Zoom in profile" title="Zoom in horizontally" disabled>Zoom +</button>
-      <button id="profileZoomReset" type="button" aria-label="Reset profile zoom" title="Reset profile zoom" disabled>Reset</button>
+    <div id="profileZoomControls" data-i18n-aria-label="profile.zoomControls" aria-label="Profile zoom controls">
+      <button id="profileZoomOut" type="button" data-i18n="profile.zoomOut" data-i18n-aria-label="profile.zoomOutAria" aria-label="Zoom out profile" title="Zoom out horizontally" disabled>Zoom -</button>
+      <button id="profileZoomIn" type="button" data-i18n="profile.zoomIn" data-i18n-aria-label="profile.zoomInAria" aria-label="Zoom in profile" title="Zoom in horizontally" disabled>Zoom +</button>
+      <button id="profileZoomReset" type="button" data-i18n="profile.zoomReset" data-i18n-aria-label="profile.zoomResetAria" aria-label="Reset profile zoom" title="Reset profile zoom" disabled>Reset</button>
     </div>
     <canvas id="profileCanvas"></canvas>
     <canvas id="profileCursorCanvas" style="position:absolute; inset:0; pointer-events:none"></canvas>

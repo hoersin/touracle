@@ -6426,7 +6426,7 @@
     return [
       q3(p.lat),
       q3(p.lon),
-      String(Math.max(1, Number(CLIMATE_PROFILE_STATE.referenceYearCount) || CLIMATE_REFERENCE_YEAR_COUNT_DEFAULT)),
+      _strategicGetSelectedYears().join(','),
     ].join('|');
   }
 
@@ -7794,20 +7794,21 @@
     _setBottomPanelUiMode('climate');
     _hideClimateProfileTooltip();
     const coords = _fmtLatLonClimate(point && point.lat, point && point.lon, 4);
-    const refCount = Math.max(1, Number(CLIMATE_PROFILE_STATE.referenceYearCount) || CLIMATE_REFERENCE_YEAR_COUNT_DEFAULT);
+    const refPeriod = _climateReferencePeriodLabel(_strategicGetSelectedYears());
+    const h = (k, p) => _htmlEsc(i18nT(k, p));
     _setWhiteBandSlots(
       `<div class="wm-climate-workspace-panel">
-        <div class="wm-climate-monthly-chart-title">Monthly Mean Temperature (°C)</div>
+        <div class="wm-climate-monthly-chart-title">${h('climate.tempChartTitle')}</div>
         <div class="wm-climate-panel-subtitle">📍 ${coords}</div>
-        <div class="wm-climate-panel-subtitle">Climate reference: latest ${refCount} complete years</div>
-        <div class="wm-climate-monthly-chart-note">Loading local climate profile…</div>
+        <div class="wm-climate-panel-subtitle" data-role="climate-reference">${h('climate.reference', { period: refPeriod })}</div>
+        <div class="wm-climate-monthly-chart-note">${h('climate.loading')}</div>
       </div>`,
       '',
-      '<div class="wm-climate-workspace-panel"><div class="wm-climate-monthly-chart-title">Monthly Precipitation (mm)</div><div class="wm-climate-monthly-chart-note">Loading…</div></div>',
-      '<div class="wm-climate-workspace-panel"><div class="wm-climate-monthly-chart-title">Wind (12 monthly roses)</div><div class="wm-climate-monthly-chart-note">Loading…</div></div>'
+      `<div class="wm-climate-workspace-panel"><div class="wm-climate-monthly-chart-title">${h('climate.precipChartTitle')}</div><div class="wm-climate-monthly-chart-note">${h('common.loading')}</div></div>`,
+      `<div class="wm-climate-workspace-panel"><div class="wm-climate-monthly-chart-title">${h('climate.windTitle')}</div><div class="wm-climate-monthly-chart-note">${h('common.loading')}</div></div>`
     );
     try { if (profileLegendHost) profileLegendHost.style.display = 'none'; } catch (_) {}
-    _drawClimateProfilePlaceholder('Loading local climate profile…');
+    _drawClimateProfilePlaceholder(i18nT('climate.loading'));
     _reflowBottomLayout();
   }
 
@@ -8008,7 +8009,7 @@
       clickToRequestMs,
       lat: Number(point.lat),
       lon: Number(point.lon),
-      referenceYears: Math.max(1, Number(CLIMATE_PROFILE_STATE.referenceYearCount) || CLIMATE_REFERENCE_YEAR_COUNT_DEFAULT),
+      referenceYears: _strategicGetSelectedYears(),
     });
     CLIMATE_PROFILE_STATE.loadingPoint = { lat: Number(point.lat), lon: Number(point.lon) };
     try {
@@ -8025,10 +8026,11 @@
       try { ac.abort(); } catch (_) {}
     }, CLIMATE_PROFILE_FETCH_TIMEOUT_MS);
 
-    const refYears = Math.max(1, Number(CLIMATE_PROFILE_STATE.referenceYearCount) || CLIMATE_REFERENCE_YEAR_COUNT_DEFAULT);
+    // The reference years are exactly the selected option (all / last three / one year);
+    // the panel label is derived from the years the server actually used (meta).
     const url = `/api/explore/climate_profile?lat=${encodeURIComponent(String(point.lat))}`
       + `&lon=${encodeURIComponent(String(point.lon))}`
-      + `&reference_years=${encodeURIComponent(String(refYears))}`;
+      + `&years=${encodeURIComponent(_strategicGetSelectedYears().join(','))}`;
 
     try {
       const fetchStartedAt = _monotonicNowMs();
@@ -13666,7 +13668,50 @@
     return out;
   }
 
+  // Reference years: exactly one of seven mutually exclusive options. 'all' = every
+  // available reference year, 'last3' = the latest three, or one single year. The
+  // selection is stored as its year list (settings, tour files, requests); any other
+  // combination (older multi-select settings) is normalised to one of the options.
+  const REF_YEAR_OPTIONS = ['all', 'last3', ...STRATEGIC_YEAR_CHOICES];
+
+  function _refYearsForOption(opt) {
+    if (opt === 'all') return STRATEGIC_YEAR_CHOICES.slice();
+    if (opt === 'last3') return STRATEGIC_YEAR_CHOICES.slice(0, 3);
+    const y = Math.round(Number(opt));
+    return STRATEGIC_YEAR_CHOICES.includes(y) ? [y] : STRATEGIC_YEAR_CHOICES.slice();
+  }
+
+  function _refYearOptionFor(years) {
+    const ys = _uniqYearsDesc(years).filter((y) => STRATEGIC_YEAR_CHOICES.includes(y));
+    if (ys.length === 1) return ys[0];
+    const last3 = STRATEGIC_YEAR_CHOICES.slice(0, 3);
+    if (ys.length === 3 && last3.every((y, i) => ys[i] === y)) return 'last3';
+    return 'all';
+  }
+
+  function _normalizeRefYears(years) {
+    return _refYearsForOption(_refYearOptionFor(years));
+  }
+
+  function _refYearOptionLabel(opt) {
+    if (opt === 'all') return i18nT('years.all');
+    if (opt === 'last3') return i18nT('years.last3');
+    return String(opt);
+  }
+
+  function _refYearOptionTitle(opt) {
+    const ys = _refYearsForOption(opt);
+    const span = (ys.length > 1) ? `${ys[ys.length - 1]}–${ys[0]}` : String(ys[0]);
+    if (opt === 'all') return i18nT('years.allTitle', { span });
+    if (opt === 'last3') return i18nT('years.last3Title', { span });
+    return i18nT('years.singleTitle', { year: span });
+  }
+
   function _strategicGetSelectedYears() {
+    return _normalizeRefYears(_strategicGetSelectedYearsRaw());
+  }
+
+  function _strategicGetSelectedYearsRaw() {
     try {
       const yrs = (STRATEGIC_STATE && Array.isArray(STRATEGIC_STATE.years) && STRATEGIC_STATE.years.length)
         ? STRATEGIC_STATE.years
@@ -13710,46 +13755,50 @@
     return b;
   }
 
-  function _renderStrategicYearsButtons(host, selectedYears, onChange, opts) {
+  function _renderStrategicYearsButtons(host, selectedYears, onChange) {
+    // Seven mutually exclusive options in two rows (radio group): row 1 All years /
+    // Last three years, row 2 the single years. Exactly one is always selected.
     if (!host) return;
-    const o = (opts && typeof opts === 'object') ? opts : {};
-    const includeAll = (o.includeAll !== undefined) ? Boolean(o.includeAll) : true;
     host.innerHTML = '';
-    const sel = _uniqYearsDesc(selectedYears);
-    const selSet = new Set(sel);
-
-    const allPressed = STRATEGIC_YEAR_CHOICES.every(y => selSet.has(y));
-    if (includeAll) {
-      _renderMiniBtn(
-        host,
-        i18nT('common.all'),
-        allPressed,
-        () => {
-          const next = allPressed ? [STRATEGIC_YEAR_CHOICES[0]] : STRATEGIC_YEAR_CHOICES.slice();
-          onChange && onChange(next);
-        },
-        allPressed ? 'Select only the newest year' : 'Select all years'
-      );
-    }
-
-    for (const y of STRATEGIC_YEAR_CHOICES) {
-      const pressed = selSet.has(y);
-      _renderMiniBtn(
-        host,
-        String(y),
-        pressed,
-        () => {
-          const nextSet = new Set(selSet);
-          if (nextSet.has(y)) nextSet.delete(y);
-          else nextSet.add(y);
-          let next = Array.from(nextSet);
-          next.sort((a, b) => b - a);
-          if (!next.length) next = [y];
-          onChange && onChange(next);
-        },
-        pressed ? 'Remove year' : 'Add year'
-      );
-    }
+    host.setAttribute('role', 'radiogroup');
+    host.classList.add('wm-ref-years');
+    const current = _refYearOptionFor(selectedYears);
+    const rows = [['all', 'last3'], STRATEGIC_YEAR_CHOICES.slice()];
+    const buttons = [];
+    rows.forEach((opts, idx) => {
+      const row = document.createElement('div');
+      row.className = `wm-ref-years-row wm-ref-years-row-${idx + 1}`;
+      for (const opt of opts) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'wm-mini-btn wm-ref-year';
+        b.dataset.refYears = String(opt);
+        b.textContent = _refYearOptionLabel(opt);
+        b.title = _refYearOptionTitle(opt);
+        const on = String(opt) === String(current);
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+        b.addEventListener('click', (ev) => {
+          try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+          if (on) return;
+          try { onChange && onChange(_refYearsForOption(opt)); } catch (_) {}
+        });
+        b.addEventListener('keydown', (ev) => {
+          const k = ev.key;
+          if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(k)) return;
+          ev.preventDefault();
+          const i = buttons.indexOf(b);
+          const next = buttons[(i + ((k === 'ArrowRight' || k === 'ArrowDown') ? 1 : buttons.length - 1)) % buttons.length];
+          try { next.click(); } catch (_) {}
+          try { requestAnimationFrame(() => { const f = host.querySelector('[aria-checked="true"]'); if (f) f.focus(); }); } catch (_) {}
+        });
+        buttons.push(b);
+        row.appendChild(b);
+      }
+      host.appendChild(row);
+    });
   }
 
   function _renderTourOverlayModeSelect(host, selectedMode, onChange) {
@@ -13782,8 +13831,7 @@
       try { _applyTourWeatherModeUi(); } catch (_) {}
       return;
     }
-    const ys = _uniqYearsDesc(nextYears);
-    const years = ys.length ? ys : [STRATEGIC_DEFAULT_YEAR];
+    const years = _normalizeRefYears(nextYears);
     STRATEGIC_STATE.years = years;
     STRATEGIC_STATE.year = years[0];
     try {
@@ -13792,9 +13840,11 @@
       saveSettings(SETTINGS);
     } catch (_) {}
     try { _strategicSetYear(Number(years[0] || STRATEGIC_DEFAULT_YEAR)); } catch (_) {}
-    try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears, { includeAll: true }); } catch (_) {}
+    try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears); } catch (_) {}
     try { _renderTourWeatherYears(); } catch (_) {}
     try { _updateStrategicLegend(); } catch (_) {}
+    // Explore climate panel: same selection, refetched for the selected point.
+    try { if (!_tourIsActive()) _refreshClimateProfileSelection(); } catch (_) {}
     try {
       const span = _tourSelectedYearsSpan();
       SETTINGS.histLastYear = span.end;
@@ -13985,7 +14035,7 @@
         const hostY = el.querySelector('#wmStrategicLegendYears');
         if (hostY) {
           STRATEGIC_LEGEND_YEARS_HOST = hostY;
-          _renderStrategicYearsButtons(hostY, _strategicGetSelectedYears(), _setStrategicYears, { includeAll: true });
+          _renderStrategicYearsButtons(hostY, _strategicGetSelectedYears(), _setStrategicYears);
         }
       } catch (_) {}
 
@@ -14206,10 +14256,12 @@
   function _updateStrategicLegend() {
     const el = _ensureStrategicLegend();
     if (!el) return;
+    // The climate legend belongs to the Explore overlays only. Tour Planning never shows
+    // it (its route colours have their own key in the profile chart), so a mode switch
+    // re-evaluates here and leaves no stale legend behind.
     const appMode = _getAppMode();
-    const showClimateLegend = Boolean(STRATEGIC_STATE && STRATEGIC_STATE.active);
-    const showTourLegend = (appMode === 'tour');
-    if (!showClimateLegend && !showTourLegend) {
+    const showClimateLegend = (appMode !== 'tour') && Boolean(STRATEGIC_STATE && STRATEGIC_STATE.active);
+    if (!showClimateLegend) {
       el.classList.add('hidden');
       return;
     }
@@ -14243,7 +14295,7 @@
 
     try {
       if (STRATEGIC_LEGEND_YEARS_HOST) {
-        _renderStrategicYearsButtons(STRATEGIC_LEGEND_YEARS_HOST, _strategicGetSelectedYears(), _setStrategicYears, { includeAll: true });
+        _renderStrategicYearsButtons(STRATEGIC_LEGEND_YEARS_HOST, _strategicGetSelectedYears(), _setStrategicYears);
       }
     } catch (_) {}
 
@@ -17930,12 +17982,12 @@
 
   const STRATEGIC_STATE = {
     active: false,
-    years: (SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
-      ? _uniqYearsDesc(SETTINGS.strategicYears)
-      : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)],
-    year: (SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
-      ? Number(_uniqYearsDesc(SETTINGS.strategicYears)[0] || SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)
-      : Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR),
+    years: _normalizeRefYears((SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
+      ? SETTINGS.strategicYears
+      : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)]),
+    year: _normalizeRefYears((SETTINGS && Array.isArray(SETTINGS.strategicYears) && SETTINGS.strategicYears.length)
+      ? SETTINGS.strategicYears
+      : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)])[0],
     mode: 'full_day',
     // Phase 2: range selection stored as start/end DOY (inclusive).
     rangeStartDoy: 1,
@@ -21438,7 +21490,7 @@
 
   function _renderTourWeatherYears() {
     const host = document.getElementById('tourWeatherYears');
-    if (host) _renderStrategicYearsButtons(host, _strategicGetSelectedYears(), _setStrategicYears, { includeAll: true });
+    if (host) _renderStrategicYearsButtons(host, _strategicGetSelectedYears(), _setStrategicYears);
   }
 
   function _tourBookDays() {
@@ -21857,10 +21909,10 @@
 
     try {
       if (setStrategicYears) {
-        const yrs = (Array.isArray(s.strategicYears) && s.strategicYears.length)
+        const yrs = _normalizeRefYears((Array.isArray(s.strategicYears) && s.strategicYears.length)
           ? s.strategicYears
-          : [Number(s.strategicYear || STRATEGIC_DEFAULT_YEAR)];
-        _renderStrategicYearsButtons(setStrategicYears, yrs, _setStrategicYears, { includeAll: true });
+          : [Number(s.strategicYear || STRATEGIC_DEFAULT_YEAR)]);
+        _renderStrategicYearsButtons(setStrategicYears, yrs, _setStrategicYears);
       }
     } catch (_) {}
     if (setIncludeSea) setIncludeSea.checked = Boolean(s.includeSea);
@@ -21917,8 +21969,7 @@
 
     // Strategic years/mode are controlled via toggle buttons (not standard form elements).
     try {
-      const yrs = _uniqYearsDesc(base.strategicYears || [base.strategicYear || STRATEGIC_DEFAULT_YEAR]);
-      base.strategicYears = yrs.length ? yrs : [STRATEGIC_DEFAULT_YEAR];
+      base.strategicYears = _normalizeRefYears(base.strategicYears || [base.strategicYear || STRATEGIC_DEFAULT_YEAR]);
       base.strategicYear = Math.round(Number(base.strategicYears[0] || STRATEGIC_DEFAULT_YEAR));
       const m = (String(base.strategicMode || '') === 'full_day') ? 'full_day' : 'active';
       base.strategicMode = m;
@@ -21962,8 +22013,7 @@
       if (STRATEGIC_STATE && STRATEGIC_STATE.active) {
         // Preferences should be the single source of truth for strategic years/mode.
         try {
-          const years = _uniqYearsDesc((SETTINGS && SETTINGS.strategicYears) ? SETTINGS.strategicYears : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)]);
-          STRATEGIC_STATE.years = years.length ? years : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)];
+          STRATEGIC_STATE.years = _normalizeRefYears((SETTINGS && SETTINGS.strategicYears) ? SETTINGS.strategicYears : [Number(SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR)]);
           STRATEGIC_STATE.year = Number(STRATEGIC_STATE.years[0] || SETTINGS.strategicYear || STRATEGIC_DEFAULT_YEAR);
           STRATEGIC_STATE.mode = (String(SETTINGS && SETTINGS.strategicMode || '') === 'full_day') ? 'full_day' : 'active';
         } catch (_) {}
