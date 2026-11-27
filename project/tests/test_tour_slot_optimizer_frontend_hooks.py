@@ -14,7 +14,9 @@ def test_tour_slot_optimizer_controls_present_in_tour_panel():
     assert 'id="tourSlotObjectiveMode"' not in html
     assert 'id="tourSlotGranularity"' in html
     assert 'id="tourSlotDirectionMode"' in html
-    assert 'id="tourSlotHorizonYears"' in html
+    # no separate simulation years: the Weather reference-year selection is the only source
+    assert 'id="tourSlotHorizonYears"' not in html
+    assert 'id="tourSlotReference"' in html
     assert 'id="tourSlotStatus"' in html
     assert 'id="tourSlotResults"' in html
 
@@ -39,12 +41,11 @@ def test_tour_slot_optimizer_frontend_calls_backend_endpoints():
     assert "i18nMsg('status.sim.appliedSlotFromRefreshStarted'" in source
     assert 'Applied slot: {start} ({dir}) from {curveLabel}. Refresh started.' in FRONTEND_EN.read_text(encoding='utf-8')
     assert "'status.sim.simulationRunComplete'" in source and '"Simulation run complete."' in FRONTEND_EN.read_text(encoding='utf-8')
-    assert "i18nT('sim.chart.title')" in source                    # 'Simulation run' (en.js)
+    assert "h('sim.chart.apply')" in source and '_simApplySlot(' in source         # apply only on explicit action
+    assert "yearsSelected" in source and "horizonYears" not in source              # Weather reference years only
     assert 'loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });' in source
-    assert "'sim.result.lowerBetter'" in source and "'sim.result.higherBetter'" in source   # score direction
+    assert 'meta.reliability' in source                                            # reliability block shown
     assert 'year_penalty_curve_bundle' in source
     assert 'wmSlotCurveSvg' in source
-    assert "i18nT('sim.chart.apply')" in source
     assert 'year_penalty_curve' in source
-    assert "'sim.result.requestedYears'" in source
-    assert "'sim.result.usedYears'" in source
+    assert "'sim.ref.label'" in source and 'meta.requested_years' in source          # reference period shown

@@ -287,7 +287,6 @@
   const tourSlotOptimizeBtn = document.getElementById('tourSlotOptimizeBtn');
   const tourSlotGranularity = document.getElementById('tourSlotGranularity');
   const tourSlotDirectionMode = document.getElementById('tourSlotDirectionMode');
-  const tourSlotHorizonYears = document.getElementById('tourSlotHorizonYears');
   const tourSlotStatus = document.getElementById('tourSlotStatus');
   const tourSlotResults = document.getElementById('tourSlotResults');
   const shareBtn = document.getElementById('share');
@@ -9238,8 +9237,7 @@
       progressEl.classList.remove('loading');
       progressBar.style.width = `${pct}%`;
       if (progressPercentEl) {
-        const prefix = String(label || 'Simulation run');
-        progressPercentEl.textContent = `${prefix}: ${pct}% (${c}/${t})`;
+        progressPercentEl.textContent = i18nT('sim.progress', { pct: fmtN(pct, 0), done: fmtN(c, 0), total: fmtN(t, 0) });
       }
     } catch (_) {}
   }
@@ -9287,7 +9285,8 @@
     const startDate = (startDateInput && startDateInput.value)
       ? String(startDateInput.value)
       : (new Date()).toISOString().slice(0, 10);
-    const horizonYears = Math.max(1, Math.round(Number(tourSlotHorizonYears && tourSlotHorizonYears.value) || 3));
+    // Reference years: exactly the Weather selection (the one authoritative state).
+    const yearsSelected = _strategicGetSelectedYears();
     const directionModeRaw = String(tourSlotDirectionMode && tourSlotDirectionMode.value || 'forward').trim().toLowerCase();
     const directionMode = (directionModeRaw === 'forward' || directionModeRaw === 'reverse')
       ? directionModeRaw
@@ -9308,642 +9307,538 @@
       objectiveMode,
       slotGranularity,
       luckyThresholds,
-      horizonYears,
+      yearsSelected,
       topN: 5,
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Simulation results: decision support ("when is the best time to ride this
+  // tour, and why?"). Everything shown is derived from the optimizer result:
+  // - ranking and recommendation: result.candidates (existing objective, lucky days);
+  // - year-round curves: meta.year_penalty_curve_bundle (one value per start date,
+  //   plus the value of each individual reference year -> range band);
+  // - reliability: meta.reliability (years used, data coverage, year-to-year consistency).
+  // Unit conversions only: precipitation total / tour days = mm per day; headwind
+  // total / riding days = mean headwind component per riding day (tailwind counts 0).
+  // ---------------------------------------------------------------------------
   let TOUR_SLOT_LAST_RESULT = null;
+  const SIM_METRICS = [
+    { id: 'precip', curve: 'lowest_precip_sum', digits: 1, unit: () => i18nT('unit.mmPerDay'), per: 'day', better: 'lower',
+      icon: '<path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/><path d="M8 21l1-2M12 21l1-2M16 21l1-2"/>' },
+    { id: 'temp', curve: 'highest_avg_temperature', digits: 1, unit: () => '°C', per: 'none', better: 'comfort',
+      icon: '<path d="M14 14.8V5a2 2 0 1 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 9v7"/>' },
+    { id: 'headwind', curve: 'lowest_headwind_sum', digits: 1, unit: () => 'm/s', per: 'ride', better: 'lower',
+      icon: '<path d="M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7"/>' },
+    { id: 'lucky', curve: 'most_lucky_days', digits: 0, unit: () => i18nT('sim.unit.most_lucky_days'), per: 'none', better: 'higher',
+      icon: '<path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/>' },
+  ];
+  const SIM_VIEW = { metric: 'lucky', selectedIso: null, hoverIso: null, resultKey: '' };
+  const _simIco = (paths, cls = '') => `<svg class="wm-ico ${cls}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+
+  function _simRefLabel(years) {
+    const ys = (Array.isArray(years) ? years : []).map(Number).filter(Number.isFinite);
+    if (!ys.length) return '—';
+    const period = _climateReferencePeriodLabel(ys);
+    const opt = _refYearOptionFor(ys);
+    const exact = _normalizeRefYears(ys).join(',') === _uniqYearsDesc(ys).join(',');
+    if (exact && (opt === 'all' || opt === 'last3')) return i18nT('sim.ref.periodWithOption', { period, option: _refYearOptionLabel(opt) });
+    return period;
+  }
+
+  function _simDateLong(iso) {
+    try {
+      return new Date(`${String(iso).slice(0, 10)}T00:00:00Z`).toLocaleDateString(_uiLocale(), { day: 'numeric', month: 'long', timeZone: 'UTC' });
+    } catch (_) { return String(iso || ''); }
+  }
+
+  function _simDateShort(iso, withWeekday) {
+    try {
+      const o = { day: 'numeric', month: 'short', timeZone: 'UTC' };
+      if (withWeekday) o.weekday = 'short';
+      return new Date(`${String(iso).slice(0, 10)}T00:00:00Z`).toLocaleDateString(_uiLocale(), o);
+    } catch (_) { return String(iso || ''); }
+  }
+
+  function _simMedian(vals) {
+    const v = vals.filter(Number.isFinite).slice().sort((a, b) => a - b);
+    if (!v.length) return null;
+    const m = Math.floor(v.length / 2);
+    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  }
+
+  // Model of one optimizer result in display units.
+  function _simModel(result) {
+    const meta = (result && result.meta) || {};
+    const totalDays = Math.max(1, Number(meta.total_days) || 1);
+    const rideDays = Math.max(1, Number(meta.ride_days) || totalDays);
+    const conv = (metric, v) => {
+      const n = Number(v);
+      if (v === null || v === undefined || !Number.isFinite(n)) return null;
+      return metric.per === 'day' ? n / totalDays : metric.per === 'ride' ? n / rideDays : n;
+    };
+    const bundle = (meta.year_penalty_curve_bundle && Array.isArray(meta.year_penalty_curve_bundle.curves)) ? meta.year_penalty_curve_bundle.curves : [];
+    const series = {};
+    for (const metric of SIM_METRICS) {
+      const curve = bundle.find((c) => String(c && c.id) === metric.curve);
+      const pts = (curve && Array.isArray(curve.points) ? curve.points : []).map((p) => {
+        const years = {};
+        for (const [y, v] of Object.entries((p && p.year_values) || {})) {
+          const c = conv(metric, v);
+          if (c !== null) years[y] = c;
+        }
+        return { iso: String(p.start_date || '').slice(0, 10), dir: String(p.direction || 'forward'), v: conv(metric, p.value), years };
+      }).filter((p) => p.iso && p.v !== null).sort((a, b) => (a.iso < b.iso ? -1 : 1));
+      // Daily start dates: the chart draws a centred 7-day moving average (labelled as
+      // such) so the year-round pattern is readable; exact values stay in the readout.
+      const smooth = Number(meta.slot_step_days) === 1 && pts.length > 14;
+      const win = 3;
+      pts.forEach((p, i) => {
+        const nb = pts.slice(Math.max(0, i - win), Math.min(pts.length, i + win + 1));
+        const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+        const yvals = (q) => Object.values(q.years);
+        p.sv = smooth ? avg(nb.map((q) => q.v)) : p.v;
+        p.lo = yvals(p).length ? (smooth ? avg(nb.map((q) => (yvals(q).length ? Math.min(...yvals(q)) : q.v))) : Math.min(...yvals(p))) : null;
+        p.hi = yvals(p).length ? (smooth ? avg(nb.map((q) => (yvals(q).length ? Math.max(...yvals(q)) : q.v))) : Math.max(...yvals(p))) : null;
+      });
+      series[metric.id] = { metric, points: pts, smooth, byIso: new Map(pts.map((p) => [p.iso, p])), median: _simMedian(pts.map((p) => p.v)) };
+    }
+    const candidates = (Array.isArray(result && result.candidates) ? result.candidates : []).map((c) => {
+      const s = (c && c.summary) || {};
+      return {
+        iso: String(c.start_date || '').slice(0, 10), dir: String(c.direction || 'forward'),
+        lucky: Number(s.lucky_days), dayCount: Math.max(1, Number(s.day_count) || totalDays),
+        temp: Number.isFinite(Number(s.avg_temp_c)) ? Number(s.avg_temp_c) : null,
+        precip: Number.isFinite(Number(s.precip_sum_mm)) ? Number(s.precip_sum_mm) / totalDays : null,
+        precipTotal: Number.isFinite(Number(s.precip_sum_mm)) ? Number(s.precip_sum_mm) : null,
+        headwind: Number.isFinite(Number(s.headwind_sum_ms)) ? Number(s.headwind_sum_ms) / rideDays : null,
+        missing: Number(c.missing_ratio) || 0,
+      };
+    }).filter((c) => c.iso);
+    const best = candidates[0] || null;
+    // Best departure period: the run of consecutive start dates around the best date
+    // that reach the same objective value (lucky days) as the best date.
+    let range = best ? { from: best.iso, to: best.iso } : null;
+    const lucky = series.lucky;
+    if (best && lucky.points.length) {
+      const idx = lucky.points.findIndex((p) => p.iso === best.iso);
+      if (idx >= 0) {
+        const target = lucky.points[idx].v;
+        let a = idx;
+        let b = idx;
+        while (a > 0 && lucky.points[a - 1].v === target) a -= 1;
+        while (b < lucky.points.length - 1 && lucky.points[b + 1].v === target) b += 1;
+        range = { from: lucky.points[a].iso, to: lucky.points[b].iso };
+      }
+    }
+    const requested = Array.isArray(meta.requested_years) ? meta.requested_years.map(Number) : [];
+    const used = Array.isArray(meta.actual_years_used) ? meta.actual_years_used.map(Number) : [];
+    return { meta, totalDays, rideDays, series, candidates, best, range, requested, used,
+      missingYears: Array.isArray(meta.missing_requested_years) ? meta.missing_requested_years : [],
+      reliability: (meta.reliability && typeof meta.reliability === 'object') ? meta.reliability : null };
+  }
+
+  function _simValueText(metricId, v) {
+    const metric = SIM_METRICS.find((m) => m.id === metricId);
+    if (v === null || v === undefined || !Number.isFinite(Number(v))) return '—';
+    return `${fmtN(Number(v), metric ? metric.digits : 1)} ${metric ? metric.unit() : ''}`.trim();
+  }
+
+  function _simRangeText(range) {
+    if (!range) return '—';
+    if (range.from === range.to) return _simDateLong(range.from);
+    return i18nT('sim.card.bestRange', { from: _simDateShort(range.from), to: _simDateShort(range.to) });
+  }
+
+  // Assessment of a start date, from its share of lucky days (the simulation's objective).
+  function _simAssessment(luckyDays, dayCount) {
+    const share = Number(luckyDays) / Math.max(1, Number(dayCount) || 1);
+    if (!Number.isFinite(share)) return { key: 'unknown', text: '—' };
+    const key = share >= 0.8 ? 'veryFavourable' : share >= 0.6 ? 'favourable' : share >= 0.4 ? 'moderate' : 'unfavourable';
+    return { key, text: i18nT(`sim.assess.${key}`) };
+  }
+
+  function _simReliabilityHtml(model) {
+    const r = model.reliability;
+    const h = (k, p) => _htmlEsc(i18nT(k, p));
+    if (!r) return `<div class="wm-sim-rel" data-level="unknown"><div class="wm-sim-rel-text">${h('sim.rel.unavailable')}</div></div>`;
+    const level = String(r.level || 'low');
+    const used = Array.isArray(r.used_years) ? r.used_years : model.used;
+    const cov = fmtN(Math.round(100 * (Number(r.coverage) || 0)), 0);
+    const share = fmtN(Math.round(100 * (Number(r.top_share) || 0.2)), 0);
+    const parts = [h('sim.rel.years', { n: fmtN(used.length, 0), period: _climateReferencePeriodLabel(used) })];
+    parts.push(h('sim.rel.coverage', { pct: cov }));
+    if (level === 'limited') parts.push(h('sim.rel.singleYear'));
+    else parts.push(h('sim.rel.consistency', { k: fmtN(Number(r.years_in_top) || 0, 0), n: fmtN(Number(r.years_assessed) || 0, 0), share }));
+    const fill = { high: 100, medium: 62, low: 30, limited: 18 }[level] || 18;
+    return `<div class="wm-sim-rel" data-level="${_htmlEsc(level)}" data-role="sim-reliability">
+      ${_simIco('<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>', 'wm-sim-rel-ico')}
+      <div class="wm-sim-rel-main"><div class="wm-sim-rel-title">${h('sim.rel.title')}</div>
+        <div class="wm-sim-rel-meter"><span class="wm-sim-rel-bar"><i style="width:${fill}%"></i></span><strong>${h(`sim.rel.level.${level}`)}</strong></div></div>
+      <div class="wm-sim-rel-text">${parts.join(' ')}<span class="wm-sim-rel-how" title="${h('sim.rel.method', { share })}">${h('sim.rel.howAssessed')}</span></div>
+    </div>`;
+  }
+
+  function _simCardsHtml(model) {
+    const b = model.best;
+    const h = (k, p) => _htmlEsc(i18nT(k, p));
+    const card = (cls, icon, label, value, note) => `<div class="wm-sim-card ${cls}">${_simIco(icon, 'wm-sim-card-ico')}
+      <div class="wm-sim-card-body"><div class="wm-sim-card-label">${_htmlEsc(label)}</div><div class="wm-sim-card-value">${_htmlEsc(value)}</div>
+      <div class="wm-sim-card-note">${_htmlEsc(note)}</div></div></div>`;
+    if (!b) return '';
+    return `<div class="wm-sim-cards" data-role="sim-cards">
+      ${card('is-best', '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>', i18nT('sim.card.best'), _simRangeText(model.range),
+        i18nT('sim.card.bestNote', { lucky: fmtN(b.lucky, 0), days: fmtN(b.dayCount, 0) }))}
+      ${card('', SIM_METRICS[1].icon, i18nT('sim.card.temp'), _simValueText('temp', b.temp), i18nT('sim.card.tempNote'))}
+      ${card('', SIM_METRICS[0].icon, i18nT('sim.card.precip'), _simValueText('precip', b.precip),
+        b.precipTotal === null ? i18nT('sim.card.precipNoteNoTotal') : i18nT('sim.card.precipNote', { total: fmtN(b.precipTotal, 0) }))}
+      ${card('', SIM_METRICS[2].icon, i18nT('sim.card.headwind'), _simValueText('headwind', b.headwind), i18nT('sim.card.headwindNote'))}
+    </div>`.replace(/>\s+</g, '><');
+  }
+
+  function _simRecommendationHtml(model) {
+    const b = model.best;
+    if (!b) return '';
+    const h = (k, p) => _htmlEsc(i18nT(k, p));
+    const th = _tourLuckyThresholds();
+    const cold = Number(th && th.tempCold);
+    const hot = Number(th && th.tempHot);
+    const pros = [];
+    const cons = [];
+    const S = model.series;
+    const cmp = (id, v, lowerBetter) => {
+      const med = S[id] && S[id].median;
+      if (v === null || med === null || !Number.isFinite(med)) return;
+      const params = { value: _simValueText(id, v), typical: _simValueText(id, med) };
+      const rel = Math.abs(v - med) / Math.max(1e-6, Math.abs(med));
+      if (rel < 0.1) return;                                     // within 10 % of the year's typical value: not a point either way
+      if ((v < med) === lowerBetter) pros.push(h(`sim.rec.pro.${id}`, params));
+      else cons.push(h(`sim.rec.con.${id}`, params));
+    };
+    cmp('precip', b.precip, true);
+    if (b.temp !== null && Number.isFinite(cold) && Number.isFinite(hot)) {
+      const p = { value: _simValueText('temp', b.temp), cold: fmtN(cold, 0), hot: fmtN(hot, 0) };
+      if (b.temp >= cold && b.temp <= hot) pros.push(h('sim.rec.pro.temp', p));
+      else cons.push(h('sim.rec.con.temp', p));
+    }
+    cmp('headwind', b.headwind, true);
+    const lead = (model.range && model.range.from !== model.range.to)
+      ? h('sim.rec.leadRange', { from: _simDateLong(model.range.from), to: _simDateLong(model.range.to), lucky: fmtN(b.lucky, 0), days: fmtN(b.dayCount, 0) })
+      : h('sim.rec.lead', { date: _simDateLong(b.iso), lucky: fmtN(b.lucky, 0), days: fmtN(b.dayCount, 0) });
+    const list = (items) => `<ul>${items.map((x) => `<li>${x}</li>`).join('')}</ul>`;
+    return `<section class="wm-sim-rec" data-role="sim-recommendation">
+      <h4>${_simIco('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/>')}<span>${h('sim.rec.title')}</span></h4>
+      <p>${lead}</p>
+      ${pros.length ? `<div class="wm-sim-rec-sub">${h('sim.rec.pros')}</div>${list(pros)}` : ''}
+      <div class="wm-sim-rec-sub">${h('sim.rec.cons')}</div>
+      ${cons.length ? list(cons) : `<p class="wm-sim-muted">${h('sim.rec.noCons')}</p>`}
+      <p class="wm-sim-muted wm-sim-rec-basis">${h('sim.rec.basis', { typical: h('sim.rec.typicalDef') })}</p>
+    </section>`;
+  }
+
+  function _simTopHtml(model) {
+    const rows = model.candidates.slice(0, 3);
+    if (!rows.length) return '';
+    const h = (k, p) => _htmlEsc(i18nT(k, p));
+    const body = rows.map((c, i) => {
+      const a = _simAssessment(c.lucky, c.dayCount);
+      const sel = SIM_VIEW.selectedIso === c.iso ? ' is-selected' : '';
+      return `<tr class="wm-sim-top-row${i === 0 ? ' is-best' : ''}${sel}" data-iso="${_htmlEsc(c.iso)}" tabindex="0">
+        <td><span class="wm-sim-rank">${i + 1}</span></td><td class="wm-sim-top-date">${_htmlEsc(_simDateShort(c.iso, true))}</td>
+        <td>${_htmlEsc(`${fmtN(c.lucky, 0)} / ${fmtN(c.dayCount, 0)}`)}</td><td>${_htmlEsc(_simValueText('temp', c.temp))}</td>
+        <td>${_htmlEsc(_simValueText('precip', c.precip))}</td><td>${_htmlEsc(_simValueText('headwind', c.headwind))}</td>
+        <td><span class="wm-sim-assess" data-assess="${a.key}">${_htmlEsc(a.text)}</span></td></tr>`;
+    }).join('');
+    return `<section class="wm-sim-top" data-role="sim-top3">
+      <h4>${_simIco('<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>')}<span>${h('sim.top.title')}</span></h4>
+      <div class="wm-sim-table-wrap"><table class="wm-sim-table"><thead><tr><th>${h('sim.top.rank')}</th><th>${h('sim.top.date')}</th><th>${h('sim.top.lucky')}</th>
+        <th>${h('sim.top.temp')}</th><th>${h('sim.top.precip')}</th><th>${h('sim.top.headwind')}</th><th>${h('sim.top.assessment')}</th></tr></thead>
+        <tbody>${body}</tbody></table></div>
+      <p class="wm-sim-muted">${h('sim.top.note')}</p>
+    </section>`;
+  }
+
+  function _simChartSvg(model, width) {
+    const s = model.series[SIM_VIEW.metric];
+    const pts = s ? s.points : [];
+    if (pts.length < 2) return `<div class="wm-sim-muted">${_htmlEsc(i18nT('sim.chart.noData'))}</div>`;
+    const W = Math.max(320, Math.round(width));
+    const H = Math.max(190, Math.min(300, Math.round(W * 0.3)));
+    const padL = 46;
+    const padR = 14;
+    const padT = 50;                                          // axis title row, then the recommendation label row
+    const padB = 26;
+    const t = (iso) => Date.parse(`${iso}T00:00:00Z`);
+    const x0 = t(pts[0].iso);
+    const x1 = t(pts[pts.length - 1].iso);
+    const xAt = (iso) => padL + ((t(iso) - x0) / Math.max(1, x1 - x0)) * (W - padL - padR);
+    const vals = [];
+    for (const p of pts) { vals.push(p.sv); if (p.lo !== null) vals.push(p.lo, p.hi); }
+    let lo = Math.min(...vals);
+    let hi = Math.max(...vals);
+    if (SIM_VIEW.metric !== 'temp') lo = Math.min(0, lo);
+    if (!(hi > lo)) hi = lo + 1;
+    const raw = (hi - lo) / 4;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((k) => k >= raw) || raw;
+    lo = Math.floor(lo / step) * step;
+    hi = Math.ceil(hi / step) * step;
+    const yAt = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
+    const grid = [];
+    for (let v = lo; v <= hi + step / 2; v += step) {
+      grid.push(`<line x1="${padL}" x2="${W - padR}" y1="${yAt(v).toFixed(1)}" y2="${yAt(v).toFixed(1)}" class="wm-sim-grid"/>`
+        + `<text x="${padL - 6}" y="${(yAt(v) + 3.5).toFixed(1)}" text-anchor="end" class="wm-sim-tick">${_htmlEsc(fmtN(v, step < 1 ? 1 : 0))}</text>`);
+    }
+    const year = pts[0].iso.slice(0, 4);
+    for (let m = 1; m <= 12; m += 1) {
+      const iso = `${year}-${String(m).padStart(2, '0')}-01`;
+      if (t(iso) < x0 || t(iso) > x1) continue;
+      const x = xAt(iso);
+      grid.push(`<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${H - padB}" y2="${H - padB + 4}" class="wm-sim-axis"/>`
+        + `<text x="${x.toFixed(1)}" y="${H - padB + 16}" text-anchor="middle" class="wm-sim-tick">${_htmlEsc(_simDateShort(iso))}</text>`);
+    }
+    const yearKeys = [...new Set(pts.flatMap((p) => Object.keys(p.years)))];
+    let band = '';
+    if (yearKeys.length >= 2) {
+      const upper = pts.map((p) => (p.hi !== null ? p.hi : p.sv));
+      const lower = pts.map((p) => (p.lo !== null ? p.lo : p.sv));
+      const path = pts.map((p, i) => `${i ? 'L' : 'M'}${xAt(p.iso).toFixed(1)},${yAt(upper[i]).toFixed(1)}`).join('')
+        + pts.slice().reverse().map((p, i) => `L${xAt(p.iso).toFixed(1)},${yAt(lower[pts.length - 1 - i]).toFixed(1)}`).join('') + 'Z';
+      band = `<path d="${path}" class="wm-sim-band"/>`;
+    }
+    const line = `<path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${xAt(p.iso).toFixed(1)},${yAt(p.sv).toFixed(1)}`).join('')}" class="wm-sim-line"/>`;
+    let marks = '';
+    const best = model.best && s.byIso.get(model.best.iso);
+    if (best) {
+      const bx = xAt(best.iso);
+      const label = i18nT('sim.chart.recommended', { date: _simDateShort(best.iso) });
+      const lw = Math.max(90, label.length * 6.4 + 16);
+      const lx = Math.max(padL, Math.min(W - padR - lw, bx - lw / 2));
+      marks += `<line x1="${bx.toFixed(1)}" x2="${bx.toFixed(1)}" y1="42" y2="${H - padB}" class="wm-sim-best-line"/>`
+        + `<circle cx="${bx.toFixed(1)}" cy="${yAt(best.sv).toFixed(1)}" r="5" class="wm-sim-best-dot"/>`
+        + `<g class="wm-sim-best-label"><rect x="${lx.toFixed(1)}" y="22" width="${lw.toFixed(1)}" height="20" rx="5"/>`
+        + `<text x="${(lx + lw / 2).toFixed(1)}" y="35.5" text-anchor="middle">${_htmlEsc(label)}</text></g>`;
+    }
+    const sel = SIM_VIEW.selectedIso && SIM_VIEW.selectedIso !== (model.best && model.best.iso) ? s.byIso.get(SIM_VIEW.selectedIso) : null;
+    if (sel) {
+      const sx = xAt(sel.iso);
+      marks += `<line x1="${sx.toFixed(1)}" x2="${sx.toFixed(1)}" y1="${padT}" y2="${H - padB}" class="wm-sim-sel-line"/>`
+        + `<circle cx="${sx.toFixed(1)}" cy="${yAt(sel.sv).toFixed(1)}" r="4.5" class="wm-sim-sel-dot"/>`;
+    }
+    const hov = `<g class="wm-sim-hover" data-role="sim-hover" style="display:none"><line y1="${padT}" y2="${H - padB}"/><circle r="4"/></g>`;
+    const axisLabel = i18nT(`sim.axis.${SIM_VIEW.metric}`, { days: fmtN(model.totalDays, 0) });
+    SIM_VIEW._geom = { pts, xAt, yAt, W, padL, padR };
+    return `<svg class="wm-slot-curve-svg wm-sim-chart" id="wmSlotCurveSvg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img"
+        aria-label="${_htmlEsc(i18nT('sim.chart.aria2', { metric: i18nT(`sim.tab.${SIM_VIEW.metric}`) }))}" data-metric="${SIM_VIEW.metric}">
+      <text x="${padL - 40}" y="12" class="wm-sim-axis-title">${_htmlEsc(axisLabel)}</text>
+      ${grid.join('')}<line x1="${padL}" x2="${W - padR}" y1="${H - padB}" y2="${H - padB}" class="wm-sim-axis"/>
+      ${band}${line}${marks}${hov}
+      <rect x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}" fill="transparent" class="wm-sim-hit"/>
+    </svg>`;
+  }
+
+  function _simLegendHtml(model) {
+    const s = model.series[SIM_VIEW.metric];
+    const hasBand = s && [...new Set(s.points.flatMap((p) => Object.keys(p.years)))].length >= 2;
+    const period = _climateReferencePeriodLabel(model.used.length ? model.used : model.requested);
+    return `<div class="wm-sim-legend"><span><i class="wm-sim-key-line"></i>${_htmlEsc(i18nT(s && s.smooth ? 'sim.legend.typicalSmooth' : 'sim.legend.typical', { period }))}</span>`
+      + (hasBand ? `<span><i class="wm-sim-key-band"></i>${_htmlEsc(i18nT('sim.legend.range'))}</span>` : `<span class="wm-sim-muted">${_htmlEsc(i18nT('sim.legend.noRange'))}</span>`)
+      + `<span><i class="wm-sim-key-best"></i>${_htmlEsc(i18nT('sim.legend.best'))}</span></div>`;
+  }
+
+  function _simSelectionText(model) {
+    const iso = SIM_VIEW.selectedIso;
+    if (!iso) return '';
+    const vals = SIM_METRICS.map((m) => {
+      const p = model.series[m.id] && model.series[m.id].byIso.get(iso);
+      return `${i18nT(`sim.tab.${m.id}`)} ${_simValueText(m.id, p ? p.v : null)}`;
+    }).join(' · ');
+    return i18nT('sim.selection', { date: _simDateShort(iso, true), values: vals });
+  }
+
   function _renderTourSlotOptimizerResults(resultPayload) {
     if (!tourSlotResults) return;
     TOUR_SLOT_LAST_RESULT = resultPayload || null;
     const result = (resultPayload && typeof resultPayload === 'object') ? resultPayload : {};
-    const confidence = String(result.confidence || '').trim();
-    const meta = (result.meta && typeof result.meta === 'object') ? result.meta : {};
-    const scoreInterpretation = String(meta.score_interpretation || '').trim();
-    // The formula text comes from the backend in English; known objectives use the UI language.
-    const objectiveForFormula = String(meta.objective_mode || '').trim();
-    const formulaText = ['most_lucky_days', 'highest_avg_temperature', 'lowest_precip_sum', 'lowest_headwind_sum'].includes(objectiveForFormula)
-      ? i18nT(`sim.formula.${objectiveForFormula}`)
-      : String(meta.score_formula_human || meta.score_formula || '').trim();
-    const bundle = (meta.year_penalty_curve_bundle && typeof meta.year_penalty_curve_bundle === 'object') ? meta.year_penalty_curve_bundle : {};
-    const curvesRaw = Array.isArray(bundle.curves) ? bundle.curves : [];
-    const defaultCurveId = String(bundle.default_curve_id || meta.objective_mode || 'most_lucky_days');
-    const anchorYear = Number(bundle.anchor_year || meta.anchor_year || (new Date()).getUTCFullYear());
-    const slotStepDays = Math.max(1, Math.round(Number(meta.slot_step_days || 7)));
-    const totalTourDays = Math.max(1, Math.round(Number(meta.total_days || 1)));
-    const requestedYears = Array.isArray(meta.requested_years) ? meta.requested_years : [];
-    const actualYearsUsed = Array.isArray(meta.actual_years_used) ? meta.actual_years_used : [];
-    const missingRequestedYears = Array.isArray(meta.missing_requested_years) ? meta.missing_requested_years : [];
-    if (!curvesRaw.length) {
+    const model = _simModel(result);
+    if (!model.best) {
       tourSlotResults.innerHTML = '';
       try { _setSimResultsPanel(false); } catch (_) {}
       return;
     }
-
-    const applySlot = (startIso, direction, curveLabel) => {
-      try {
-        const start = String(startIso || '').slice(0, 10);
-        const dir = String(direction || 'forward').toLowerCase();
-        if (startDateInput && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
-          startDateInput.value = start;
-          try { startDateInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
-        }
-        _applyReverseTourState(dir === 'reverse', { refresh: false });
-        try { _tourSyncTimelineFromInputs(); } catch (_) {}
-        try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
-        markDataStale();
-        try {
-          OFFLINE_FALLBACK_ACTIVE = false;
-          if (LAST_PROFILE) loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });
-          else loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
-        } catch (_) {}
-        _setTourSlotStatus(i18nMsg('status.sim.appliedSlotFromRefreshStarted', { start, dir, curveLabel }));
-      } catch (_) {}
-    };
-
-    // Compact for Sector 2: confidence and score direction on one line; formula and
-    // years in the details tooltip; missing years stay visible as a warning.
-    const html = [];
-    const head = [];
-    if (confidence) head.push(i18nT('sim.result.confidence', { value: confidence }));
-    if (scoreInterpretation === 'lower_is_better') head.push(i18nT('sim.result.lowerBetter'));
-    else if (scoreInterpretation === 'higher_is_better') head.push(i18nT('sim.result.higherBetter'));
-    const details = [];
-    if (formulaText) details.push(i18nT('sim.result.formula', { formula: formulaText }));
-    if (requestedYears.length) details.push(i18nT('sim.result.requestedYears', { years: requestedYears.join(', ') }));
-    if (actualYearsUsed.length) details.push(i18nT('sim.result.usedYears', { years: actualYearsUsed.join(', ') }));
-    if (head.length || details.length) {
-      html.push(`<div class="wm-slot-meta" title="${_htmlEsc(details.join('\n'))}">${_htmlEsc(head.join(' · '))}${details.length ? ` · <u>${_htmlEsc(i18nT('sim.result.details'))}</u>` : ''}</div>`);
+    const key = `${model.best.iso}|${model.requested.join(',')}|${model.meta.anchor_year}`;
+    if (SIM_VIEW.resultKey !== key) {                          // a new run: recommended date preselected
+      SIM_VIEW.resultKey = key;
+      SIM_VIEW.selectedIso = model.best.iso;
+      SIM_VIEW.metric = 'lucky';
     }
-    if (missingRequestedYears.length) {
-      html.push(`<div style="font-size:10px;color:#b45309;">${_htmlEsc(i18nT('sim.result.missingYears', { years: missingRequestedYears.join(', ') }))}</div>`);
-    }
-    html.push(`
-      <div class="wm-slot-unified-host">
-        <div class="wm-slot-curve-legend" id="wmSlotCurveLegend"></div>
-        <div class="wm-slot-curve-readout" id="wmSlotCurveReadout">${_htmlEsc(i18nT('sim.chart.readout'))}</div>
-        <div class="wm-slot-curve-title" id="wmSlotCurveTitle">${_htmlEsc(i18nT('sim.chart.title'))}</div>
-        <div class="wm-slot-curve-scroll">
-          <svg class="wm-slot-curve-svg" id="wmSlotCurveSvg" role="img" aria-label="${_htmlEsc(i18nT('sim.chart.aria'))}"></svg>
+    const h = (k, p) => _htmlEsc(i18nT(k, p));
+    const refText = _simRefLabel(model.requested);
+    try {
+      const sub = document.getElementById('simResultsSubtitle');
+      if (sub) sub.textContent = i18nT('sim.results.subtitle', { days: fmtN(model.rideDays, 0), period: _climateReferencePeriodLabel(model.requested) });
+    } catch (_) {}
+    const current = _strategicGetSelectedYears();
+    const stale = current.join(',') !== _uniqYearsDesc(model.requested).join(',');
+    const tabs = SIM_METRICS.map((m) => `<button type="button" role="tab" class="wm-sim-tab" data-sim-metric="${m.id}" aria-selected="${m.id === SIM_VIEW.metric ? 'true' : 'false'}">${_simIco(m.icon)}<span>${h(`sim.tab.${m.id}`)}</span></button>`).join('');
+    tourSlotResults.innerHTML = `
+      <div class="wm-sim" data-role="sim-results" data-reference="${_htmlEsc(model.requested.join(','))}">
+        <div class="wm-sim-ref" data-role="sim-ref">${h('sim.ref.label', { ref: refText })}</div>
+        ${stale ? `<div class="wm-sim-stale" data-role="sim-stale">${h('sim.ref.stale', { now: _simRefLabel(current), used: refText })}</div>` : ''}
+        ${model.missingYears.length ? `<div class="wm-sim-stale">${h('sim.result.missingYears', { years: model.missingYears.join(', ') })}</div>` : ''}
+        ${_simReliabilityHtml(model)}
+        ${_simCardsHtml(model)}
+        <section class="wm-sim-chartbox">
+          <div class="wm-sim-tabs" role="tablist" aria-label="${h('sim.tabs.label')}">${tabs}</div>
+          <div class="wm-sim-chart-host" data-role="sim-chart-host"></div>
+          <div class="wm-sim-readout" data-role="sim-readout" hidden></div>
+          ${_simLegendHtml(model)}
+        </section>
+        <div class="wm-sim-bottom">${_simRecommendationHtml(model)}${_simTopHtml(model)}</div>
+        <div class="wm-sim-actions">
+          <div class="wm-sim-selection" data-role="sim-selection">${_htmlEsc(_simSelectionText(model))}</div>
+          <button type="button" id="wmSlotResetView" class="wm-btn wm-sim-reset">${_simIco('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>')}<span>${h('sim.chart.reset')}</span></button>
+          <button type="button" id="wmSlotApplySelected" class="wm-btn wm-btn-primary wm-sim-apply">${_simIco('<path d="m5 12 5 5L20 7"/>')}<span>${h('sim.chart.apply')}</span></button>
         </div>
-        <div class="wm-slot-curve-hint">${_htmlEsc(i18nT('sim.chart.hint'))}</div>
-        <div class="wm-slot-curve-actions">
-          <button type="button" id="wmSlotResetView" class="wm-pref-action-btn wm-slot-apply-btn">${_htmlEsc(i18nT('sim.chart.reset'))}</button>
-          <button type="button" id="wmSlotApplySelected" class="wm-pref-action-btn wm-slot-apply-btn">${_htmlEsc(i18nT('sim.chart.apply'))}</button>
-        </div>
-      </div>
-    `);
-    tourSlotResults.innerHTML = html.join('');
+      </div>`;
     try { _setSimResultsPanel(true); } catch (_) {}
+    _simDrawChart(model);
+    _simBind(model);
+  }
 
-    const legendHost = document.getElementById('wmSlotCurveLegend');
-    const readoutHost = document.getElementById('wmSlotCurveReadout');
-    const titleHost = document.getElementById('wmSlotCurveTitle');
-    const svg = document.getElementById('wmSlotCurveSvg');
-    const resetBtn = document.getElementById('wmSlotResetView');
-    const applyBtn = document.getElementById('wmSlotApplySelected');
-    if (!legendHost || !readoutHost || !titleHost || !svg || !resetBtn || !applyBtn) return;
-
-    const palette = {
-      most_lucky_days: '#0f766e',
-      highest_avg_temperature: '#ea580c',
-      lowest_precip_sum: '#2563eb',
-      lowest_headwind_sum: '#7c3aed',
-    };
-
-    const curves = curvesRaw.map((curve) => {
-      const id = String(curve && curve.id || 'curve');
-      // Curve names and units come from the backend in English; known objectives are shown
-      // in the UI language (unknown ones fall back to the backend text).
-      const known = ['most_lucky_days', 'highest_avg_temperature', 'lowest_precip_sum', 'lowest_headwind_sum'].includes(id);
-      const label = known ? i18nT(`sim.curve.${id}`) : String(curve && curve.objective_label || id);
-      const unit = known ? i18nT(`sim.unit.${id}`) : String(curve && curve.unit || 'score');
-      const valueLabel = known ? i18nT(`sim.curve.${id}`) : String(curve && (curve.value_label || curve.penalty_label) || i18nT('sim.value'));
-      const higherIsBetter = !!(curve && curve.higher_is_better);
-      const points = (Array.isArray(curve && curve.points) ? curve.points : [])
-        .map((p) => {
-          const iso = String(p && p.start_date || '');
-          const ms = Date.parse(`${iso}T00:00:00Z`);
-          const valueRaw = Number(p && (p.value != null ? p.value : p.penalty));
-          const score = Number(p && p.score);
-          const direction = String(p && p.direction || 'forward');
-          return (Number.isFinite(ms) && Number.isFinite(valueRaw))
-            ? { iso, ms, value: valueRaw, score: Number.isFinite(score) ? score : null, direction }
-            : null;
-        })
-        .filter(Boolean)
-        .sort((a, b) => a.ms - b.ms);
-      const optimaMap = new Map();
-      for (const o of (Array.isArray(curve && curve.optima) ? curve.optima : [])) {
-        const d = String(o && o.start_date || '');
-        const r = Number(o && o.rank);
-        if (d && Number.isFinite(r)) optimaMap.set(d, Math.round(r));
-      }
-      return {
-        id,
-        label,
-        unit,
-        valueLabel,
-        higherIsBetter,
-        color: palette[id] || '#334155',
-        points,
-        optimaMap,
-      };
-    }).filter((c) => c.points.length);
-
-    if (!curves.length) return;
-
-    const dateSet = new Set();
-    for (const c of curves) for (const p of c.points) dateSet.add(p.ms);
-    const dates = Array.from(dateSet).sort((a, b) => a - b);
-    if (!dates.length) return;
-
-    const state = {
-      selectedCurveId: (curves.find((c) => c.id === defaultCurveId) || curves[0]).id,
-      selectedDateMs: dates[0],
-      hoverDateMs: null,
-      viewMinMs: dates[0],
-      viewMaxMs: dates[dates.length - 1],
-      dragActive: false,
-      dragStartX: 0,
-      dragMinMs: dates[0],
-      dragMaxMs: dates[dates.length - 1],
-    };
-
-    const nearestPoint = (curve, targetMs) => {
-      if (!curve || !curve.points.length || !Number.isFinite(targetMs)) return null;
-      let best = curve.points[0];
-      let bestDist = Math.abs(best.ms - targetMs);
-      for (let i = 1; i < curve.points.length; i++) {
-        const p = curve.points[i];
-        const d = Math.abs(p.ms - targetMs);
-        if (d < bestDist) {
-          best = p;
-          bestDist = d;
-        }
-      }
+  function _simDrawChart(model) {
+    const host = tourSlotResults && tourSlotResults.querySelector('[data-role="sim-chart-host"]');
+    if (!host) return;
+    const w = Math.max(320, host.clientWidth || 640);
+    host.innerHTML = _simChartSvg(model, w);
+    const svg = host.querySelector('svg');
+    const readout = tourSlotResults.querySelector('[data-role="sim-readout"]');
+    const hov = svg && svg.querySelector('[data-role="sim-hover"]');
+    const hit = svg && svg.querySelector('.wm-sim-hit');
+    const g = SIM_VIEW._geom;
+    if (!svg || !hit || !g) return;
+    const nearest = (ev) => {
+      const r = svg.getBoundingClientRect();
+      const x = (ev.clientX - r.left) * (g.W / r.width);
+      let best = null;
+      let bd = Infinity;
+      for (const p of g.pts) { const d = Math.abs(g.xAt(p.iso) - x); if (d < bd) { bd = d; best = p; } }
       return best;
     };
-
-    const currentCurve = () => curves.find((c) => c.id === state.selectedCurveId) || curves[0];
-    const selectedPoint = () => {
-      const c = currentCurve();
-      const target = state.selectedDateMs;
-      return nearestPoint(c, target);
-    };
-
-    const hoverPoint = () => {
-      const c = currentCurve();
-      if (!Number.isFinite(state.hoverDateMs)) return null;
-      return nearestPoint(c, state.hoverDateMs);
-    };
-
-    const formatDate = (ms) => {
-      try {
-        return new Date(ms).toISOString().slice(0, 10);
-      } catch (_) {
-        return 'n/a';
+    hit.addEventListener('mousemove', (ev) => {
+      const p = nearest(ev);
+      if (!p || !hov) return;
+      const x = g.xAt(p.iso);
+      hov.style.display = '';
+      const ln = hov.querySelector('line');
+      ln.setAttribute('x1', x); ln.setAttribute('x2', x);
+      const c = hov.querySelector('circle');
+      c.setAttribute('cx', x); c.setAttribute('cy', g.yAt(p.sv));
+      if (readout) {
+        const yrs = Object.entries(p.years).sort().map(([y, v]) => `${y}: ${_simValueText(SIM_VIEW.metric, v)}`).join(' · ');
+        readout.hidden = false;
+        readout.textContent = `${_simDateShort(p.iso, true)} — ${_simValueText(SIM_VIEW.metric, p.v)}${yrs ? `  (${yrs})` : ''}`;
+        const r = svg.getBoundingClientRect();
+        const hr = host.getBoundingClientRect();
+        const px = (x / g.W) * r.width + (r.left - hr.left);
+        readout.style.left = `${Math.max(0, Math.min(hr.width - 260, px + 12 + (hr.left - readout.offsetParent.getBoundingClientRect().left)))}px`;
+        readout.style.top = `${(hr.top - readout.offsetParent.getBoundingClientRect().top) + 52}px`;
       }
-    };
-
-    const formatDirection = (dir) => {
-    const d = String(dir || '').toLowerCase();
-    return d === 'reverse' ? i18nT('sim.dir.reverse') : i18nT('sim.dir.forward');
-    };
-
-    const formatXAxisLabel = (ms) => {
-      try {
-        return new Date(ms).toLocaleDateString(_uiLocale(), {
-          weekday: 'short',
-          month: 'short',
-          day: 'numeric',
-          timeZone: 'UTC',
-        });
-      } catch (_) {
-        return formatDate(ms);
-      }
-    };
-
-    const niceStep = (v) => {
-      const x = Math.max(1e-6, Number(v) || 1);
-      const p = Math.pow(10, Math.floor(Math.log10(x)));
-      const n = x / p;
-      if (n <= 1) return 1 * p;
-      if (n <= 2) return 2 * p;
-      if (n <= 5) return 5 * p;
-      return 10 * p;
-    };
-
-    const renderLegend = () => {
-      legendHost.innerHTML = curves.map((c) => {
-        const active = c.id === state.selectedCurveId;
-        return `<button type="button" class="wm-slot-curve-pill${active ? ' is-active' : ''}" data-curve-id="${_htmlEsc(c.id)}"><span class="wm-slot-curve-swatch" style="background:${_htmlEsc(c.color)}"></span>${_htmlEsc(c.label)}</button>`;
-      }).join('');
-      const selectedCurve = currentCurve();
-      titleHost.textContent = selectedCurve ? `${selectedCurve.label} (${selectedCurve.unit})` : i18nT('sim.chart.title');
-      legendHost.querySelectorAll('[data-curve-id]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const id = String(btn.getAttribute('data-curve-id') || '');
-          if (!id) return;
-          state.selectedCurveId = id;
-          const pt = selectedPoint();
-          if (pt) state.selectedDateMs = pt.ms;
-          renderLegend();
-          renderGraph();
-          renderReadout();
-        });
-      });
-    };
-
-    const renderReadout = () => {
-      const curve = currentCurve();
-      const selected = selectedPoint();
-      const hover = hoverPoint();
-      if (!curve || !selected) {
-        readoutHost.textContent = i18nT('sim.readout.none');
-        applyBtn.disabled = true;
-        return;
-      }
-      const selectedRank = curve.optimaMap.get(selected.iso);
-      const selectedLine = i18nT('sim.readout.selected', { label: curve.valueLabel, value: fmtN(selected.value, 2), unit: curve.unit, date: _fmtLocaleDate(selected.iso), dir: formatDirection(selected.direction) })
-        + (selectedRank ? ` · ${i18nT('sim.readout.optimum', { rank: selectedRank })}` : '');
-      let hoverLine = '';
-      if (hover) {
-        const hoverRank = curve.optimaMap.get(hover.iso);
-        hoverLine = i18nT('sim.readout.hover', { label: curve.valueLabel, value: fmtN(hover.value, 2), unit: curve.unit, date: _fmtLocaleDate(hover.iso), dir: formatDirection(hover.direction) })
-          + (hoverRank ? ` · ${i18nT('sim.readout.optimum', { rank: hoverRank })}` : '');
-      } else {
-        hoverLine = i18nT('sim.readout.hoverHint');
-      }
-      readoutHost.innerHTML = `<div>${_htmlEsc(selectedLine)}</div><div class="wm-slot-readout-sub">${_htmlEsc(hoverLine)}</div>`;
-      applyBtn.disabled = false;
-    };
-
-    const renderGraph = () => {
-      const minX = dates[0];
-      const maxX = dates[dates.length - 1];
-      const fullSpan = Math.max(86400000, maxX - minX);
-      let viewMin = Math.max(minX, Math.min(maxX - 86400000, Number(state.viewMinMs) || minX));
-      let viewMax = Math.min(maxX, Math.max(minX + 86400000, Number(state.viewMaxMs) || maxX));
-      if (viewMax - viewMin < 86400000) {
-        viewMin = minX;
-        viewMax = maxX;
-      }
-      state.viewMinMs = viewMin;
-      state.viewMaxMs = viewMax;
-
-      const selected = currentCurve();
-      const curveStats = new Map();
-      for (const c of curves) {
-        const finiteVals = c.points.map((p) => Number(p.value)).filter(Number.isFinite);
-        const vmin = Math.min(...finiteVals);
-        const vmax = Math.max(...finiteVals);
-        curveStats.set(c.id, {
-          min: Number.isFinite(vmin) ? vmin : 0.0,
-          max: Number.isFinite(vmax) ? vmax : 1.0,
-        });
-      }
-
-      const selectedVisible = selected.points.filter((p) => p.ms >= viewMin && p.ms <= viewMax).map((p) => Number(p.value)).filter(Number.isFinite);
-      let visibleMin = selectedVisible.length ? Math.min(...selectedVisible) : 0.0;
-      let visibleMax = selectedVisible.length ? Math.max(...selectedVisible) : 1.0;
-      if (!(visibleMax > visibleMin)) {
-        const pad = Math.max(1.0, Math.abs(visibleMax) * 0.1);
-        visibleMin -= pad;
-        visibleMax += pad;
-      }
-      const visibleRange = visibleMax - visibleMin;
-      const valuePad = Math.max(1e-6, visibleRange * 0.08);
-      const yMin = visibleMin - valuePad;
-      const yMax = visibleMax + valuePad;
-
-      const hostWidth = Math.max(320, Math.round(Number((svg.parentElement && svg.parentElement.clientWidth) || tourSlotResults.clientWidth || 980)));
-      const W = Math.max(320, hostWidth - 2);
-      const H = Math.max(320, Math.min(560, Math.round(W * 0.62)));
-      svg.style.height = `${H}px`;
-      const padL = 70;
-      const padR = 26;
-      const padT = 18;
-      const padB = 62;
-      const pw = W - padL - padR;
-      const ph = H - padT - padB;
-      const xAt = (ms) => {
-        if (viewMax <= viewMin) return padL + pw / 2;
-        return padL + ((ms - viewMin) / (viewMax - viewMin)) * pw;
-      };
-      const yAt = (v) => {
-        const vv = Number(v);
-        const t = (vv - yMin) / Math.max(1e-9, yMax - yMin);
-        return padT + (ph - Math.max(0, Math.min(1, t)) * ph);
-      };
-
-      const yStep = niceStep((yMax - yMin) / 6);
-      const yStart = Math.floor(yMin / yStep) * yStep;
-      const yEnd = Math.ceil(yMax / yStep) * yStep;
-      const yTicks = [];
-      for (let y = yStart; y <= yEnd + 1e-9; y += yStep) yTicks.push(y);
-      const yMinor = yStep / 2;
-
-      const grid = [];
-      for (let y = yStart; y <= yEnd + 1e-9; y += yMinor) {
-        if (y < yMin - yMinor || y > yMax + yMinor) continue;
-        const yy = yAt(y).toFixed(2);
-        const major = Math.abs((y / yStep) - Math.round(y / yStep)) < 1e-6;
-        grid.push(`<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="${major ? 'rgba(30,41,59,0.28)' : 'rgba(148,163,184,0.18)'}" stroke-width="1"/>`);
-      }
-
-      const spanDays = Math.max(1, Math.round((viewMax - viewMin) / 86400000));
-      let tickStepDays = 7;
-      let tickMajorEvery = 1;
-      if (spanDays <= 14) {
-        tickStepDays = 1;
-        tickMajorEvery = 1;
-      } else if (spanDays <= 24) {
-        tickStepDays = 2;
-        tickMajorEvery = 1;
-      } else if (spanDays <= 35) {
-        tickStepDays = 3;
-        tickMajorEvery = 1;
-      } else if (spanDays <= 55) {
-        tickStepDays = 7;
-        tickMajorEvery = 1;
-      } else if (spanDays <= 80) {
-        tickStepDays = 14;
-        tickMajorEvery = 1;
-      } else if (spanDays <= 180) {
-        tickStepDays = 21;
-        tickMajorEvery = 1;
-      } else {
-        tickStepDays = 35;
-        tickMajorEvery = 1;
-      }
-      const firstTick = Math.floor(viewMin / 86400000) * 86400000;
-      const majorCountEstimate = Math.max(1, Math.floor(spanDays / Math.max(1, tickStepDays)) + 1);
-      const labelEvery = (majorCountEstimate > Math.max(6, Math.floor(pw / 120))) ? 2 : 1;
-      let tickIdx = 0;
-      let majorLabelIdx = 0;
-      for (let ms = firstTick; ms <= viewMax + (tickStepDays * 86400000); ms += tickStepDays * 86400000) {
-        if (ms < viewMin || ms > viewMax) {
-          tickIdx += 1;
-          continue;
-        }
-        const xx = xAt(ms).toFixed(2);
-        const major = (tickIdx % tickMajorEvery) === 0;
-        grid.push(`<line x1="${xx}" y1="${padT}" x2="${xx}" y2="${padT + ph}" stroke="${major ? 'rgba(30,41,59,0.28)' : 'rgba(148,163,184,0.18)'}" stroke-width="1"/>`);
-        if (major) {
-          grid.push(`<line x1="${xx}" y1="${(padT + ph).toFixed(2)}" x2="${xx}" y2="${(padT + ph + 8).toFixed(2)}" stroke="rgba(51,65,85,0.55)" stroke-width="1.2"/>`);
-          const lbl = formatXAxisLabel(ms);
-          if ((majorLabelIdx % labelEvery) === 0) {
-            grid.push(`<text x="${xx}" y="${H - 26}" text-anchor="middle" font-size="10" fill="#334155" font-weight="700">${_htmlEsc(lbl)}</text>`);
-          }
-          majorLabelIdx += 1;
-        }
-        tickIdx += 1;
-      }
-
-      const paths = [];
-      for (const c of curves) {
-        const st = curveStats.get(c.id) || { min: 0, max: 1 };
-        const cMin = Number(st.min);
-        const cMax = Number(st.max);
-        const visible = c.points.filter((p) => p.ms >= viewMin && p.ms <= viewMax);
-        if (!visible.length) continue;
-        const d = visible.map((p, idx) => {
-          let yVal = Number(p.value);
-          if (c.id !== selected.id) {
-            if (cMax > cMin) {
-              const t = (Number(p.value) - cMin) / (cMax - cMin);
-              yVal = yMin + Math.max(0, Math.min(1, t)) * (yMax - yMin);
-            } else {
-              yVal = (yMin + yMax) * 0.5;
-            }
-          }
-          return `${idx === 0 ? 'M' : 'L'} ${xAt(p.ms).toFixed(2)} ${yAt(yVal).toFixed(2)}`;
-        }).join(' ');
-        const active = c.id === state.selectedCurveId;
-        paths.push(`<path d="${d}" fill="none" stroke="${c.color}" stroke-width="${active ? 3.2 : 1.7}" opacity="${active ? 0.98 : 0.42}" data-curve-path="${_htmlEsc(c.id)}"/>`);
-      }
-
-      const selPt = selectedPoint();
-      const hovPt = hoverPoint();
-      const markers = [];
-      if (selected) {
-        for (const p of selected.points) {
-          if (p.ms < viewMin || p.ms > viewMax) continue;
-          const rank = selected.optimaMap.get(p.iso);
-          if (!rank) continue;
-          const cx = xAt(p.ms).toFixed(2);
-          const cy = yAt(p.value).toFixed(2);
-          markers.push(`<circle cx="${cx}" cy="${cy}" r="4.2" fill="${selected.color}" stroke="#fff" stroke-width="1.4"/>`);
-          markers.push(`<text x="${cx}" y="${(Number(cy) - 8).toFixed(2)}" text-anchor="middle" font-size="10" fill="${selected.color}" font-weight="800">#${rank}</text>`);
-        }
-      }
-
-      const selectedX = selPt ? xAt(selPt.ms) : null;
-      const hoverX = hovPt ? xAt(hovPt.ms) : null;
-      const cursor = Number.isFinite(selectedX)
-        ? `<line x1="${selectedX.toFixed(2)}" y1="${padT}" x2="${selectedX.toFixed(2)}" y2="${padT + ph}" stroke="rgba(15,23,42,0.55)" stroke-width="1.3" stroke-dasharray="4 3"/>`
-        : '';
-      const hoverCursor = Number.isFinite(hoverX)
-        ? `<line x1="${hoverX.toFixed(2)}" y1="${padT}" x2="${hoverX.toFixed(2)}" y2="${padT + ph}" stroke="rgba(15,118,110,0.35)" stroke-width="1.1" stroke-dasharray="2 3"/>`
-        : '';
-      const selectedDot = (selPt && Number.isFinite(selectedX))
-        ? `<circle cx="${selectedX.toFixed(2)}" cy="${yAt(selPt.value).toFixed(2)}" r="4.8" fill="${selected.color}" stroke="#ffffff" stroke-width="1.7"/>`
-        : '';
-
-      const yLabelX = padL - 8;
-      const yLabels = yTicks
-        .filter((y) => y >= yMin - (yStep * 0.1) && y <= yMax + (yStep * 0.1))
-        .map((y) => `<text x="${yLabelX.toFixed(2)}" y="${(yAt(y) + 3).toFixed(2)}" text-anchor="end" font-size="10" fill="#475569" font-weight="700">${_htmlEsc(fmtN(y, 1))}</text>`)
-        .join('');
-
-      const betterArrowUp = !!selected.higherIsBetter;
-      const arrowCenterX = Math.max(10, yLabelX - 36);
-      const arrowTop = padT + (ph * 0.06);
-      const arrowBottom = padT + (ph * 0.94);
-      const arrowTotal = Math.max(24, arrowBottom - arrowTop);
-      const shaftWidth = 5;
-      const headLen = Math.max(8, Math.min(12, arrowTotal * 0.07));
-      const headWidth = shaftWidth * 2.2;
-      const halfShaft = shaftWidth * 0.5;
-      const halfHead = headWidth * 0.5;
-      const gradId = 'wmSlotBetterGrad';
-      const defs = betterArrowUp
-        ? `<defs><linearGradient id="${gradId}" x1="0" y1="1" x2="0" y2="0"><stop offset="0%" stop-color="#E53935"/><stop offset="50%" stop-color="#FBC02D"/><stop offset="100%" stop-color="#43A047"/></linearGradient></defs>`
-        : `<defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#E53935"/><stop offset="50%" stop-color="#FBC02D"/><stop offset="100%" stop-color="#43A047"/></linearGradient></defs>`;
-      const arrowPath = betterArrowUp
-        ? [
-          `M ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowBottom).toFixed(2)}`,
-          `L ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
-          `L ${(arrowCenterX - halfHead).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
-          `L ${(arrowCenterX).toFixed(2)} ${(arrowTop).toFixed(2)}`,
-          `L ${(arrowCenterX + halfHead).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
-          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowTop + headLen).toFixed(2)}`,
-          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowBottom).toFixed(2)}`,
-          'Z',
-        ].join(' ')
-        : [
-          `M ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowTop).toFixed(2)}`,
-          `L ${(arrowCenterX - halfShaft).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
-          `L ${(arrowCenterX - halfHead).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
-          `L ${(arrowCenterX).toFixed(2)} ${(arrowBottom).toFixed(2)}`,
-          `L ${(arrowCenterX + halfHead).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
-          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowBottom - headLen).toFixed(2)}`,
-          `L ${(arrowCenterX + halfShaft).toFixed(2)} ${(arrowTop).toFixed(2)}`,
-          'Z',
-        ].join(' ');
-      const greenZoneY = betterArrowUp ? (arrowTop + headLen + 8) : (arrowBottom - headLen - 8);
-      const betterTextX = arrowCenterX - (headWidth * 0.95);
-      const betterLabel = `<text x="${betterTextX.toFixed(2)}" y="${greenZoneY.toFixed(2)}" text-anchor="middle" font-size="10" fill="#2f5d3a" font-weight="800" transform="rotate(-90 ${betterTextX.toFixed(2)} ${greenZoneY.toFixed(2)})">better</text>`;
-
-      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      svg.innerHTML = `
-        ${defs}
-        <rect x="0" y="0" width="${W}" height="${H}" fill="rgba(255,255,255,0.98)"/>
-        <rect x="0.5" y="0.5" width="${(W - 1).toFixed(2)}" height="${(H - 1).toFixed(2)}" fill="none" stroke="rgba(148,163,184,0.55)" stroke-width="1"/>
-        ${grid.join('')}
-        <line x1="${padL}" y1="${padT + ph}" x2="${W - padR}" y2="${padT + ph}" stroke="rgba(51,65,85,0.4)" stroke-width="1"/>
-        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + ph}" stroke="rgba(51,65,85,0.42)" stroke-width="1"/>
-        <path d="${arrowPath}" fill="url(#${gradId})" opacity="0.96"/>
-        ${betterLabel}
-        ${yLabels}
-        ${paths.join('')}
-        ${markers.join('')}
-        ${cursor}
-        ${hoverCursor}
-        ${selectedDot}
-        <text x="${(padL + pw * 0.5).toFixed(2)}" y="${(H - 8).toFixed(2)}" text-anchor="middle" font-size="12" fill="#334155" font-weight="800">${_htmlEsc(i18nT('sim.chart.xAxis', { n: fmtN(totalTourDays, 0) }))}</text>
-      `;
-
-      svg.querySelectorAll('[data-curve-path]').forEach((path) => {
-        path.addEventListener('click', () => {
-          const id = String(path.getAttribute('data-curve-path') || '');
-          if (!id) return;
-          state.selectedCurveId = id;
-          renderLegend();
-          renderGraph();
-          renderReadout();
-        });
-      });
-
-      const onPointer = (ev) => {
-        const rect = svg.getBoundingClientRect();
-        const px = Math.max(padL, Math.min(W - padR, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W));
-        const t = (px - padL) / Math.max(1, pw);
-        const ms = viewMin + Math.max(0, Math.min(1, t)) * (viewMax - viewMin);
-        state.hoverDateMs = ms;
-        renderGraph();
-        renderReadout();
-      };
-
-      svg.onmousemove = (ev) => {
-        if (state.dragActive) {
-          const rect = svg.getBoundingClientRect();
-          const dxPx = ev.clientX - state.dragStartX;
-          const span = state.dragMaxMs - state.dragMinMs;
-          const dxMs = (dxPx / Math.max(1, rect.width)) * span;
-          let nextMin = state.dragMinMs - dxMs;
-          let nextMax = state.dragMaxMs - dxMs;
-          if (nextMin < minX) {
-            nextMax += (minX - nextMin);
-            nextMin = minX;
-          }
-          if (nextMax > maxX) {
-            nextMin -= (nextMax - maxX);
-            nextMax = maxX;
-          }
-          state.viewMinMs = Math.max(minX, nextMin);
-          state.viewMaxMs = Math.min(maxX, nextMax);
-          renderGraph();
-          renderReadout();
-          return;
-        }
-        onPointer(ev);
-      };
-
-      svg.onclick = (ev) => {
-        const rect = svg.getBoundingClientRect();
-        const px = Math.max(padL, Math.min(W - padR, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W));
-        const t = (px - padL) / Math.max(1, pw);
-        const ms = viewMin + Math.max(0, Math.min(1, t)) * (viewMax - viewMin);
-        const p = nearestPoint(currentCurve(), ms);
-        if (p) state.selectedDateMs = p.ms;
-        renderGraph();
-        renderReadout();
-      };
-
-      svg.onmousedown = (ev) => {
-        state.dragActive = true;
-        state.dragStartX = ev.clientX;
-        state.dragMinMs = state.viewMinMs;
-        state.dragMaxMs = state.viewMaxMs;
-        try { svg.style.cursor = 'grabbing'; } catch (_) {}
-      };
-
-      svg.onmouseup = () => {
-        state.dragActive = false;
-        try { svg.style.cursor = 'crosshair'; } catch (_) {}
-      };
-
-      svg.onwheel = (ev) => {
-        try { ev.preventDefault(); } catch (_) {}
-        const rect = svg.getBoundingClientRect();
-        const px = Math.max(padL, Math.min(W - padR, ((ev.clientX - rect.left) / Math.max(1, rect.width)) * W));
-        const t = (px - padL) / Math.max(1, pw);
-        const centerMs = viewMin + Math.max(0, Math.min(1, t)) * (viewMax - viewMin);
-        const span = Math.max(86400000, viewMax - viewMin);
-        const zoom = ev.deltaY < 0 ? 0.85 : 1.18;
-        const minVisibleSlots = slotStepDays <= 1 ? 7 : 4;
-        const minSpan = minVisibleSlots * slotStepDays * 86400000;
-        const maxSpan = fullSpan;
-        let nextSpan = Math.max(minSpan, Math.min(maxSpan, span * zoom));
-        let nextMin = centerMs - (centerMs - viewMin) * (nextSpan / span);
-        let nextMax = nextMin + nextSpan;
-        if (nextMin < minX) {
-          nextMax += (minX - nextMin);
-          nextMin = minX;
-        }
-        if (nextMax > maxX) {
-          nextMin -= (nextMax - maxX);
-          nextMax = maxX;
-        }
-        state.viewMinMs = Math.max(minX, nextMin);
-        state.viewMaxMs = Math.min(maxX, nextMax);
-        renderGraph();
-        renderReadout();
-      };
-
-      svg.onmouseleave = () => {
-        state.hoverDateMs = null;
-        state.dragActive = false;
-        try { svg.style.cursor = 'crosshair'; } catch (_) {}
-        renderGraph();
-        renderReadout();
-      };
-
-      svg.onmouseenter = () => {
-        try { svg.style.cursor = 'crosshair'; } catch (_) {}
-      };
-    };
-
-    resetBtn.addEventListener('click', () => {
-      state.viewMinMs = dates[0];
-      state.viewMaxMs = dates[dates.length - 1];
-      renderGraph();
-      renderReadout();
+      SIM_VIEW.hoverIso = p.iso;
     });
-
-    applyBtn.addEventListener('click', () => {
-      const curve = currentCurve();
-      const point = selectedPoint();
-      if (!curve || !point) return;
-      applySlot(point.iso, point.direction, curve.label);
+    hit.addEventListener('mouseleave', () => {
+      if (hov) hov.style.display = 'none';
+      if (readout) readout.hidden = true;
+      SIM_VIEW.hoverIso = null;
     });
+    // A click only marks a candidate date; the tour changes with "Apply selected departure date".
+    hit.addEventListener('click', (ev) => {
+      const p = nearest(ev);
+      if (!p) return;
+      SIM_VIEW.selectedIso = p.iso;
+      _simRefreshSelection(model);
+    });
+  }
 
-    renderLegend();
-    renderGraph();
-    renderReadout();
+  function _simRefreshSelection(model) {
+    _simDrawChart(model);
+    const selEl = tourSlotResults.querySelector('[data-role="sim-selection"]');
+    if (selEl) selEl.textContent = _simSelectionText(model);
+    tourSlotResults.querySelectorAll('.wm-sim-top-row').forEach((tr) => tr.classList.toggle('is-selected', tr.dataset.iso === SIM_VIEW.selectedIso));
+  }
+
+  function _simBind(model) {
+    tourSlotResults.querySelectorAll('[data-sim-metric]').forEach((btn) => btn.addEventListener('click', () => {
+      SIM_VIEW.metric = String(btn.dataset.simMetric || 'lucky');
+      tourSlotResults.querySelectorAll('[data-sim-metric]').forEach((b) => b.setAttribute('aria-selected', b === btn ? 'true' : 'false'));
+      const leg = tourSlotResults.querySelector('.wm-sim-legend');
+      if (leg) leg.outerHTML = _simLegendHtml(model);
+      _simDrawChart(model);
+    }));
+    tourSlotResults.querySelectorAll('.wm-sim-top-row').forEach((tr) => {
+      const pick = () => { SIM_VIEW.selectedIso = tr.dataset.iso; _simRefreshSelection(model); };
+      tr.addEventListener('click', pick);
+      tr.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); } });
+    });
+    const reset = document.getElementById('wmSlotResetView');
+    if (reset) reset.addEventListener('click', () => {
+      SIM_VIEW.selectedIso = model.best.iso;
+      SIM_VIEW.metric = 'lucky';
+      _renderTourSlotOptimizerResults(TOUR_SLOT_LAST_RESULT);
+    });
+    const apply = document.getElementById('wmSlotApplySelected');
+    if (apply) apply.addEventListener('click', () => {
+      const iso = SIM_VIEW.selectedIso || model.best.iso;
+      const p = model.series.lucky.byIso.get(iso);
+      _simApplySlot(iso, p ? p.dir : model.best.dir);
+    });
+    if (!SIM_VIEW._resizeBound) {
+      SIM_VIEW._resizeBound = true;
+      window.addEventListener('resize', () => {
+        try {
+          const panel = document.getElementById('simResultsPanel');
+          if (panel && !panel.hidden && TOUR_SLOT_LAST_RESULT) _simDrawChart(_simModel(TOUR_SLOT_LAST_RESULT));
+        } catch (_) {}
+      });
+    }
+  }
+
+  // Applies a start date to the tour: only the departure date (and the direction the
+  // simulation used) change; duration and rest days stay as they are.
+  function _simApplySlot(startIso, direction) {
+    try {
+      const start = String(startIso || '').slice(0, 10);
+      const dir = String(direction || 'forward').toLowerCase();
+      if (startDateInput && /^\d{4}-\d{2}-\d{2}$/.test(start)) {
+        startDateInput.value = start;
+        try { startDateInput.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+      }
+      _applyReverseTourState(dir === 'reverse', { refresh: false });
+      try { _tourSyncTimelineFromInputs(); } catch (_) {}
+      try { _tourSyncArrivalInputFromInputs(); } catch (_) {}
+      markDataStale();
+      try {
+        OFFLINE_FALLBACK_ACTIVE = false;
+        if (LAST_PROFILE) loadMap({ ...(LAST_LOAD_OPTS || {}), weatherOnly: true, forceRestart: true });
+        else loadMap({ ...(LAST_LOAD_OPTS || {}), forceRestart: true });
+      } catch (_) {}
+      _setTourSlotStatus(i18nMsg('status.sim.appliedSlotFromRefreshStarted', { start: _simDateLong(start), dir: i18nT(dir === 'reverse' ? 'sim.dir.reverse' : 'sim.dir.forward'), curveLabel: i18nT('sim.curve.most_lucky_days') }));
+    } catch (_) {}
+  }
+
+  // Simulation tab: the reference period comes from the Weather selection (read-only).
+  function _renderSimReference() {
+    try {
+      const el = document.getElementById('tourSlotReference');
+      if (el) el.textContent = i18nT('sim.ref.label', { ref: _simRefLabel(_strategicGetSelectedYears()) });
+      const panel = document.getElementById('simResultsPanel');
+      if (TOUR_SLOT_LAST_RESULT && panel && !panel.hidden) _renderTourSlotOptimizerResults(TOUR_SLOT_LAST_RESULT);
+      else if (TOUR_SLOT_LAST_RESULT) {
+        const wasHidden = !panel || panel.hidden;
+        _renderTourSlotOptimizerResults(TOUR_SLOT_LAST_RESULT);
+        if (wasHidden) _setSimResultsPanel(false);
+      }
+    } catch (_) {}
   }
 
   async function _pollTourSlotOptimizerResult() {
@@ -9962,7 +9857,7 @@
       const completed = Number(progress.completed || 0);
       const total = Math.max(1, Number(progress.total || 1));
       const pct = Math.max(0, Math.min(100, Math.round(100 * completed / total)));
-      _setOptimizerProgress(completed, total, 'Simulation run');
+      _setOptimizerProgress(completed, total);
       if (status === 'done') {
         _setTourSlotStatus(i18nMsg('status.sim.simulationRunComplete'));
         _finishOptimizerProgress(true);
@@ -10004,7 +9899,7 @@
       if (tourSlotResults) tourSlotResults.innerHTML = '';
       try { _setSimResultsPanel(false); } catch (_) {}
       _setTourSlotStatus(i18nMsg('status.sim.startingSimulationRun'));
-      _setOptimizerProgress(0, 1, 'Simulation run');
+      _setOptimizerProgress(0, 1);
       const res = await fetch('/api/tour_slot_optimizer/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -13955,6 +13850,8 @@
     try { if (setStrategicYears) _renderStrategicYearsButtons(setStrategicYears, years, _setStrategicYears); } catch (_) {}
     try { _renderTourWeatherYears(); } catch (_) {}
     try { _updateStrategicLegend(); } catch (_) {}
+    // Simulation tab shows (read-only) the same reference period; results become "outdated".
+    try { _renderSimReference(); } catch (_) {}
     // Explore climate panel: same selection, refetched for the selected point.
     try { if (!_tourIsActive()) _refreshClimateProfileSelection(); } catch (_) {}
     try {
@@ -21732,8 +21629,10 @@
     try { if (overnightStatusEl && !overnightStatusEl.dataset.i18nDyn) _setI18nText(overnightStatusEl, i18nMsg('overnight.statusIdle')); } catch (_) {}
     try { if (tourSlotStatus && !tourSlotStatus.dataset.i18nDyn) _setI18nText(tourSlotStatus, i18nMsg('sim.statusIdle')); } catch (_) {}
     try { _overnightUpdateSearchScopeText(); _overnightUpdatePanelCounts(); _overnightUpdateSearchButtonState(); } catch (_) {}
+    try { _renderSimReference(); } catch (_) {}
     window.addEventListener('wm:languagechange', () => {
       try { _overnightUpdateSearchScopeText(); _overnightUpdatePanelCounts(); _overnightUpdateSearchButtonState(); } catch (_) {}
+      try { const el = document.getElementById('tourSlotReference'); if (el) el.textContent = i18nT('sim.ref.label', { ref: _simRefLabel(_strategicGetSelectedYears()) }); } catch (_) {}
       try { _rerenderI18nTexts(); } catch (_) {}
       try { _renderRoadbookPanel(); } catch (_) {}
       try {

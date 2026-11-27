@@ -307,7 +307,7 @@
     .wm-tabpanel .wm-overnight-radius .value { font-size: 11.5px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
     /* Simulation */
     .wm-tabpanel .wm-slot-panel { display: flex; flex-direction: column; gap: 7px; margin: 0; padding: 0; border: 0; background: none; }
-    .wm-slot-params { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .wm-slot-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
     .wm-slot-param { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 10.5px; font-weight: 650; color: var(--wm-muted); }
     .wm-tabpanel .wm-slot-param select { width: 100%; min-width: 0; height: var(--wm-ctl-h); min-height: 0; padding: 0 4px; font-size: 11.5px; border-radius: var(--wm-r); }
     .wm-tabpanel .wm-slot-opt-btn { width: 100%; }
@@ -4146,6 +4146,123 @@
       .wm-sector-head { margin-bottom: 8px; }
       .wm-zone .wm-tabpanel { padding-top: 7px; gap: 6px; }
     }
+
+    /* ===== Simulation results: decision support panel over the map ====================== */
+    .wm-slot-ref { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: var(--wm-r); background: rgba(15,118,110,0.07);
+      color: var(--wm-accent-strong); font-size: 11.5px; line-height: 1.35; }
+    .wm-slot-ref .wm-ico { width: 14px; height: 14px; margin-top: 1px; }
+    .wm-float-panel.wm-sim-panel { z-index: 1950; top: 14px; left: 14px; right: 14px; bottom: auto; width: auto;
+      max-width: 1240px; max-height: calc(100% - 28px); border-radius: 14px; box-shadow: 0 18px 50px rgba(15,23,42,0.22); font-family: var(--wm-font);
+      container: wmsim / inline-size; }
+    .wm-sim-panel .wm-float-head { align-items: flex-start; padding: 16px 20px 10px; border-bottom: 0; }
+    .wm-sim-panel .wm-float-head h3 { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 750; }
+    .wm-sim-panel .wm-float-head h3 .wm-ico { width: 24px; height: 24px; color: var(--wm-ink); }
+    .wm-sim-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--wm-ink-2); }
+    .wm-sim-panel .wm-float-close { font-size: 26px; }
+    .wm-sim-panel .wm-float-body { padding: 4px 20px 18px; font-size: 13px; }
+    .wm-sim { display: flex; flex-direction: column; gap: 14px; color: var(--wm-ink); }
+    .wm-sim-ref { font-size: 12px; color: var(--wm-muted); margin-top: -6px; }
+    .wm-sim-stale { padding: 8px 12px; border-radius: 8px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; font-size: 12.5px; }
+    .wm-sim-muted { color: var(--wm-muted); font-size: 12px; }
+    .wm-sim-rel { display: grid; grid-template-columns: auto minmax(170px, 260px) minmax(0, 1fr); gap: 16px; align-items: center;
+      padding: 12px 16px; border: 1px solid var(--wm-line); border-radius: 12px; background: #fbfcfd; }
+    .wm-sim-rel-ico { width: 26px; height: 26px; color: var(--wm-accent); }
+    .wm-sim-rel-title { font-weight: 700; font-size: 13.5px; }
+    .wm-sim-rel-meter { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+    .wm-sim-rel-meter strong { font-size: 13.5px; color: var(--wm-accent-strong); white-space: nowrap; }
+    .wm-sim-rel-bar { flex: 1 1 auto; height: 8px; border-radius: 4px; background: #e2e8f0; overflow: hidden; }
+    .wm-sim-rel-bar i { display: block; height: 100%; border-radius: 4px; background: var(--wm-accent); }
+    .wm-sim-rel[data-level="medium"] .wm-sim-rel-bar i { background: #d97706; }
+    .wm-sim-rel[data-level="medium"] .wm-sim-rel-meter strong, .wm-sim-rel[data-level="medium"] .wm-sim-rel-ico { color: #b45309; }
+    .wm-sim-rel[data-level="low"] .wm-sim-rel-bar i, .wm-sim-rel[data-level="limited"] .wm-sim-rel-bar i { background: #dc2626; }
+    .wm-sim-rel[data-level="low"] .wm-sim-rel-meter strong, .wm-sim-rel[data-level="low"] .wm-sim-rel-ico,
+    .wm-sim-rel[data-level="limited"] .wm-sim-rel-meter strong, .wm-sim-rel[data-level="limited"] .wm-sim-rel-ico { color: #b91c1c; }
+    .wm-sim-rel[data-level="limited"] .wm-sim-rel-bar i { background: #94a3b8; }
+    .wm-sim-rel[data-level="limited"] .wm-sim-rel-meter strong, .wm-sim-rel[data-level="limited"] .wm-sim-rel-ico { color: #475569; }
+    .wm-sim-rel-text { font-size: 12.5px; line-height: 1.45; color: var(--wm-ink-2); border-left: 1px solid var(--wm-line); padding-left: 16px; }
+    .wm-sim-rel-how { margin-left: 6px; color: var(--wm-accent-strong); text-decoration: underline dotted; cursor: help; white-space: nowrap; }
+    .wm-sim-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .wm-sim-card { display: flex; gap: 10px; padding: 12px 14px; border: 1px solid var(--wm-line); border-radius: 12px; background: #fff; min-width: 0; }
+    .wm-sim-card.is-best { background: rgba(15,118,110,0.07); border-color: rgba(15,118,110,0.28); }
+    .wm-sim-card-ico { width: 24px; height: 24px; color: var(--wm-ink-2); flex: none; margin-top: 2px; }
+    .wm-sim-card.is-best .wm-sim-card-ico { color: var(--wm-accent); }
+    .wm-sim-card-body { min-width: 0; }
+    .wm-sim-card-label { font-size: 13px; font-weight: 600; color: var(--wm-ink-2); }
+    .wm-sim-card-value { font-size: 22px; font-weight: 750; line-height: 1.25; margin: 2px 0; font-variant-numeric: tabular-nums; }
+    .wm-sim-card-note { font-size: 12px; line-height: 1.35; color: var(--wm-muted); }
+    .wm-sim-chartbox { position: relative; border: 1px solid var(--wm-line); border-radius: 12px; padding: 12px 14px 10px; background: #fff; }
+    .wm-sim-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    .wm-sim-tab { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 16px; border-radius: 999px; border: 1px solid var(--wm-line-strong);
+      background: #fff; color: var(--wm-ink-2); font: 600 13px var(--wm-font); cursor: pointer; }
+    .wm-sim-tab .wm-ico { width: 16px; height: 16px; }
+    .wm-sim-tab:hover { border-color: var(--wm-accent); }
+    .wm-sim-tab[aria-selected="true"] { border-color: var(--wm-accent); background: rgba(15,118,110,0.08); color: var(--wm-accent-strong); }
+    .wm-sim-tab:focus-visible { outline: 2px solid var(--wm-accent-line); outline-offset: 2px; }
+    .wm-sim-chart-host { position: relative; width: 100%; }
+    .wm-sim-chart { display: block; width: 100%; height: auto; font-family: var(--wm-font); }
+    .wm-sim-grid { stroke: rgba(148,163,184,0.22); stroke-width: 1; }
+    .wm-sim-axis { stroke: rgba(100,116,139,0.55); stroke-width: 1; }
+    .wm-sim-tick { font-size: 11px; fill: #475569; }
+    .wm-sim-axis-title { font-size: 12px; font-weight: 700; fill: #334155; }
+    .wm-sim-band { fill: rgba(37,99,235,0.13); stroke: none; }
+    .wm-sim-line { fill: none; stroke: #2563eb; stroke-width: 2; stroke-linejoin: round; }
+    .wm-sim-best-line { stroke: var(--wm-accent); stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .wm-sim-best-dot { fill: #fff; stroke: var(--wm-accent); stroke-width: 3; }
+    .wm-sim-best-label rect { fill: var(--wm-accent); }
+    .wm-sim-best-label text { fill: #fff; font-size: 11.5px; font-weight: 700; }
+    .wm-sim-sel-line { stroke: #334155; stroke-width: 1.2; }
+    .wm-sim-sel-dot { fill: #334155; stroke: #fff; stroke-width: 1.5; }
+    .wm-sim-hover line { stroke: rgba(15,23,42,0.35); stroke-width: 1; }
+    .wm-sim-hover circle { fill: #2563eb; stroke: #fff; stroke-width: 1.5; }
+    .wm-sim-hit { cursor: crosshair; }
+    .wm-sim-readout { position: absolute; top: 40px; max-width: 320px; padding: 6px 9px; border-radius: 8px; background: rgba(15,23,42,0.88); color: #f8fafc;
+      font-size: 12px; line-height: 1.35; pointer-events: none; }
+    .wm-sim-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 22px; margin-top: 4px; font-size: 12px; color: var(--wm-ink-2); }
+    .wm-sim-legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .wm-sim-key-line { width: 22px; height: 2px; background: #2563eb; display: inline-block; }
+    .wm-sim-key-band { width: 22px; height: 11px; background: rgba(37,99,235,0.16); border-radius: 3px; display: inline-block; }
+    .wm-sim-key-best { width: 0; height: 13px; border-left: 2px dashed var(--wm-accent); display: inline-block; }
+    .wm-sim-bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); gap: 14px; }
+    .wm-sim-rec, .wm-sim-top { border: 1px solid var(--wm-line); border-radius: 12px; padding: 14px 16px; background: #fff; min-width: 0; }
+    .wm-sim-rec { background: rgba(15,118,110,0.05); border-color: rgba(15,118,110,0.2); }
+    .wm-sim-rec h4, .wm-sim-top h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 16px; font-weight: 750; }
+    .wm-sim-rec h4 { color: var(--wm-accent-strong); }
+    .wm-sim-rec h4 .wm-ico, .wm-sim-top h4 .wm-ico { width: 22px; height: 22px; }
+    .wm-sim-rec p { margin: 0 0 6px; line-height: 1.5; }
+    .wm-sim-rec ul { margin: 2px 0 8px; padding-left: 18px; line-height: 1.5; }
+    .wm-sim-rec-sub { font-size: 12px; font-weight: 700; color: var(--wm-ink-2); margin-top: 6px; }
+    .wm-sim-rec-basis { margin-top: 8px !important; }
+    .wm-sim-table-wrap { overflow-x: auto; }
+    .wm-sim-table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+    .wm-sim-table th { text-align: left; vertical-align: bottom; font-size: 11.5px; font-weight: 650; color: var(--wm-muted); padding: 4px 6px 6px; border-bottom: 1px solid var(--wm-line); }
+    .wm-sim-table td { padding: 7px 6px; border-bottom: 1px solid var(--wm-line); white-space: nowrap; }
+    .wm-sim-top-row { cursor: pointer; }
+    .wm-sim-top-row:hover, .wm-sim-top-row:focus-visible { background: rgba(15,118,110,0.05); outline: none; }
+    .wm-sim-top-row.is-selected td { background: rgba(15,118,110,0.09); }
+    .wm-sim-top-date { font-weight: 700; }
+    .wm-sim-rank { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #64748b; color: #fff; font-size: 11.5px; font-weight: 700; }
+    .wm-sim-top-row.is-best .wm-sim-rank { background: var(--wm-accent); }
+    .wm-sim-assess { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 650; background: #f1f5f9; color: #475569; }
+    .wm-sim-assess[data-assess="veryFavourable"] { background: rgba(22,163,74,0.14); color: #166534; }
+    .wm-sim-assess[data-assess="favourable"] { background: rgba(22,163,74,0.08); color: #15803d; }
+    .wm-sim-assess[data-assess="moderate"] { background: #fef3c7; color: #92400e; }
+    .wm-sim-assess[data-assess="unfavourable"] { background: #fee2e2; color: #991b1b; }
+    .wm-sim-actions { display: flex; align-items: center; gap: 12px; justify-content: flex-end; flex-wrap: wrap; }
+    .wm-sim-selection { flex: 1 1 260px; font-size: 12.5px; color: var(--wm-ink-2); }
+    .wm-sim-actions .wm-btn { min-height: 40px; padding: 0 18px; font-size: 13.5px; border-radius: 10px; gap: 8px; }
+    .wm-sim-actions .wm-btn .wm-ico { width: 17px; height: 17px; }
+    @container wmsim (max-width: 1180px) {
+      .wm-sim-bottom { grid-template-columns: minmax(0, 1fr); }
+    }
+    @container wmsim (max-width: 980px) {
+      .wm-sim-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .wm-sim-rel { grid-template-columns: auto minmax(0, 1fr); }
+      .wm-sim-rel-text { grid-column: 1 / -1; border-left: 0; padding-left: 0; }
+    }
+    @container wmsim (max-width: 560px) {
+      .wm-sim-cards { grid-template-columns: minmax(0, 1fr); }
+      .wm-sim-card-value { font-size: 19px; }
+    }
   </style>
 </head>
 <body>
@@ -4393,12 +4510,9 @@
                     <option value="forward" selected data-i18n="sim.dir.forward">Forward</option>
                     <option value="reverse" data-i18n="sim.dir.reverse">Backward</option>
                   </select></label>
-    <label class="wm-slot-param"><span data-i18n="sim.horizon">Years</span><select id="tourSlotHorizonYears" class="wm-slot-select wm-pref-select">
-                    <option value="1" data-i18n="sim.horizon.1">1 year</option>
-                    <option value="3" selected data-i18n="sim.horizon.3">3 years</option>
-                    <option value="5" data-i18n="sim.horizon.5">5 years</option>
-                  </select></label>
   </div>
+  <!-- read-only: the reference period is the Weather tab's reference-year selection -->
+  <div class="wm-slot-ref" role="note"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><span id="tourSlotReference">Historical reference: —</span></div>
   <button id="tourSlotOptimizeBtn" type="button" class="wm-btn wm-btn-primary wm-slot-opt-btn" data-i18n="sim.start">Start simulation</button>
   <div id="tourSlotStatus" class="wm-slot-status">Simulation run idle.</div>
   <button type="button" id="simResultsShowBtn" class="wm-s2-linkbtn" hidden><span data-i18n="sim.results.show">Show results chart</span> ›</button>
@@ -4902,9 +5016,12 @@
     <main id="mainPane" data-i18n-aria-label="nav.mainContent" aria-label="Main content">
       <div id="map"></div>
       <!-- Simulation results (chart, inspection, apply): too large for the fixed Sector 2 -->
-      <section id="simResultsPanel" class="wm-float-panel" hidden aria-labelledby="simResultsTitle">
+      <section id="simResultsPanel" class="wm-float-panel wm-sim-panel" hidden aria-labelledby="simResultsTitle">
         <header class="wm-float-head">
-          <h3 id="simResultsTitle" data-i18n="sim.results.title">Simulation results</h3>
+          <div class="wm-sim-head-text">
+            <h3 id="simResultsTitle"><svg class="wm-ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m10 8.5 5 3.5-5 3.5z"/></svg><span data-i18n="sim.results.title">Simulation results</span></h3>
+            <p id="simResultsSubtitle" class="wm-sim-subtitle"></p>
+          </div>
           <button type="button" id="simResultsClose" class="wm-float-close" data-i18n-aria-label="common.close" aria-label="Close">×</button>
         </header>
         <div class="wm-float-body"><div id="tourSlotResults" class="wm-slot-results"></div></div>
