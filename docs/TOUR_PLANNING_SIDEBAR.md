@@ -1,6 +1,6 @@
 # Tour Planning sidebar (Sectors 1–3) and UI languages
 
-Status: implemented on `explore/phase3-controls`, awaiting review. Phase 4 has not started.
+Status: implemented on `explore/phase3-controls`, refined in the UI consolidation (see section 6), awaiting review. Phase 4 has not started.
 
 ## 1. Architecture
 
@@ -71,7 +71,7 @@ Simulation results (chart and table) open in the floating panel `#simResultsPane
 | `prefsImportGpx` | Tour ▸ Import GPX, drop zone |
 | `prefsExportTourXls`, `prefsPrintTourPdf` | Export ▸ Excel / PDF |
 | `prefsShareSnapshot` | the share button on the map |
-| Plan Variants manager (`tourPlanManageBtn`, `tourPlanManager`, `tourPlanList`: load / duplicate / rename / delete / new local variants) | **not available in the UI** (decision for review). The local plan store stays for autosave and restore. Tours are files: Open / Save / Save As. |
+| Plan Variants manager (`tourPlanManageBtn`, `tourPlanManager`, `tourPlanList`: load / duplicate / rename / delete / new local variants) | Removed together with its code (UI consolidation): one tour = one TourBook. Tours are files: Open / Save / Save As. |
 | `advancedWeatherPrefs` wrapper, `strategicControls`, `tour*Row` wrappers | contents moved into groups D and Sectors 1/2 |
 
 The JavaScript handlers for removed elements are null-guarded. They were left in place and can be removed in a later cleanup.
@@ -126,15 +126,13 @@ The static English text in `index.html` is the fallback shown before the scripts
 2. Add the same key to every other locale. `tests/test_i18n_resources.py` fails if a locale is missing a key or changes its placeholders or markup.
 3. For a new language, add the file, a `<script>` tag before `i18n.js`, the `SUPPORTED` entry and an `<option>` in `#uiLanguage`.
 
-### Known untranslated areas (English fallback)
+### Deliberately not translated
 
-- Explore climate panel below the map: charts and cards.
-- Elevation and weather profile chart labels.
-- Map tooltips and popups.
-- The content of the PDF, Excel and CSV exports.
-- Simulation chart curve names and axes.
-- Verbose progress lines in "progress details" and the provider suffix of the stream-done message.
-- Diagnostics.
+- Technical field names in the calculation guide (`temp_hist_*`, `precipitation_mm`, …).
+- The Leaflet / OpenStreetMap / OpenTopoMap attribution.
+- Developer Tools diagnostics (log entries and subsystem names).
+- The PDF export with the Chinese UI uses English texts and dates: the standard PDF fonts
+  cannot draw Chinese characters. Excel and CSV are fully translated (CSV with UTF-8 BOM).
 
 ## 4. Design system
 
@@ -172,3 +170,62 @@ Tokens are defined in `index.html`:
   - sector contents;
   - only Sector 3 scrolls in every tab at 1280×800 and 1440×900;
   - removed controls are gone.
+
+## 6. UI consolidation (before Phase 4)
+
+### Header and sectors
+
+- **Mode selector:** the Explore / Tour Planning selector (`#modeNav`) is in the sidebar header (`#wmSidebarHeader`), next to the sidebar toggle and the product name. The map no longer has a mode switch (`#topNav` removed).
+- **Sector headers:** each zone starts with a `header.wm-sector-head`. Its title depends on the mode:
+
+  | Sector | Tour Planning | Explore | Header style |
+  |---|---|---|---|
+  | 1 | Tour | Climate map | teal band |
+  | 2 | Tasks | Reference data | pale teal |
+  | 3 | Preferences | Preferences | neutral grey, sticky |
+
+- **Separation:** the sidebar ground (`--wm-ground`) shows between the sectors (`--wm-sector-gap`: 16 px, 10 px at heights up to 1000 px, 8 px at heights up to 860 px).
+- **Backgrounds:** S1 white, S2 `#f2f7f7`, S3 `#f5f6f8`.
+- **Vertical space:** the duration badge sits right of its slider; the GPX file name is no longer shown in Sector 1.
+- **One visual language:** one font stack (`--wm-font`) and the teal accent for every selected or primary state: mode pill, tabs, chips, segmented controls, sliders, progress bar. The temperature, rain and wind gradient sliders keep their meaningful colours.
+
+### Reference years
+
+Seven mutually exclusive options in two rows, built by `_renderStrategicYearsButtons` (a radio group):
+
+- Row 1: All years, Last three years.
+- Row 2: 2025, 2024, 2023, 2022, 2021.
+
+How the selection is used:
+
+- **One state:** the selection is stored as its year list (`SETTINGS.strategicYears`). `_normalizeRefYears` maps any older combination to one option.
+- **Shared by both modes:** the same state drives the map overlay (`years=`), the Explore climate profile (`/api/explore/climate_profile?years=`), every climate label (derived from the years the server reports), the charts and the wind roses, and the Tour weather years.
+
+### Explore point climate
+
+`/api/explore/climate_profile` interpolates the clicked point bilinearly between the surrounding tile centres, the same scheme the map overlay draws (`_interpolation_tiles`, `_blend_climatology_rows`; wind as u/v vectors).
+
+- **Why:** before, it used the single nearest 50 km tile. Freiburg lies halfway between a Rhine-plain tile (7.51° E) and a Black Forest tile (8.19° E), so 500 m changed the annual mean by 2.6 K.
+- **`meta.spatial`:** lists the tiles, weights and distances.
+- **UI note:** the panel states that values come from a ~50 km grid and do not resolve local terrain.
+- **`years` parameter:** requests exact reference years. An incomplete year is rejected with HTTP 422.
+
+### Legend
+
+The climate legend is shown in Explore only (`_updateStrategicLegend`); Tour Planning never shows it.
+
+### One TourBook
+
+- **Tour files:** a tour file holds the GPX and one `tourPlan`, with no `tourPlans` and no `activePlanId`. An older file with several plans opens its active plan only.
+- **Browser storage:** the browser keeps one working copy (`wm_tour_plan_store_v1`). A store with several plans from the former variant manager is backed up once, unchanged, to `wm_tour_plan_store_v1_variants_backup`.
+
+### Tests
+
+- `tests/regression/test_ui_refinement.py`:
+  - header selector;
+  - sectors at 1280×800 and 1440×900;
+  - the seven reference-year options and their propagation to the overlay, the climate profile and the labels;
+  - no legend in Tour Planning;
+  - one TourBook: files, legacy file, variant backup;
+  - no missing translation or raw key in any of the five languages.
+- `tests/regression/test_offline_tile_lookup.py`: spatial continuity and explicit reference years.
