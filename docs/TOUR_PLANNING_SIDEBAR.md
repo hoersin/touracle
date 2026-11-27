@@ -229,3 +229,56 @@ The climate legend is shown in Explore only (`_updateStrategicLegend`); Tour Pla
   - one TourBook: files, legacy file, variant backup;
   - no missing translation or raw key in any of the five languages.
 - `tests/regression/test_offline_tile_lookup.py`: spatial continuity and explicit reference years.
+
+## 7. Simulation: one reference period, decision-support results
+
+### Single source of truth
+
+- **The setting:** the reference years are the Weather tab's selection (`SETTINGS.strategicYears` via `_strategicGetSelectedYears()`). It has seven exclusive options: All years, Last three years, 2025 … 2021.
+- **The Simulation tab** has no years selector of its own. It shows the period read-only (`#tourSlotReference`, e.g. "Historical reference: 2023–2025 (Last three years)") and sends exactly these years (`yearsSelected`) to `/api/tour_slot_optimizer/start`.
+- **The backend** keeps the old `horizonYears` fallback for other API clients only.
+- **Outdated results:** if the Weather selection changes after a run, the results panel says which period the results use and asks for a new run.
+
+### What the optimizer provides (methodology unchanged)
+
+- **Ranking:** start dates are scored and ranked as before.
+  - Objective: lucky days, tie-break on missing data, then on date.
+  - Same thresholds, same aggregation across years (median temperature, mean precipitation and wind).
+- **Additions, for reporting only** (they never enter scoring or ranking):
+  - **Per-year values:** `_get_offline_stats(include_per_year=True)` (simulation only) also returns the individual years it read anyway.
+  - **Per candidate:** the summary gains `per_year`, the same metrics computed for each reference year.
+  - **Per curve point:** each point gains `year_values` per reference year.
+  - **`meta.reliability`:** reference years requested and used, data coverage of the recommended start, and how many individual years put the recommended date among the best 20 % of start dates. A year without any variation does not count as confirming.
+
+  | Level | Conditions |
+  |---|---|
+  | High | ≥ 3 years assessed, all confirming, coverage ≥ 90 % |
+  | Medium | at least half of the years confirming, coverage ≥ 75 % |
+  | Low | otherwise |
+  | Not assessable | only one reference year |
+
+  The old gap-based `confidence` field is still returned but no longer shown.
+
+### Results panel (`#simResultsPanel`, `_renderTourSlotOptimizerResults`)
+
+- **Header:** title, subtitle with riding days and period, close button. The panel lies over the map and the TourBook column.
+- **Reliability:** level, its reasons, and a "How is this assessed?" tooltip.
+- **Cards:**
+  - **Best departure period:** the consecutive start dates around the best date that reach the same lucky-day count.
+  - **Average temperature:** mean daily temperature over all tour days.
+  - **Precipitation:** total ÷ tour days, plus the tour total.
+  - **Headwind:** headwind total ÷ riding days, i.e. the mean headwind component; tailwind counts as 0.
+- **Chart:**
+  - Tabs: Precipitation, Temperature, Headwind, Lucky days (default: Lucky days, the ranking objective).
+  - Line: the value for the reference period. With daily steps it is drawn as a centred 7-day average, stated in the legend.
+  - Band: the range of the individual reference years. It is drawn only with two or more years.
+  - Markers: dashed line for the recommended date.
+  - Interaction: hovering shows the exact value and the per-year values. A click only selects a candidate date.
+- **Recommendation:** comparisons with the median over all simulated start dates (differences under 10 % are not mentioned) and with the user's lucky-day temperature range. No other claims.
+- **Top 3:** the first three candidates of the optimizer ranking. Assessment by share of lucky days: very favourable ≥ 80 %, favourable ≥ 60 %, moderate ≥ 40 %, otherwise unfavourable.
+- **Actions:** "Reset view" returns to the recommended date and the Lucky days tab. "Apply selected departure date" (`_simApplySlot`) sets the start date and the simulated direction only; duration and rest days are unchanged, and the existing autosave and weather refresh follow.
+
+### Tests
+
+- `tests/regression/test_simulation_results.py` (9 tests, real UI).
+- `tests/test_tour_slot_optimizer.py`: per-year values leave the ranking unchanged; reliability levels.
