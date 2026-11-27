@@ -160,3 +160,42 @@ def test_climate_profile_uses_each_years_tile_at_the_point(two_layout_years):
     assert j['meta']['tile_ids_by_year']['2025'] != 'r31_c53'          # not the "-11" tile at 25 E
     temps = [p.get('mean_c') for m in j['temperature']['months'] for p in m['periods'] if p.get('mean_c') is not None]
     assert temps and all(abs(t - FREIBURG[1]) < 0.6 for t in temps), temps[:6]
+
+
+def _annual_mean(j):
+    temps = [p['mean_c'] for m in j['temperature']['months'] for p in m['periods'] if p.get('mean_c') is not None]
+    return sum(temps) / len(temps)
+
+
+def test_climate_profile_is_spatially_continuous_between_tile_centres(two_layout_years, tmp_path):
+    """A point halfway between two tile centres must not jump to one of them (Freiburg:
+    500 m changed the annual mean by 2.6 K with a nearest-tile lookup)."""
+    lat, lon_a = centre(R, 27, -11.0)
+    _lat, lon_b = centre(R, 28, -11.0)
+    mid = 0.5 * (lon_a + lon_b)
+    client = two_layout_years.app.test_client()
+    res = {}
+    for name, lon in (('west', mid - 0.0035), ('east', mid + 0.0035)):            # ~500 m apart
+        r = client.get('/api/explore/climate_profile', query_string={'lat': lat, 'lon': lon, 'years': '2025,2024'})
+        assert r.status_code == 200, r.get_json()
+        res[name] = r.get_json()
+    t_w, t_e = _annual_mean(res['west']), _annual_mean(res['east'])
+    assert abs(t_w - t_e) < 0.02, (t_w, t_e)                                      # nearest tile: ~0.67 K jump
+    assert abs(t_w - (mid - 0.0035)) < 0.02                                       # the value drawn on the map there
+    src = res['west']['meta']['spatial']['sources_by_year']['2025']
+    assert res['west']['meta']['spatial']['method'] == 'bilinear'
+    assert {s['tile_id'] for s in src} == {f'r{R}_c27', f'r{R}_c28'}
+    assert abs(sum(s['weight'] for s in src) - 1.0) < 1e-3
+    assert res['west']['meta']['spatial']['grid_km'] == TILE_KM
+
+
+def test_climate_profile_uses_exactly_the_requested_reference_years(two_layout_years):
+    client = two_layout_years.app.test_client()
+    for years, expect in (('2024', [2024]), ('2025,2024,2023', [2025, 2024, 2023]), ('2023,2025', [2025, 2023])):
+        r = client.get('/api/explore/climate_profile', query_string={'lat': FREIBURG[0], 'lon': FREIBURG[1], 'years': years})
+        assert r.status_code == 200, r.get_json()
+        meta = r.get_json()['meta']
+        assert meta['reference_years'] == expect and meta['reference_year_rule'] == 'explicit_years', meta
+        assert sorted(meta['spatial']['sources_by_year']) == sorted(str(y) for y in expect)
+    r = client.get('/api/explore/climate_profile', query_string={'lat': FREIBURG[0], 'lon': FREIBURG[1], 'years': '2019'})
+    assert r.status_code == 422 and r.get_json()['error']['code'] == 'incomplete-reference-year'

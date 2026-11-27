@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as _dt
 import math
+import bisect
 import calendar
 import re
 import requests
@@ -830,6 +831,142 @@ def _tile_id_for_point_or_edge(store: Any, lat: float, lon: float, *, max_distan
     except Exception:
         tile_id = None
     return str(tile_id) if tile_id else None
+
+
+def _store_tile_km(store: Any) -> float:
+    try:
+        return float(getattr(getattr(store, 'cfg', None), 'tile_km', 50.0) or 50.0)
+    except Exception:
+        return 50.0
+
+
+def _interpolation_tiles(store: Any, lat: float, lon: float) -> list[tuple[str, float, float, float]] | None:
+    """Tiles and weights for a point value interpolated like the Explore map overlay.
+
+    Bilinear between the real tile centres around the point: per grid row the two
+    centres bracketing the longitude (linear in longitude), then the two rows around
+    the latitude (linear in latitude). This is the scheme of the map overlay
+    (_sampleInterpolated in map.js), so a clicked point shows the value the map draws
+    there and moving the point a few hundred metres never jumps to another tile.
+    Missing neighbours (coverage edge, gaps) drop out and the remaining weights are
+    renormalised. Returns [(tile_id, weight, tile_lat, tile_lon)] or None when the
+    store has no tile index (callers then use the nearest tile).
+    """
+    try:
+        cfg = getattr(store, 'cfg', None)
+        load = getattr(store, '_load_tile_index', None)
+        if cfg is None or load is None:
+            return None
+        index = getattr(store, '_tile_index', None)
+        if index is None:
+            index = load()
+        lat_min = float(cfg.bbox[0])
+        tile_km = float(getattr(cfg, 'tile_km', 50.0) or 50.0)
+    except Exception:
+        return None
+    step_lat = tile_km / 111.32
+    fr = (float(lat) - lat_min) / step_lat - 0.5
+    row0 = int(math.floor(fr))
+    t_lat = fr - row0
+    coslat = max(0.05, math.cos(math.radians(float(lat))))
+    step_lon = tile_km / (111.32 * coslat)
+
+    def row_parts(row: int) -> list[tuple[str, float, float, float]]:
+        lst = index.get(int(row)) if isinstance(index, dict) else None
+        if not lst:
+            return []
+        i = bisect.bisect_left(lst, (float(lon), -math.inf, ''))
+        left = lst[i - 1] if i > 0 else None
+        right = lst[i] if i < len(lst) else None
+        # A neighbour further than one grid step away is not part of the cell around the point.
+        if left is not None and float(lon) - left[0] > 1.05 * step_lon:
+            left = None
+        if right is not None and right[0] - float(lon) > 1.05 * step_lon:
+            right = None
+        if left is not None and right is not None and right[0] > left[0]:
+            t = (float(lon) - left[0]) / (right[0] - left[0])
+            return [(left[2], 1.0 - t, left[1], left[0]), (right[2], t, right[1], right[0])]
+        one = left or right
+        return [(one[2], 1.0, one[1], one[0])] if one is not None else []
+
+    parts: list[tuple[str, float, float, float]] = []
+    for row, w_row in ((row0, 1.0 - t_lat), (row0 + 1, t_lat)):
+        rp = row_parts(row)
+        if not rp:
+            continue
+        parts.extend((tid, w * w_row, tlat, tlon) for tid, w, tlat, tlon in rp)
+    parts = [p for p in parts if p[1] > 1e-9]
+    total = sum(p[1] for p in parts)
+    if not parts or total <= 0:
+        return None
+    merged: dict[str, list[float]] = {}
+    for tid, w, tlat, tlon in parts:
+        acc = merged.setdefault(tid, [0.0, tlat, tlon])
+        acc[0] += w / total
+    return [(tid, v[0], v[1], v[2]) for tid, v in sorted(merged.items(), key=lambda kv: -kv[1][0])]
+
+
+_BLEND_SCALAR_FIELDS = (
+    ('temp_day_median', 'samples_day_means'),
+    ('temp_day_p25', 'samples_day_hours'),
+    ('temp_day_p75', 'samples_day_hours'),
+    ('precipitation_mm', 'samples_rain'),
+    ('wind_speed_ms', 'samples_wind'),
+)
+_BLEND_SAMPLE_FIELDS = ('samples_daily', 'samples_rain', 'samples_wind', 'samples_day_means', 'samples_day_hours')
+
+
+def _blend_climatology_rows(parts: list[tuple[list[dict[str, Any]], float]]) -> list[dict[str, Any]]:
+    """Weighted per-day combination of several tiles' climatology rows.
+
+    Scalars are weighted means over the tiles that have data for that day; the wind
+    direction is the direction of the weighted mean wind vector (speed x direction),
+    i.e. the wind field is interpolated as u/v components. Placeholder leap rows of a
+    tile never contribute.
+    """
+    parts = [(rows, float(w)) for rows, w in parts if rows and w > 0]
+    if not parts:
+        return []
+    if len(parts) == 1:
+        return parts[0][0]
+    maps = [(_group_rows_by_month_day(rows), w) for rows, w in parts]
+    keys = sorted({k for m, _w in maps for k in m.keys()})
+    out: list[dict[str, Any]] = []
+    for key in keys:
+        present = [(m[key], w) for m, w in maps if key in m]
+        real = [
+            (row, w) for row, w in present
+            if not _is_placeholder_leap_row(
+                key[0], key[1],
+                samples_daily=row.get('samples_daily'), samples_rain=row.get('samples_rain'),
+                samples_wind=row.get('samples_wind'), temp_day_median=row.get('temp_day_median'),
+                precipitation_mm=row.get('precipitation_mm'), wind_speed_ms=row.get('wind_speed_ms'),
+            )
+        ]
+        if not real:
+            out.append(dict(present[0][0]))
+            continue
+        item: dict[str, Any] = {'month': int(key[0]), 'day': int(key[1])}
+        for field, samples_key in _BLEND_SCALAR_FIELDS:
+            vals = [(float(r[field]), w) for r, w in real if r.get(field) is not None and int(r.get(samples_key) or 0) > 0]
+            sw = sum(w for _v, w in vals)
+            item[field] = (sum(v * w for v, w in vals) / sw) if sw > 0 else None
+        u = v = 0.0
+        sw = 0.0
+        for r, w in real:
+            if int(r.get('samples_wind') or 0) <= 0 or r.get('wind_dir_deg') is None or r.get('wind_speed_ms') is None:
+                continue
+            rad = math.radians(float(r['wind_dir_deg']))
+            spd = max(0.0, float(r['wind_speed_ms']))
+            u += w * spd * math.sin(rad)
+            v += w * spd * math.cos(rad)
+            sw += w
+        item['wind_dir_deg'] = (math.degrees(math.atan2(u, v)) % 360.0) if sw > 0 and math.hypot(u, v) > 1e-9 else (
+            next((float(r['wind_dir_deg']) for r, _w in real if r.get('wind_dir_deg') is not None), None))
+        for sk in _BLEND_SAMPLE_FIELDS:
+            item[sk] = max(int(r.get(sk) or 0) for r, _w in real)
+        out.append(item)
+    return out
 
 
 def _stores_union_bbox(stores: list[tuple[int, Any]]) -> tuple[float, float, float, float] | None:
@@ -3223,7 +3360,32 @@ def api_explore_climate_profile():
         ref_count = 3
     ref_count = max(1, min(5, int(ref_count)))
 
-    reference_years, audits = _resolve_complete_reference_years(ref_count)
+    # Explicit years (the Explore reference-year selection: all years, the last three
+    # or one single year) take precedence over the count; every requested year must be
+    # a complete reference year, otherwise the request fails instead of silently
+    # showing a different period.
+    explicit_years = _parse_years_csv(request.args.get('years'))
+    if explicit_years:
+        _latest, audits = _resolve_complete_reference_years(1)
+        complete_set = {int(a.get('year')) for a in audits if a.get('complete') and a.get('year') is not None}
+        if not audits:
+            for n in range(5, 0, -1):
+                ys, _a = _resolve_complete_reference_years(n)
+                if ys:
+                    complete_set = {int(y) for y in ys}
+                    break
+        missing = [y for y in explicit_years if y not in complete_set]
+        if missing:
+            return _api_error_response(
+                422,
+                'incomplete-reference-year',
+                f'Not a complete reference year: {", ".join(str(y) for y in missing)}',
+                details={'requested_years': explicit_years, 'available_complete_years': sorted(complete_set, reverse=True)},
+            )
+        reference_years = sorted(explicit_years, reverse=True)
+        ref_count = len(reference_years)
+    else:
+        reference_years, audits = _resolve_complete_reference_years(ref_count)
     timings_ms['reference_year_resolver'] = max(0.0, (time.perf_counter() - t_ref0) * 1000.0)
     if not reference_years:
         complete_years = sorted([int(a.get('year')) for a in audits if a.get('complete') and a.get('year') is not None], reverse=True)
@@ -3255,6 +3417,7 @@ def api_explore_climate_profile():
 
     year_rows: dict[int, list[dict[str, Any]]] = {}
     tile_ids_by_year: dict[int, str] = {}
+    sources_by_year: dict[int, list[dict[str, Any]]] = {}
     stores_by_year: dict[int, Any] = {}
     tile_id = str(tile_id_raw) if tile_id_raw else ''
 
@@ -3278,7 +3441,14 @@ def api_explore_climate_profile():
                     details={'tile_id': tile_id, 'year': int(year)},
                 )
             tile_ids_by_year[int(year)] = tile_id
-        else:
+            sources_by_year[int(year)] = [{'tile_id': tile_id, 'weight': 1.0}]
+            continue
+        # A point is interpolated between the surrounding tile centres, as the map
+        # overlay draws it. Without interpolation the value would jump wherever the
+        # nearest centre changes (Freiburg lies halfway between a Rhine-plain and a
+        # Black-Forest tile ~50 km apart: 500 m changed the annual mean by 2.6 K).
+        parts = _interpolation_tiles(store, float(point_lat), float(point_lon))
+        if not parts:
             candidate = _tile_id_for_point_or_edge(store, float(point_lat), float(point_lon))
             if not candidate:
                 return _api_error_response(
@@ -3287,28 +3457,41 @@ def api_explore_climate_profile():
                     f'No tile found for selected coordinates in year {year}',
                     details={'year': int(year), 'lat': float(point_lat), 'lon': float(point_lon)},
                 )
-            tile_ids_by_year[int(year)] = str(candidate)
+            c_lat, c_lon = _lookup_tile_center(store, str(candidate))
+            parts = [(str(candidate), 1.0, c_lat, c_lon)]
+        tile_ids_by_year[int(year)] = str(parts[0][0])
+        srcs = []
+        for tid, w, tlat, tlon in parts:
+            src = {'tile_id': str(tid), 'weight': round(float(w), 4),
+                   'lat': _finite_float(tlat), 'lon': _finite_float(tlon), 'distance_km': None}
+            if tlat is not None and tlon is not None:
+                src['distance_km'] = round(_haversine_km(float(point_lat), float(point_lon), float(tlat), float(tlon)), 1)
+            srcs.append(src)
+        sources_by_year[int(year)] = srcs
     timings_ms['tile_resolution'] = max(0.0, (time.perf_counter() - t_tile0) * 1000.0)
 
-    # Each year uses its own nearest real tile. The yearly databases do not share
-    # one grid layout, so the same place can carry different tile ids per year (and
-    # the same id can name different places); requiring one shared id would either
-    # fail or mix places.
+    # Each year uses its own real tiles. The yearly databases do not share one grid
+    # layout, so the same place can carry different tile ids per year (and the same id
+    # can name different places); requiring one shared id would either fail or mix places.
     if not tile_id:
         tile_id = tile_ids_by_year[int(reference_years[0])]
 
     t_rows0 = time.perf_counter()
     for year in reference_years:
-        year_tile = tile_ids_by_year[int(year)]
-        rows = _fetch_tile_climatology_rows(stores_by_year[int(year)], year_tile)
-        if not rows:
+        parts_rows: list[tuple[list[dict[str, Any]], float]] = []
+        for src in sources_by_year[int(year)]:
+            rows = _fetch_tile_climatology_rows(stores_by_year[int(year)], src['tile_id'])
+            if rows:
+                parts_rows.append((rows, float(src['weight'])))
+        if not parts_rows:
+            year_tile = tile_ids_by_year[int(year)]
             return _api_error_response(
                 422,
                 'missing-climatology-data',
                 f'No climatology data for tile {year_tile} in year {year}',
                 details={'tile_id': year_tile, 'year': int(year)},
             )
-        year_rows[int(year)] = rows
+        year_rows[int(year)] = _blend_climatology_rows(parts_rows)
     timings_ms['sqlite_row_fetch'] = max(0.0, (time.perf_counter() - t_rows0) * 1000.0)
 
     try:
@@ -3349,7 +3532,12 @@ def api_explore_climate_profile():
                 },
                 'reference_years': [int(y) for y in reference_years],
                 'reference_year_count': int(len(reference_years)),
-                'reference_year_rule': f'latest_{int(ref_count)}_complete_years',
+                'reference_year_rule': 'explicit_years' if explicit_years else f'latest_{int(ref_count)}_complete_years',
+                'spatial': {
+                    'method': 'bilinear' if any(len(v) > 1 for v in sources_by_year.values()) else 'single_tile',
+                    'grid_km': _store_tile_km(stores_by_year[int(reference_years[0])]),
+                    'sources_by_year': {str(y): v for y, v in sources_by_year.items()},
+                },
                 'timings_ms': {k: round(float(v), 2) for k, v in timings_ms.items()},
                 'units': {
                     'temperature': '°C',
