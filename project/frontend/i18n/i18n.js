@@ -27,10 +27,14 @@
   let lang = stored();
 
   function t(key, params) {
-    const k = String(key);
-    let s = R[lang] && Object.prototype.hasOwnProperty.call(R[lang], k) ? R[lang][k] : undefined;
-    if (s === undefined) {
-      if (lang !== 'en') missing.add(`${lang}:${k}`);
+  return tIn(lang, key, params);
+  }
+  
+  function tIn(l, key, params) {
+  const k = String(key);
+  let s = R[l] && Object.prototype.hasOwnProperty.call(R[l], k) ? R[l][k] : undefined;
+  if (s === undefined) {
+  if (l !== 'en') missing.add(`${l}:${k}`);
       s = R.en && Object.prototype.hasOwnProperty.call(R.en, k) ? R.en[k] : undefined;
     }
     if (s === undefined) {
@@ -88,7 +92,7 @@
     }
   }
 
-  window.WM_I18N = { t, apply, setLanguage, getLanguage: () => lang, locale, formatNumber, formatDate, monthName, SUPPORTED, missing };
+  window.WM_I18N = { t, tIn, apply, setLanguage, getLanguage: () => lang, locale, formatNumber, formatDate, monthName, SUPPORTED, missing };
 
   function boot() {
     apply();
