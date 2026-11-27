@@ -22,7 +22,7 @@ def test_req44_lifecycle_helpers_exist():
     source = _source()
     assert 'function createTourPlan(overrides = {})' in source
     assert 'function updateTourPlan(updater)' in source
-    assert 'function cloneTourPlan(sourcePlan, options = {})' in source
+    assert 'function cloneTourPlan' not in source             # only served the removed variant duplicate
 
 
 def test_req45_route_separation_validation_exists():

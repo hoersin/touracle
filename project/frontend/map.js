@@ -400,14 +400,10 @@
   const roadbookPanel = document.getElementById('roadbookPanel');
   const roadbookToggleBtn = document.getElementById('roadbookToggle');
   const roadbookResizeHandle = document.getElementById('roadbookResizeHandle');
-  const tourPlanManageBtn = document.getElementById('tourPlanManageBtn');
-  if (tourPlanManageBtn) tourPlanManageBtn.textContent = 'Plan Variants';
-  const tourPlanManager = document.getElementById('tourPlanManager');
   const tourPlanExportExcelBtn = document.getElementById('tourPlanExportExcelBtn');
   const tourPlanExportPdfBtn = document.getElementById('tourPlanExportPdfBtn');
   const tourPlanOpenInput = document.getElementById('tourPlanOpenInput');
   const tourPlanFileInfo = document.getElementById('tourPlanFileInfo');
-  const tourPlanList = document.getElementById('tourPlanList');
   const tourPlanDirtyBadge = document.getElementById('tourPlanDirty');
   const tourProjectTitleEl = document.getElementById('tourProjectTitle');
   const tourProjectStatusEl = document.getElementById('tourProjectStatus');
@@ -848,20 +844,6 @@
       },
     };
     return plan;
-  }
-
-  function cloneTourPlan(sourcePlan, options = {}) {
-    const base = (sourcePlan && typeof sourcePlan === 'object') ? sourcePlan : TOUR_PLAN;
-    const cloned = deserializeTourPlan(serializeTourPlan(base));
-    const now = Date.now();
-    cloned.id = String(options && options.id || _nextTourPlanId());
-    cloned.title = String(options && options.title || `${String(cloned.title || 'Tour plan')}_copy`);
-    cloned.routeId = String(options && options.routeId || cloned.routeId || 'route-local');
-    cloned.metadata = {
-      createdAt: now,
-      updatedAt: now,
-    };
-    return cloned;
   }
 
   function updateTourPlan(updater) {
@@ -2676,7 +2658,6 @@
   let ACTIVE_TOUR_PLAN_FILE_NAME = '';
   let TOUR_PLAN_IS_DIRTY = false;
   let TOUR_PLAN_AUTOSAVE_TIMER = 0;
-  let TOUR_PLAN_MANAGER_OPEN = false;
   const OVERNIGHT_TYPES = ['camping', 'hotel', 'hostel', 'guesthouse', 'bivouac', 'other'];
   const OVERNIGHT_SEARCH_CATEGORIES = ['camping', 'hotel', 'hostel', 'bivouac'];
   const OVERNIGHT_SEARCH_CATEGORIES_SELECTED = new Set(OVERNIGHT_SEARCH_CATEGORIES);
@@ -2726,13 +2707,37 @@
     }
   }
 
+  // One tour = one TourBook. The browser keeps exactly one working copy of the current
+  // TourBook (autosave / restore after reload); there are no stored alternatives.
+  // A store left by the former plan-variant manager (several plans) is backed up once,
+  // untouched, under TOUR_PLAN_VARIANTS_BACKUP_KEY and then reduced to the active plan.
+  const TOUR_PLAN_VARIANTS_BACKUP_KEY = 'wm_tour_plan_store_v1_variants_backup';
+
+  function _tourPlanStoreCollapseLegacyVariants() {
+    try {
+      const raw = localStorage.getItem(TOUR_PLAN_STORAGE_KEY);
+      if (!raw) return;
+      const store = _tourPlanStoreRead();
+      const ids = Object.keys(store.plans || {});
+      if (ids.length <= 1) return;
+      if (!localStorage.getItem(TOUR_PLAN_VARIANTS_BACKUP_KEY)) localStorage.setItem(TOUR_PLAN_VARIANTS_BACKUP_KEY, raw);
+      let keep = '';
+      try { keep = String(localStorage.getItem(TOUR_PLAN_ACTIVE_ID_KEY) || '').trim(); } catch (_) {}
+      if (!keep || !store.plans[keep]) {
+        keep = ids.sort((a, b) => Number(store.plans[b] && store.plans[b].updatedAt || 0) - Number(store.plans[a] && store.plans[a].updatedAt || 0))[0];
+      }
+      _tourPlanStoreWrite({ version: 1, plans: { [keep]: store.plans[keep] } });
+      try { localStorage.setItem(TOUR_PLAN_ACTIVE_ID_KEY, keep); } catch (_) {}
+    } catch (_) {}
+  }
+
   const TourPlanStorageService = {
     saveTourPlan(plan, weatherContext, options = {}) {
+      // Replaces the working copy: the store never holds more than the current TourBook.
       try {
         const serialized = serializeTourPlan(plan);
         const id = String(serialized.id || _nextTourPlanId());
-        const store = _tourPlanStoreRead();
-        store.plans[id] = {
+        const entry = {
           id,
           title: String(serialized.title || 'Tour plan'),
           routeId: String(serialized.routeId || 'route-local'),
@@ -2741,12 +2746,12 @@
           plan: serialized,
           weatherContext: weatherContext && typeof weatherContext === 'object' ? { ...weatherContext } : null,
         };
-        if (!_tourPlanStoreWrite(store)) return null;
+        if (!_tourPlanStoreWrite({ version: 1, plans: { [id]: entry } })) return null;
         if (options && options.setActive !== false) {
           try { localStorage.setItem(TOUR_PLAN_ACTIVE_ID_KEY, id); } catch (_) {}
           ACTIVE_TOUR_PLAN_ID = id;
         }
-        return store.plans[id];
+        return entry;
       } catch (_) {
         return null;
       }
@@ -2761,68 +2766,16 @@
         return null;
       }
     },
-    deleteTourPlan(id) {
-      try {
-        const key = String(id || '').trim();
-        if (!key) return false;
-        const store = _tourPlanStoreRead();
-        if (!store.plans[key]) return false;
-        delete store.plans[key];
-        return _tourPlanStoreWrite(store);
-      } catch (_) {
-        return false;
-      }
-    },
-    listTourPlans() {
+    loadCurrentTourPlan() {
       try {
         const store = _tourPlanStoreRead();
-        return Object.values(store.plans || {})
-          .map((entry) => ({
-            id: String(entry && entry.id || ''),
-            title: String(entry && entry.title || 'Tour plan'),
-            routeId: String(entry && entry.routeId || ''),
-            updatedAt: Number(entry && entry.updatedAt) || 0,
-            weatherMode: String(entry && entry.weatherMode || 'historical-median'),
-          }))
-          .filter((entry) => !!entry.id)
-          .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+        const ids = Object.keys(store.plans || {});
+        return ids.length ? store.plans[ids[0]] : null;
       } catch (_) {
-        return [];
-      }
-    },
-    renameTourPlan(id, nextTitle) {
-      try {
-        const key = String(id || '').trim();
-        const title = String(nextTitle || '').trim();
-        if (!key || !title) return false;
-        const store = _tourPlanStoreRead();
-        const entry = store.plans[key];
-        if (!entry) return false;
-        entry.title = title;
-        entry.updatedAt = Date.now();
-        if (entry.plan && typeof entry.plan === 'object') {
-          entry.plan.title = title;
-          entry.plan.metadata = {
-            ...(entry.plan.metadata || {}),
-            updatedAt: Date.now(),
-          };
-        }
-        return _tourPlanStoreWrite(store);
-      } catch (_) {
-        return false;
+        return null;
       }
     },
   };
-
-  function _tourPlanFormatUpdatedAt(ts) {
-    try {
-      const d = new Date(Number(ts) || 0);
-      if (!Number.isFinite(d.getTime())) return 'n/a';
-      return d.toLocaleString();
-    } catch (_) {
-      return 'n/a';
-    }
-  }
 
   function _setTourPlanDirty(flag) {
     TOUR_PLAN_IS_DIRTY = !!flag;
@@ -2878,41 +2831,6 @@
     _setProjectStatusUi(TOUR_PLAN_IS_DIRTY);
   }
 
-  function _collectAllTourPlansForProject() {
-    const byId = {};
-    try {
-      const plans = TourPlanStorageService.listTourPlans();
-      for (const item of plans) {
-        const id = String(item && item.id || '').trim();
-        if (!id) continue;
-        const entry = TourPlanStorageService.loadTourPlan(id);
-        if (!entry || !entry.plan) continue;
-        byId[id] = {
-          id,
-          title: String(entry.title || 'Tour plan'),
-          routeId: String(entry.routeId || ''),
-          updatedAt: Number(entry.updatedAt) || Date.now(),
-          weatherMode: String(entry.weatherMode || 'historical-median'),
-          plan: deserializeTourPlan(entry.plan),
-          weatherContext: entry.weatherContext && typeof entry.weatherContext === 'object' ? { ...entry.weatherContext } : null,
-        };
-      }
-    } catch (_) {}
-    const activeId = String(ACTIVE_TOUR_PLAN_ID || '').trim();
-    if (activeId && !byId[activeId]) {
-      byId[activeId] = {
-        id: activeId,
-        title: String((TOUR_PLAN && TOUR_PLAN.title) || 'Tour plan'),
-        routeId: String((TOUR_PLAN && TOUR_PLAN.routeId) || ''),
-        updatedAt: Date.now(),
-        weatherMode: String(_normalizeWeatherMode(WEATHER_CONTEXT && WEATHER_CONTEXT.mode)),
-        plan: serializeTourPlan(TOUR_PLAN),
-        weatherContext: WEATHER_CONTEXT && typeof WEATHER_CONTEXT === 'object' ? { ...WEATHER_CONTEXT } : null,
-      };
-    }
-    return byId;
-  }
-
   async function _fetchActiveGpxContentForProject() {
     try {
       if (!_hasActiveGpxSelection()) return null;
@@ -2934,8 +2852,7 @@
   }
 
   async function _tourProjectFilePayload() {
-    const plansById = _collectAllTourPlansForProject();
-    const activePlanId = String(ACTIVE_TOUR_PLAN_ID || Object.keys(plansById)[0] || '').trim();
+    // A tour file holds one tour: its GPX route and its one TourBook (tourPlan).
     const gpx = await _fetchActiveGpxContentForProject();
     return {
       format: TOUR_PROJECT_FORMAT_KEY,
@@ -2952,8 +2869,6 @@
         content: '',
         embedded: false,
       },
-      activePlanId,
-      tourPlans: plansById,
       weatherSettings: {
         mode: String(_normalizeWeatherMode(WEATHER_CONTEXT && WEATHER_CONTEXT.mode)),
         historicalYear: (WEATHER_CONTEXT && WEATHER_CONTEXT.historicalYear !== undefined) ? WEATHER_CONTEXT.historicalYear : null,
@@ -2966,7 +2881,6 @@
         routeWeatherMode: String(getWeatherQualityMode()),
       },
       future: {},
-      // Legacy bridge field so older loaders can still recover the active TourPlan.
       tourPlan: serializeTourPlan(TOUR_PLAN),
       weatherContext: WEATHER_CONTEXT && typeof WEATHER_CONTEXT === 'object' ? { ...WEATHER_CONTEXT } : null,
     };
@@ -2976,7 +2890,6 @@
     const source = (parsed && typeof parsed === 'object') ? parsed : {};
     const legacyPlan = (source.tourPlan && typeof source.tourPlan === 'object') ? source.tourPlan : source;
     const normalizedPlan = deserializeTourPlan(legacyPlan);
-    const planId = String(normalizedPlan.id || _nextTourPlanId());
     return {
       format: TOUR_PROJECT_FORMAT_KEY,
       projectVersion: TOUR_PROJECT_FORMAT_VERSION,
@@ -2990,18 +2903,6 @@
         path: String(LAST_GPX_PATH || ''),
         content: '',
         embedded: false,
-      },
-      activePlanId: planId,
-      tourPlans: {
-        [planId]: {
-          id: planId,
-          title: String(normalizedPlan.title || 'Tour plan'),
-          routeId: String(normalizedPlan.routeId || ''),
-          updatedAt: Date.now(),
-          weatherMode: String(_normalizeWeatherMode(source && source.weatherContext && source.weatherContext.mode)),
-          plan: normalizedPlan,
-          weatherContext: source && source.weatherContext && typeof source.weatherContext === 'object' ? { ...source.weatherContext } : null,
-        },
       },
       weatherSettings: {
         mode: String(_normalizeWeatherMode(source && source.weatherContext && source.weatherContext.mode)),
@@ -3242,7 +3143,6 @@
       try { _saveCurrentTourPlan(); } catch (_) {}
       _setTourPlanDirty(true);
       try { _refreshProjectHeaderUi(); } catch (_) {}
-      try { _renderTourPlanManager(); } catch (_) {}
     } catch (_) {}
   }
 
@@ -3296,7 +3196,6 @@
       try { _tourSyncTimelineFromInputs(); } catch (_) {}
       try { _renderRoadbookPanel(); } catch (_) {}
       try { _roadbookRefreshLinkedViews(); } catch (_) {}
-      try { if (tourPlanManager && TOUR_PLAN_MANAGER_OPEN) _renderTourPlanManager(); } catch (_) {}
       try { if (_tourIsActive() && LAST_PROFILE) _tourCommitSegmentation(LAST_PROFILE); } catch (_) {}
       try { _persistTourSnapshot(); } catch (_) {}
       if (!(opts && opts.skipDirtyClear)) _setTourPlanDirty(true);
@@ -3708,112 +3607,32 @@
       try { _tourPlanSetActiveFileContext(ACTIVE_TOUR_PLAN_FILE_HANDLE, ACTIVE_TOUR_PLAN_FILE_NAME); } catch (_) {}
       _setTourPlanDirty(false);
       try { _refreshProjectHeaderUi(); } catch (_) {}
-      try { _renderTourPlanManager(); } catch (_) {}
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  function _renderTourPlanManager() {
-    try {
-      if (!tourPlanList) return;
-      const plans = TourPlanStorageService.listTourPlans();
-      if (!plans.length) {
-        tourPlanList.innerHTML = '<div class="wm-plan-empty">No plans yet. Create one with New.</div>';
-        return;
+  function _tourBookEntryFromProject(projectPayload) {
+    // The one TourBook of a tour file. Files written before the single-TourBook model
+    // may carry several plans (tourPlans + activePlanId): only the active one is the
+    // tour's TourBook; the others are not loaded.
+    const src = (projectPayload && typeof projectPayload === 'object') ? projectPayload : {};
+    let plan = null;
+    let weatherContext = (src.weatherContext && typeof src.weatherContext === 'object') ? src.weatherContext : null;
+    const legacyPlans = (src.tourPlans && typeof src.tourPlans === 'object') ? src.tourPlans : null;
+    if (legacyPlans) {
+      const activeId = String(src.activePlanId || '').trim();
+      const legacy = (activeId && legacyPlans[activeId]) || Object.values(legacyPlans)[0] || null;
+      if (legacy && legacy.plan) {
+        plan = legacy.plan;
+        if (legacy.weatherContext && typeof legacy.weatherContext === 'object') weatherContext = legacy.weatherContext;
       }
-      const html = plans.map((plan) => {
-        const active = String(plan.id || '') === String(ACTIVE_TOUR_PLAN_ID || '');
-        const modeLabel = String(plan.weatherMode || '').replace('historical-', 'hist-');
-        return `
-          <div class="wm-plan-item${active ? ' is-active' : ''}" data-plan-id="${_htmlEsc(plan.id)}">
-            <div class="wm-plan-item-head">
-              <div class="wm-plan-item-title">${_htmlEsc(plan.title || 'Tour plan')}</div>
-              ${active ? '<span class="wm-roadbook-pill" data-status="rest">Active</span>' : ''}
-            </div>
-            <div class="wm-plan-item-meta">Updated ${_htmlEsc(_tourPlanFormatUpdatedAt(plan.updatedAt))} • ${_htmlEsc(modeLabel || 'n/a')}</div>
-            <div class="wm-plan-item-actions">
-              <button class="wm-plan-item-btn" type="button" data-action="load" data-plan-id="${_htmlEsc(plan.id)}">Load</button>
-              <button class="wm-plan-item-btn" type="button" data-action="duplicate" data-plan-id="${_htmlEsc(plan.id)}">Duplicate</button>
-              <button class="wm-plan-item-btn" type="button" data-action="rename" data-plan-id="${_htmlEsc(plan.id)}">Rename</button>
-              <button class="wm-plan-item-btn" type="button" data-action="delete" data-plan-id="${_htmlEsc(plan.id)}">Delete</button>
-            </div>
-          </div>`;
-      }).join('');
-      tourPlanList.innerHTML = html;
-
-      tourPlanList.querySelectorAll('.wm-plan-item-btn[data-action]').forEach((btn) => {
-        btn.addEventListener('click', (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          const action = String(btn.getAttribute('data-action') || '');
-          const planId = String(btn.getAttribute('data-plan-id') || '');
-          if (!action || !planId) return;
-          if (action === 'load') {
-            if (TOUR_PLAN_IS_DIRTY && !confirm('Unsaved changes will be replaced. Continue?')) return;
-            const entry = TourPlanStorageService.loadTourPlan(planId);
-            if (entry) _tourPlanApplyLoadedEntry(entry);
-            _renderTourPlanManager();
-            return;
-          }
-          if (action === 'duplicate') {
-            const entry = TourPlanStorageService.loadTourPlan(planId);
-            if (!entry || !entry.plan) return;
-            const copy = cloneTourPlan(entry.plan, { title: `${String(entry.title || 'Tour plan')}_Copy` });
-            const saved = TourPlanStorageService.saveTourPlan(copy, entry.weatherContext || WEATHER_CONTEXT, { setActive: false });
-            if (saved) _renderTourPlanManager();
-            return;
-          }
-          if (action === 'rename') {
-            const entry = TourPlanStorageService.loadTourPlan(planId);
-            if (!entry) return;
-            const next = prompt('Rename TourPlan', String(entry.title || 'Tour plan'));
-            if (!next || !String(next).trim()) return;
-            if (TourPlanStorageService.renameTourPlan(planId, String(next).trim())) {
-              if (String(planId) === String(ACTIVE_TOUR_PLAN_ID || '')) {
-                updateTourPlan((plan) => ({ ...plan, title: String(next).trim() }));
-              }
-              _renderTourPlanManager();
-            }
-            return;
-          }
-          if (action === 'delete') {
-            const plansNow = TourPlanStorageService.listTourPlans();
-            const isActive = String(planId) === String(ACTIVE_TOUR_PLAN_ID || '');
-            if (isActive && plansNow.length <= 1) {
-              alert('At least one TourPlan must remain.');
-              return;
-            }
-            if (!confirm('Delete this TourPlan?')) return;
-            if (!TourPlanStorageService.deleteTourPlan(planId)) return;
-            if (isActive) {
-              const fallback = TourPlanStorageService.listTourPlans()[0] || null;
-              if (fallback) {
-                const fallbackEntry = TourPlanStorageService.loadTourPlan(fallback.id);
-                if (fallbackEntry) _tourPlanApplyLoadedEntry(fallbackEntry);
-              }
-            }
-            _renderTourPlanManager();
-          }
-        });
-      });
-    } catch (_) {}
-  }
-
-  function _toggleTourPlanManager(forceOpen = null) {
-    const nextOpen = (typeof forceOpen === 'boolean') ? forceOpen : !TOUR_PLAN_MANAGER_OPEN;
-    TOUR_PLAN_MANAGER_OPEN = !!nextOpen;
-    try {
-      if (tourPlanManager) {
-        tourPlanManager.classList.toggle('is-open', TOUR_PLAN_MANAGER_OPEN);
-        tourPlanManager.setAttribute('aria-hidden', TOUR_PLAN_MANAGER_OPEN ? 'false' : 'true');
-      }
-      if (tourPlanManageBtn) {
-        tourPlanManageBtn.setAttribute('aria-expanded', TOUR_PLAN_MANAGER_OPEN ? 'true' : 'false');
-      }
-      if (TOUR_PLAN_MANAGER_OPEN) _renderTourPlanManager();
-    } catch (_) {}
+    }
+    if (!plan && src.tourPlan && typeof src.tourPlan === 'object') plan = src.tourPlan;
+    if (!plan) return null;
+    const normalized = deserializeTourPlan(plan);
+    return { id: String(normalized.id || _nextTourPlanId()), plan: normalized, weatherContext };
   }
 
   async function _tourPlanOpenFromFile() {
@@ -3850,14 +3669,7 @@
       const projectPayload = (parsed && parsed.format === TOUR_PROJECT_FORMAT_KEY)
         ? parsed
         : _tourProjectPayloadFromLegacy(parsed);
-      const plansObj = (projectPayload && projectPayload.tourPlans && typeof projectPayload.tourPlans === 'object')
-        ? projectPayload.tourPlans
-        : {};
-
-      // Replace local TourPlan store with file payload plans.
-      try {
-        _tourPlanStoreWrite({ version: 1, plans: plansObj });
-      } catch (_) {}
+      const fileEntry = _tourBookEntryFromProject(projectPayload);
 
       // Restore embedded GPX first when present.
       try {
@@ -3882,12 +3694,9 @@
         }
       } catch (_) {}
 
-      const activeId = String(projectPayload && projectPayload.activePlanId || '').trim();
-      const fallbackId = String(Object.keys(plansObj)[0] || '').trim();
-      const loadId = activeId || fallbackId;
-      const entry = loadId ? TourPlanStorageService.loadTourPlan(loadId) : null;
-      if (entry && _tourPlanApplyLoadedEntry(entry)) {
-        ACTIVE_TOUR_PLAN_ID = String(entry.id || loadId || ACTIVE_TOUR_PLAN_ID || '');
+      if (fileEntry && _tourPlanApplyLoadedEntry(fileEntry)) {
+        ACTIVE_TOUR_PLAN_ID = String(fileEntry.id || ACTIVE_TOUR_PLAN_ID || '');
+        try { TourPlanStorageService.saveTourPlan(TOUR_PLAN, WEATHER_CONTEXT, { setActive: true }); } catch (_) {}
       }
 
       const projectPrefs = projectPayload && projectPayload.preferences;
@@ -4250,12 +4059,6 @@
 
   function _initTourPlanManagerBindings() {
     try {
-      if (tourPlanManageBtn) {
-        tourPlanManageBtn.addEventListener('click', () => {
-          _toggleTourPlanManager();
-        });
-      }
-
       if (tourProjectOpenBtn) {
         tourProjectOpenBtn.addEventListener('click', () => {
           _tourPlanOpenFromFile().catch(() => {});
@@ -4364,18 +4167,11 @@
     try {
       _initTourPlanManagerBindings();
       _initOvernightPlannerBindings();
-      const storedActiveId = (() => {
-        try { return String(localStorage.getItem(TOUR_PLAN_ACTIVE_ID_KEY) || '').trim(); } catch (_) { return ''; }
-      })();
-      const fallbackList = TourPlanStorageService.listTourPlans();
-      const wantedId = storedActiveId || String(fallbackList[0] && fallbackList[0].id || '');
-      if (wantedId) {
-        const entry = TourPlanStorageService.loadTourPlan(wantedId);
-        if (entry && _tourPlanApplyLoadedEntry(entry)) {
-          try { _refreshProjectHeaderUi(); } catch (_) {}
-          _renderTourPlanManager();
-          return;
-        }
+      _tourPlanStoreCollapseLegacyVariants();
+      const entry = TourPlanStorageService.loadCurrentTourPlan();
+      if (entry && _tourPlanApplyLoadedEntry(entry)) {
+        try { _refreshProjectHeaderUi(); } catch (_) {}
+        return;
       }
       const defaultPlan = createTourPlan({
         title: String(LAST_GPX_NAME || 'Tour plan'),
@@ -4388,7 +4184,6 @@
       _saveCurrentTourPlan();
       _tourPlanSetActiveFileContext(ACTIVE_TOUR_PLAN_FILE_HANDLE, ACTIVE_TOUR_PLAN_FILE_NAME);
       try { _refreshProjectHeaderUi(); } catch (_) {}
-      _renderTourPlanManager();
     } catch (_) {}
   }
 
@@ -12616,7 +12411,6 @@
         ROADBOOK_PENDING_CENTER_DAY_KEY = null;
       }
       try { _renderOvernightPlanner(); } catch (_) {}
-      try { if (TOUR_PLAN_MANAGER_OPEN) _renderTourPlanManager(); } catch (_) {}
     } catch (_) {}
     finally {
       try { _renderTourInsights(); } catch (_) {}

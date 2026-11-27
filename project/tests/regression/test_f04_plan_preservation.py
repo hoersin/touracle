@@ -94,7 +94,8 @@ def open_file(ui, payload):
 def test_tour_file_contains_complete_structure(authored):
     ui, before = authored
     p = save_as(ui)
-    rb = p['tourPlans'][p['activePlanId']]['plan']['roadbook']
+    rb = p['tourPlan']['roadbook']
+    assert 'tourPlans' not in p and 'activePlanId' not in p                 # one tour file = one TourBook
     assert [(s['id'], s['position']) for s in rb['restStops']] == before['rest']
     assert [round(b, 2) for b in rb['boundariesKm']] == before['boundaries']
     assert {d['key']: d['notes'] for d in rb['days'] if d['notes']} == before['notes']
@@ -125,7 +126,7 @@ def test_tour_file_round_trip_into_fresh_browser(authored, chromium):
 def test_round_trip_preserves_overnight_stops(authored):
     ui, _ = authored
     payload = save_as(ui)
-    payload['tourPlans'][payload['activePlanId']]['plan']['roadbook']['overnightStops'] = [OVERNIGHT]
+    payload['tourPlan']['roadbook']['overnightStops'] = [OVERNIGHT]
     open_file(ui, payload)
     ui.get_weather()
     s = ui.structure()

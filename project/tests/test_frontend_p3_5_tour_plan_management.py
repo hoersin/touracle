@@ -16,8 +16,8 @@ def _html() -> str:
 
 def test_req51_tour_plan_list_ui_exists():
     html = _html()
-    # Only one TourBook: the separate plan-variant manager is no longer offered in the UI
-    # (the local plan store stays for autosave/restore).
+    # Only one TourBook per tour: no plan-variant manager (the browser keeps one
+    # working copy of the current TourBook for autosave/restore).
     assert 'id="tourPlanManageBtn"' not in html
     assert 'id="tourPlanManager"' not in html
     assert 'id="tourPlanDirty"' in html
@@ -38,23 +38,14 @@ def test_req53_load_tour_plan_restores_boundaries_and_start_date():
     assert 'if (startDateInput && startIso) startDateInput.value = startIso;' in source
 
 
-def test_req54_duplicate_tour_plan_action_exists():
+def test_req54_56_no_variant_actions_remain():
+    """One tour = one TourBook: no duplicate / rename / delete / load-variant actions."""
     source = _source()
-    assert "if (action === 'duplicate')" in source
-    assert 'const copy = cloneTourPlan(entry.plan' in source
-
-
-def test_req55_rename_tour_plan_action_exists():
-    source = _source()
-    assert "if (action === 'rename')" in source
-    assert 'TourPlanStorageService.renameTourPlan(planId' in source
-
-
-def test_req56_delete_requires_confirmation_and_fallback_guard():
-    source = _source()
-    assert "if (action === 'delete')" in source
-    assert "if (!confirm('Delete this TourPlan?')) return;" in source
-    assert "if (isActive && plansNow.length <= 1)" in source
+    for gone in ("if (action === 'duplicate')", "if (action === 'rename')", "if (action === 'delete')",
+                 'renameTourPlan', 'deleteTourPlan', 'listTourPlans', 'function cloneTourPlan',
+                 '_renderTourPlanManager', '_toggleTourPlanManager', 'TOUR_PLAN_MANAGER_OPEN',
+                 'tourPlanManageBtn', 'tourPlanList', 'Plan Variants', '_collectAllTourPlansForProject'):
+        assert gone not in source, gone
 
 
 def test_req57_autosave_debounce_present():
@@ -71,13 +62,14 @@ def test_req58_dirty_state_tracking_present():
     assert 'function _markTourPlanChanged()' in source
 
 
-def test_req59_storage_service_api_exists():
+def test_req59_storage_service_keeps_one_working_copy():
     source = _source()
     assert 'const TourPlanStorageService = {' in source
     assert 'saveTourPlan(plan, weatherContext, options = {})' in source
-    assert 'loadTourPlan(id)' in source
-    assert 'deleteTourPlan(id)' in source
-    assert 'listTourPlans()' in source
+    assert 'loadCurrentTourPlan()' in source
+    # the store is replaced, never extended: it holds the current TourBook only
+    assert '_tourPlanStoreWrite({ version: 1, plans: { [id]: entry } })' in source
+    assert 'function _tourPlanStoreCollapseLegacyVariants()' in source
 
 
 def test_req60_serialization_safety_functions_still_used():
@@ -96,6 +88,6 @@ def test_req61_load_retriggers_render_and_commit_paths():
 def test_req62_boot_behavior_loads_active_or_creates_default():
     source = _source()
     assert 'function _bootTourPlanPersistence()' in source
-    assert 'const storedActiveId = (() => {' in source
+    assert 'const entry = TourPlanStorageService.loadCurrentTourPlan();' in source
     assert 'const defaultPlan = createTourPlan({' in source
     assert 'try { _bootTourPlanPersistence(); } catch (_) {}' in source

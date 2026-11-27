@@ -25,12 +25,12 @@ def test_project_format_constants_exist():
     assert "const TOUR_PROJECT_SCHEMA_VERSION = 1;" in source
 
 
-def test_project_payload_includes_gpx_and_all_plans():
+def test_project_payload_includes_gpx_and_exactly_one_tourbook():
     source = _js()
-    assert "async function _tourProjectFilePayload()" in source
-    assert "tourPlans: plansById," in source
-    assert "gpx: gpx || {" in source
-    assert "activePlanId," in source
+    body = source[source.index("async function _tourProjectFilePayload()"):source.index("function _tourProjectPayloadFromLegacy(parsed)")]
+    assert "gpx: gpx || {" in body
+    assert "tourPlan: serializeTourPlan(TOUR_PLAN)," in body
+    assert "tourPlans" not in body and "activePlanId" not in body
 
 
 def test_legacy_tourplan_loader_bridge_exists():
