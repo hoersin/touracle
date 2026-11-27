@@ -273,3 +273,66 @@ def test_lucky_day_counts_follow_configured_thresholds():
     lucky_strict = int(out_strict['candidates'][0]['summary']['lucky_days'])
     lucky_loose = int(out_loose['candidates'][0]['summary']['lucky_days'])
     assert lucky_loose > lucky_strict
+
+
+# ---- per-year values, reliability (report only; ranking unchanged) ----------------
+def _weather_lookup_per_year(years_good):
+    """Aggregated stats plus the individual years, as _get_offline_stats(include_per_year=True).
+
+    Spring (Apr-Jun) is dry and mild in every year listed in years_good; other years and
+    seasons are wet."""
+    def lookup(lat, lon, month, day, years_selected):
+        per_year = {}
+        for y in years_selected:
+            good = (4 <= int(month) <= 6) and int(y) in years_good
+            per_year[int(y)] = {'temp_day_median': 16.0 if good else 8.0, 'precipitation_mm': 0.5 if good else 14.0,
+                                'wind_speed_ms': 2.0, 'wind_dir_deg': 270.0}
+        n = len(per_year)
+        agg = {
+            'temp_day_median': sum(v['temp_day_median'] for v in per_year.values()) / n,
+            'precipitation_mm': sum(v['precipitation_mm'] for v in per_year.values()) / n,
+            'rain_probability': 0.2, 'wind_speed_ms': 2.0, 'wind_dir_deg': 270.0,
+            '_years_used': sorted(per_year),
+        }
+        if n > 1:
+            agg['_per_year'] = per_year
+        return agg
+    return lookup
+
+
+def _run(lookup, years):
+    return optimize_tour_slots(
+        route_data=_simple_route_data(), total_days=5, rest_day_indexes=[], boundaries_km=[],
+        years_selected=years, anchor_year=2026, direction_mode='forward', objective_mode='most_lucky_days',
+        top_n=5, weather_lookup=lookup, slot_step_days=7)
+
+
+def test_per_year_values_are_reported_without_changing_the_ranking():
+    lookup = _weather_lookup_per_year({2023, 2024, 2025})
+    res = _run(lookup, [2025, 2024, 2023])
+
+    def strip(lk):
+        def f(*a):
+            st = dict(lk(*a)); st.pop('_per_year', None)
+            return st
+        return f
+    plain = _run(strip(lookup), [2025, 2024, 2023])
+    key = lambda r: [(c['start_date'], c['score'], c['summary']['lucky_days'], c['summary']['precip_sum_mm']) for c in r['candidates']]
+    assert key(res) == key(plain)                                     # same ranking and values
+    best = res['candidates'][0]
+    assert sorted(best['summary']['per_year']) == ['2023', '2024', '2025']
+    curve = next(c for c in res['meta']['year_penalty_curve_bundle']['curves'] if c['id'] == 'most_lucky_days')
+    assert all(sorted(p['year_values']) == ['2023', '2024', '2025'] for p in curve['points'])
+
+
+def test_reliability_high_when_every_year_agrees_and_data_are_complete():
+    rel = _run(_weather_lookup_per_year({2023, 2024, 2025}), [2025, 2024, 2023])['meta']['reliability']
+    assert rel['level'] == 'high' and rel['years_assessed'] == 3 and rel['years_in_top'] == 3, rel
+    assert rel['coverage'] == 1.0 and rel['used_years'] == [2023, 2024, 2025]
+
+
+def test_reliability_drops_when_years_disagree_and_is_limited_for_one_year():
+    rel = _run(_weather_lookup_per_year({2025}), [2025, 2024, 2023])['meta']['reliability']
+    assert rel['level'] in ('low', 'medium') and rel['years_in_top'] < rel['years_assessed'], rel
+    one = _run(_weather_lookup_per_year({2024}), [2024])['meta']['reliability']
+    assert one['level'] == 'limited' and one['years_assessed'] == 0, one

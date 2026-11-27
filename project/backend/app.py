@@ -3588,6 +3588,7 @@ def _get_offline_stats(
     end_year: int | None = None,
     years_selected: list[int] | None = None,
     allow_span_mismatch: bool = False,
+    include_per_year: bool = False,
 ) -> Optional[Dict[str, Any]]:
     requested_years = _normalize_requested_years(
         years_selected=years_selected,
@@ -3763,6 +3764,14 @@ def _get_offline_stats(
             '_samples_rain': int(samples_rain_total),
             '_samples_wind': int(samples_wind_total),
         }
+        if include_per_year:
+            # The individual years behind the aggregate (read anyway): lets the tour
+            # simulation show the spread between reference years without extra lookups.
+            aggregated['_per_year'] = {
+                int(year): {k: stats.get(k) for k in ('temp_day_median', 'temperature_c', 'precipitation_mm',
+                                                      'wind_speed_ms', 'wind_dir_deg')}
+                for year, stats in stats_by_year
+            }
         return _annotate_years(aggregated, years)
 
     candidate_stores: list[Any] = []
@@ -4026,6 +4035,7 @@ def _run_tour_slot_optimizer_job(
                     int(day),
                     years_selected=[int(y) for y in years],
                     allow_span_mismatch=True,
+                    include_per_year=True,
                 )
                 return dict(stats) if isinstance(stats, dict) else None
             except Exception:

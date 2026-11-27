@@ -316,6 +316,62 @@ def _score_day(ctx: DayContext, stats: Optional[Dict[str, Any]]) -> tuple[float,
     return (day_score, {"temp": temp_pen, "rain": rain_pen, "wind": wind_pen, "missing": missing})
 
 
+def _year_day_metrics(ctx: DayContext, stats: Optional[Dict[str, Any]], lucky_thresholds: Dict[str, float]) -> Dict[str, Optional[float]]:
+    """Objective metrics of one tour day from ONE reference year's statistics.
+
+    Same formulas as the aggregated metrics in _score_candidate (temperature, rain,
+    headwind component on ride days, lucky-day rule); used only to report how the
+    individual reference years differ. It does not take part in scoring or ranking.
+    """
+    if not isinstance(stats, dict):
+        return {"temp": None, "rain": None, "head": None, "lucky": None}
+    temp = _finite(stats.get("temp_day_median"))
+    if temp is None:
+        temp = _finite(stats.get("temperature_c"))
+    rain = _finite(stats.get("precipitation_mm"))
+    wind_ms = _finite(stats.get("wind_speed_ms"))
+    wind_from = _finite(stats.get("wind_dir_deg"))
+    eff = None
+    if wind_ms is not None and wind_from is not None:
+        eff = float(math.cos(math.radians(((float(wind_from) + 180.0) % 360.0) - float(ctx.heading_deg))))
+    head = None
+    if ctx.day_type == "ride" and wind_ms is not None and eff is not None:
+        head = float(wind_ms) * max(0.0, -eff)
+    lucky = None
+    if temp is not None and rain is not None and wind_ms is not None:
+        ok = float(lucky_thresholds.get("temp_cold", 5.0)) <= temp <= float(lucky_thresholds.get("temp_hot", 30.0)) \
+            and rain < float(lucky_thresholds.get("rain_high", 10.0))
+        if ok:
+            if eff is not None and eff > 0.33:
+                ok = wind_ms < float(lucky_thresholds.get("wind_tail_comfort", 10.0))
+            else:
+                ok = wind_ms < float(lucky_thresholds.get("wind_head_comfort", 4.0))
+        lucky = 1.0 if ok else 0.0
+    return {"temp": temp, "rain": (max(0.0, rain) if rain is not None else None), "head": head, "lucky": lucky}
+
+
+def _per_year_stats(stats: Optional[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """The individual reference years behind an aggregated statistic (if known)."""
+    if not isinstance(stats, dict):
+        return {}
+    per_year = stats.get("_per_year")
+    if isinstance(per_year, dict) and per_year:
+        out: Dict[int, Dict[str, Any]] = {}
+        for y, st in per_year.items():
+            try:
+                out[int(y)] = dict(st) if isinstance(st, dict) else {}
+            except Exception:
+                continue
+        return out
+    used = stats.get("_years_used")
+    if isinstance(used, (list, tuple)) and len(used) == 1:
+        try:
+            return {int(used[0]): stats}
+        except Exception:
+            return {}
+    return {}
+
+
 def _score_candidate(
     start_date: dt.date,
     years_selected: Sequence[int],
@@ -340,10 +396,25 @@ def _score_candidate(
     lucky_rain_high = float(lucky_thresholds.get("rain_high", 10.0))
     lucky_wind_head = float(lucky_thresholds.get("wind_head_comfort", 4.0))
     lucky_wind_tail = float(lucky_thresholds.get("wind_tail_comfort", 10.0))
-
+    per_year_acc: Dict[int, Dict[str, float]] = {}
+    
     for ctx in day_context:
         d = start_date + dt.timedelta(days=int(ctx.logical_day_index))
         stats = weather_lookup(float(ctx.lat), float(ctx.lon), int(d.month), int(d.day), years_selected)
+        # Report-only: the same day metrics per individual reference year.
+        for y, ystats in _per_year_stats(stats).items():
+            m = _year_day_metrics(ctx, ystats, lucky_thresholds)
+            acc = per_year_acc.setdefault(int(y), {"temp_sum": 0.0, "temp_n": 0.0, "precip_sum": 0.0, "head_sum": 0.0, "lucky": 0.0, "days": 0.0})
+            if m["temp"] is not None:
+                acc["temp_sum"] += float(m["temp"]); acc["temp_n"] += 1.0
+            if m["rain"] is not None:
+                acc["precip_sum"] += float(m["rain"])
+            if m["head"] is not None:
+                acc["head_sum"] += float(m["head"])
+            if m["lucky"] is not None:
+                acc["lucky"] += float(m["lucky"])
+            if any(m[k] is not None for k in ("temp", "rain")):
+                acc["days"] += 1.0
         try:
             if isinstance(stats, dict):
                 yrs = stats.get('_years_used')
@@ -436,8 +507,18 @@ def _score_candidate(
             "precip_sum_mm": float(precip_sum),
             "headwind_sum_ms": float(headwind_sum),
             "years_used": sorted(int(v) for v in years_used_seen),
-        },
-    )
+            "per_year": {
+                str(y): {
+                    "lucky_days": int(round(a["lucky"])),
+                    "avg_temp_c": (float(a["temp_sum"] / a["temp_n"]) if a["temp_n"] > 0 else None),
+                    "precip_sum_mm": float(a["precip_sum"]),
+                    "headwind_sum_ms": float(a["head_sum"]),
+                    "days_with_data": int(a["days"]),
+                }
+                for y, a in sorted(per_year_acc.items())
+            },
+            },
+            )
 
 
 def _objective_score(item: CandidateScore, objective_mode: str) -> float:
@@ -544,6 +625,69 @@ def _build_slot_sensitivity(
         "offsets": details,
         "score_spread_reference": float(round(denom, 4)),
     }
+
+
+RELIABILITY_TOP_SHARE = 0.2      # "among the best 20 % of start dates" in a single year
+RELIABILITY_COVERAGE_HIGH = 0.9
+RELIABILITY_COVERAGE_MEDIUM = 0.75
+
+
+def _reliability_assessment(
+    *,
+    best: Optional[CandidateScore],
+    curve: Optional[Dict[str, Any]],
+    higher_is_better: bool,
+    requested_years: Sequence[int],
+    used_years: Sequence[int],
+) -> Dict[str, Any]:
+    """How far the recommendation can be trusted, from what the run actually knows.
+
+    - years: reference years requested and actually found in the data;
+    - coverage: share of tour days of the recommended start with usable weather data;
+    - consistency: in how many individual reference years the recommended start date
+      is also among the best RELIABILITY_TOP_SHARE of all start dates of that year.
+    With a single reference year the consistency between years cannot be assessed
+    (level "limited"); the level never rests on the number of years alone.
+    """
+    coverage = (1.0 - float(best.missing_ratio)) if best is not None else 0.0
+    out: Dict[str, Any] = {
+        "requested_years": [int(y) for y in requested_years],
+        "used_years": [int(y) for y in used_years],
+        "coverage": round(float(coverage), 4),
+        "years_assessed": 0,
+        "years_in_top": 0,
+        "top_share": RELIABILITY_TOP_SHARE,
+        "level": "low",
+    }
+    points = list((curve or {}).get("points") or [])
+    best_iso = best.start_date.isoformat() if best is not None else ""
+    best_point = next((p for p in points if str(p.get("start_date")) == best_iso), None)
+    year_keys = sorted({k for p in points for k, v in (p.get("year_values") or {}).items() if v is not None})
+    if best_point is not None and len(year_keys) >= 2:
+        in_top = 0
+        assessed = 0
+        for yk in year_keys:
+            vals = [float(p["year_values"][yk]) for p in points if (p.get("year_values") or {}).get(yk) is not None]
+            mine = (best_point.get("year_values") or {}).get(yk)
+            if mine is None or len(vals) < 2:
+                continue
+            assessed += 1
+            if max(vals) == min(vals):
+                continue                       # no differences in that year: it cannot confirm the date
+            better = sum(1 for v in vals if ((v > float(mine)) if higher_is_better else (v < float(mine))))
+            if better / len(vals) <= RELIABILITY_TOP_SHARE:
+                in_top += 1
+        out["years_assessed"] = int(assessed)
+        out["years_in_top"] = int(in_top)
+        if assessed >= 3 and in_top == assessed and coverage >= RELIABILITY_COVERAGE_HIGH:
+            out["level"] = "high"
+        elif assessed >= 2 and in_top * 2 >= assessed and coverage >= RELIABILITY_COVERAGE_MEDIUM:
+            out["level"] = "medium"
+        else:
+            out["level"] = "low"
+    elif best is not None:
+        out["level"] = "limited"
+    return out
 
 
 def optimize_tour_slots(
@@ -806,6 +950,16 @@ def optimize_tour_slots(
         else:
             best_curve_score = min(v for (_d, _i, v) in entries)
 
+        def _year_values(item: CandidateScore, mode: str) -> Dict[str, Optional[float]]:
+            key = {"most_lucky_days": "lucky_days", "highest_avg_temperature": "avg_temp_c",
+                   "lowest_precip_sum": "precip_sum_mm", "lowest_headwind_sum": "headwind_sum_ms"}[mode]
+            out: Dict[str, Optional[float]] = {}
+            per_year = item.summary.get("per_year") if isinstance(item.summary, dict) else None
+            for y, vals in (per_year or {}).items():
+                v_y = _finite((vals or {}).get(key))
+                out[str(y)] = float(round(v_y, 4)) if v_y is not None else None
+            return out
+        
         curve_points: List[Dict[str, Any]] = []
         for d_iso, item, v in sorted(entries, key=lambda t: t[0]):
             value = _objective_value(item, curve_mode)
@@ -823,7 +977,8 @@ def optimize_tour_slots(
                 "value": (float(round(value, 4)) if math.isfinite(float(value)) else None),
                 "penalty": float(round(float(penalty), 4)),
                 "missing_ratio": float(round(float(item.missing_ratio), 4)),
-            })
+                "year_values": _year_values(item, curve_mode),
+                })
 
         ranked = sorted(
             entries,
@@ -870,6 +1025,14 @@ def optimize_tour_slots(
     selected_curve = next((c for c in curve_bundle if str(c.get("id")) == str(objective_norm)), None)
     if selected_curve is None and curve_bundle:
         selected_curve = curve_bundle[0]
+    
+    reliability = _reliability_assessment(
+        best=top[0] if top else None,
+        curve=selected_curve,
+        higher_is_better=higher_is_better,
+        requested_years=sorted(requested_years_set),
+        used_years=sorted(actual_years_used_set),
+    )
 
     def _candidate_to_json(item: CandidateScore) -> Dict[str, Any]:
         candidate_slot_sensitivity = _build_slot_sensitivity(
@@ -963,6 +1126,7 @@ def optimize_tour_slots(
                 "curves": curve_bundle,
             },
             "slot_sensitivity": slot_sensitivity,
+            "reliability": reliability,
             "score_components": {
                 "temperature": {
                     "cold_below_c": float(TEMP_COLD_C),
