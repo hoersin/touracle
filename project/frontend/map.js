@@ -4394,6 +4394,7 @@
       });
       document.body.appendChild(badge);
       WM_VERSION_BADGE = badge;
+      try { window.addEventListener('resize', () => _placeVersionBadge()); } catch (_) {}
       return badge;
     } catch (_) {
       return null;
@@ -5903,7 +5904,26 @@
         }
       }
       try { if (map && map.invalidateSize) map.invalidateSize(true); } catch (_) {}
+      try { _placeVersionBadge(); } catch (_) {}
     } catch (_) {}
+  }
+
+  // Tour Planning: the version indicator sits in the map's bottom-left corner, above
+  // the profile window, so it never covers the window's cards; elsewhere bottom-right.
+  function _placeVersionBadge() {
+    const badge = WM_VERSION_BADGE;
+    if (!badge) return;
+    let r = null;
+    try { r = (_pwActive() && mapEl) ? mapEl.getBoundingClientRect() : null; } catch (_) { r = null; }
+    if (r && r.width > 0 && r.height > 0) {
+      badge.style.left = `${Math.round(r.left + 10)}px`;
+      badge.style.right = 'auto';
+      badge.style.bottom = `${Math.max(12, Math.round(window.innerHeight - r.bottom + 10))}px`;
+    } else {
+      badge.style.left = '';
+      badge.style.right = '';
+      badge.style.bottom = '';
+    }
   }
 
   function _setBottomPanelUiMode(mode) {
@@ -6988,6 +7008,7 @@
       if (LAST_TOUR_CURSOR_READOUT) {
         try { _renderTourCursorReadout(LAST_TOUR_CURSOR_READOUT); } catch (_) {}
       }
+      try { _pwHideReadout(); } catch (_) {}
     };
 
     const bindMoveAndLeave = (el) => {
@@ -7025,6 +7046,7 @@
   }
 
   try { _bindProfileZoomControls(); } catch (_) {}
+  try { _pwBind(); } catch (_) {}
   try { _bindProfilePointerHandlers(); } catch (_) {}
 
   function _drawClimateWindArrow(ctx, x, y, speed, dirFromDeg, maxWind) {
@@ -10302,6 +10324,7 @@
       if (!tourSidebarRouteSummary || String(tourSidebarRouteSummary.dataset.locationToken || '') !== locationToken) return;
       if (role === 'start' && tourSidebarRouteStart) tourSidebarRouteStart.textContent = String(label || '—');
       if (role === 'end' && tourSidebarRouteEnd) tourSidebarRouteEnd.textContent = String(label || '—');
+      try { _pwRenderChrome(); } catch (_) {}
     };
     if (endpoints) {
       const startKey = _strategicLocationLabelKey(endpoints.startLat, endpoints.startLon);
@@ -13685,6 +13708,7 @@
         const rect = profileCanvas.getBoundingClientRect();
         profileCursorCtx.clearRect(0, 0, Math.max(1, Math.floor(rect.width)), Math.max(1, Math.floor(rect.height)));
       } } catch (_) {}
+      try { if (profilePanel) profilePanel.classList.remove('is-collapsed'); } catch (_) {}
       try {
         const currentH = profilePanel ? Number(profilePanel.offsetHeight || 0) : 0;
         if (!Number.isFinite(currentH) || currentH < CLIMATE_PROFILE_HEIGHT) {
@@ -13724,9 +13748,13 @@
         if (CLIMATE_PROFILE_STATE.selectedMarker) map.removeLayer(CLIMATE_PROFILE_STATE.selectedMarker);
       } catch (_) {}
       try {
-        const currentH = profilePanel ? Number(profilePanel.offsetHeight || 0) : 0;
-        if (!Number.isFinite(currentH) || currentH < 220) {
-          setProfileHeight(220);
+        // Profile window: restore the closed (collapsed) state or a usable height.
+        let collapsed = false;
+        try { collapsed = localStorage.getItem(PW.collapsedKey) === '1'; } catch (_) {}
+        if (collapsed) {
+          _pwSetCollapsed(true, { skipPersist: true });
+        } else {
+          setProfileHeight(_pwDefaultHeight());
         }
       } catch (_) {}
       try {
@@ -15523,6 +15551,15 @@
   }
 
   function _tourEffectiveWindAlignment(sample, dkm) {
+    // cos(relative angle): +1 pure tailwind, -1 pure headwind.
+    const ang = _tourRelativeWindAngle(sample, dkm);
+    if (ang === null) return null;
+    const comp = Math.cos(ang);
+    return Number.isFinite(comp) ? comp : null;
+  }
+
+  function _tourRelativeWindAngle(sample, dkm) {
+    // Angle (rad) between the direction the wind blows to and the local route heading.
     try {
       if (!sample) return null;
       const wdir = Number(sample.windDir);
@@ -15555,8 +15592,7 @@
       // Convert wind "from" to "to" direction (+180°) before projection.
       const wdirTo = ((wdir + 180.0) % 360.0);
       const ang = (wdirTo - routeDir) * Math.PI / 180.0;
-      const comp = Math.cos(ang);
-      return Number.isFinite(comp) ? comp : null;
+      return Number.isFinite(ang) ? ang : null;
     } catch (_) {
       return null;
     }
@@ -22296,189 +22332,11 @@
     // Increase bottom padding slightly to ensure x-axis ticks and labels are fully visible
     // Increase right padding to ensure right-side ticks/labels/color bars aren't clipped
     const padBot = wantBands ? 34 : 22;
+    if (_pwActive()) {
+      // Profile window: day headers above the plot; distance axis and wind strip below.
+      return { padTop: PW.dayHeadH, padBot: PW.axisH + PW.windH + 4, padL: 52, padR: 18 };
+    }
     return { padTop: Math.max(minTop, neededTop), padBot, padL: 18, padR: 18 };
-  }
-
-  function _drawTourProfileDayMarkers(profile, xAt, padTop, innerH, axisLen) {
-    if (!_tourIsActive()) return;
-    try {
-      const routePoints = Array.isArray(OVERLAY_POINTS) ? OVERLAY_POINTS : [];
-      const totalDays = _tourRequestedRideDayCount(profile);
-      const chartTop = Math.max(0, Math.round(padTop));
-      const chartBottom = Math.max(chartTop + 64, Math.round(padTop + Math.max(1, innerH)));
-      const desiredTop = chartTop + 10;
-      const stackTop = Math.min(chartBottom - 98, Math.max(chartTop + 10, desiredTop));
-      const boxW = 48;
-      const boxH = 56;
-      const luckyY = stackTop + 10;
-      const tempY = stackTop + 23;
-      const iconTop = stackTop + 25;
-      const rainY = stackTop + 49;
-      const calDayY = stackTop + 66;
-      const calDateY = stackTop + 78;
-      const calYearY = stackTop + 89;
-      const canvasRect = profileCanvas && profileCanvas.getBoundingClientRect ? profileCanvas.getBoundingClientRect() : null;
-      const canvasWidth = Math.max(boxW, Math.round(canvasRect && Number.isFinite(canvasRect.width) ? canvasRect.width : 0));
-
-      const drawLabelBox = (cx, topY) => {
-        const x0 = Math.round(cx - boxW / 2);
-        const y0 = Math.round(topY);
-        const radius = 11;
-        profileCtx.save();
-        profileCtx.shadowColor = 'rgba(15, 23, 42, 0.10)';
-        profileCtx.shadowBlur = 14;
-        profileCtx.shadowOffsetY = 3;
-        profileCtx.fillStyle = 'rgba(255,255,255,0.74)';
-        profileCtx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
-        profileCtx.lineWidth = 1;
-        profileCtx.beginPath();
-        profileCtx.moveTo(x0 + radius, y0);
-        profileCtx.lineTo(x0 + boxW - radius, y0);
-        profileCtx.quadraticCurveTo(x0 + boxW, y0, x0 + boxW, y0 + radius);
-        profileCtx.lineTo(x0 + boxW, y0 + boxH - radius);
-        profileCtx.quadraticCurveTo(x0 + boxW, y0 + boxH, x0 + boxW - radius, y0 + boxH);
-        profileCtx.lineTo(x0 + radius, y0 + boxH);
-        profileCtx.quadraticCurveTo(x0, y0 + boxH, x0, y0 + boxH - radius);
-        profileCtx.lineTo(x0, y0 + radius);
-        profileCtx.quadraticCurveTo(x0, y0, x0 + radius, y0);
-        profileCtx.closePath();
-        profileCtx.fill();
-        profileCtx.shadowColor = 'transparent';
-        profileCtx.stroke();
-        profileCtx.restore();
-      };
-
-      profileCtx.save();
-      profileCtx.globalAlpha = 1;
-      profileCtx.globalCompositeOperation = 'source-over';
-      try { profileCtx.filter = 'none'; } catch (_) {}
-      profileCtx.shadowColor = 'transparent';
-      profileCtx.shadowBlur = 0;
-      profileCtx.shadowOffsetX = 0;
-      profileCtx.shadowOffsetY = 0;
-      profileCtx.setLineDash([]);
-      profileCtx.textAlign = 'center';
-      profileCtx.textBaseline = 'middle';
-
-      const rbModel = _roadbookBuild(profile);
-      const viewWin = _profileGetViewWindow(profile);
-      const visibleMin = Number(viewWin.minKm) || 0;
-      const visibleMax = Number(viewWin.maxKm) || Number(axisLen) || 0;
-      const rideToLogical = new Map();
-      if (rbModel && Array.isArray(rbModel.days)) {
-        for (const day of rbModel.days) {
-          if (day.type === 'ride') rideToLogical.set(day.rideIdx, day.logicalIdx);
-        }
-      }
-      const mapDayEntries = _tourRouteDayCardEntries(profile);
-      const minCenter = boxW * 0.5 + 4;
-      const maxCenter = Math.max(minCenter, canvasWidth - (boxW * 0.5 + 4));
-      const minLabelGapPx = boxW + 6;
-      let lastLabelX = -Infinity;
-
-      for (let dayIdx = 0; dayIdx < totalDays; dayIdx++) {
-        try {
-          const forecastUnavailable = _tourForecastDayUnavailable(dayIdx);
-          const mapEntry = Array.isArray(mapDayEntries) ? (mapDayEntries[dayIdx] || null) : null;
-          const segment = _tourSegmentRange(profile, dayIdx);
-          const startDist = segment.startDist;
-          const endDist = segment.endDist;
-          if (endDist < visibleMin - 1e-6 || startDist > visibleMax + 1e-6) continue;
-          const midDist = segment.midDist;
-          const sample = _tourSampleAtDist(midDist);
-          let dayPoints = routePoints.filter((point) => Number(point && point.tourDayIndex) === dayIdx);
-          if (!dayPoints.length) {
-            dayPoints = routePoints.filter((point) => {
-              const dk = Number(point && point.dist);
-              return Number.isFinite(dk) && dk >= startDist && dk < endDist;
-            });
-          }
-          const daySummary = _tourSummarizeDayPoints(dayPoints);
-          const rawX = xAt(midDist);
-          if (!Number.isFinite(rawX)) continue;
-          if (rawX < minCenter || rawX > maxCenter) continue;
-          if ((rawX - lastLabelX) < minLabelGapPx) continue;
-          const x = rawX;
-          lastLabelX = x;
-          const entryTemp = _finiteOrNull(mapEntry && mapEntry.tempC);
-          const entryRain = _finiteOrNull(mapEntry && mapEntry.rainMm);
-          const tMed = forecastUnavailable
-            ? null
-            : Number.isFinite(entryTemp)
-              ? entryTemp
-              : Number.isFinite(_finiteOrNull(daySummary && daySummary.tempMedian))
-                ? _finiteOrNull(daySummary.tempMedian)
-              : Number.isFinite(_finiteOrNull(sample && sample.temp_day_median))
-                ? _finiteOrNull(sample.temp_day_median)
-                : Number.isFinite(_finiteOrNull(sample && sample.temperature))
-                  ? _finiteOrNull(sample.temperature)
-                  : Number.isFinite(_finiteOrNull(sample && sample.temp_hist_median))
-                    ? _finiteOrNull(sample.temp_hist_median)
-                    : null;
-          const rainMm = forecastUnavailable
-            ? null
-            : Number.isFinite(entryRain)
-              ? entryRain
-              : Number.isFinite(_finiteOrNull(daySummary && daySummary.precipSum))
-                ? _finiteOrNull(daySummary.precipSum)
-              : Number.isFinite(_finiteOrNull(sample && sample.rainTypical))
-                ? _finiteOrNull(sample.rainTypical)
-                : null;
-          const rainProb = forecastUnavailable
-            ? null
-            : Number.isFinite(Number(daySummary && daySummary.rainProb))
-              ? Number(daySummary.rainProb)
-              : Number(sample && sample.rainProb);
-          const iconClass = mapEntry
-            ? String(mapEntry.iconClass || 'cloudy')
-            : (Number.isFinite(rainProb) ? mapWeatherByProb(rainProb) : 'cloudy');
-          const lucky = (mapEntry && typeof mapEntry.lucky === 'boolean')
-            ? mapEntry.lucky
-            : (daySummary && typeof daySummary.lucky === 'boolean') ? daySummary.lucky : null;
-          const logIdx = rideToLogical.has(dayIdx) ? rideToLogical.get(dayIdx) : dayIdx;
-          const logDateIso = _roadbookLogicalDateIso(logIdx);
-          const dateIso = logDateIso || '';
-          const calendarDateLabel = dateIso ? _weekdayMonthDayShort(dateIso) : '';
-          const calendarYearLabel = dateIso ? _yearFromIso(dateIso) : '';
-          const rainLabel = Number.isFinite(rainMm) ? `${fmtN(rainMm, 0)} mm` : '';
-
-          drawLabelBox(x, stackTop);
-
-          if (Number.isFinite(tMed)) {
-            profileCtx.fillStyle = '#0f172a';
-            profileCtx.font = '600 12px system-ui, -apple-system, sans-serif';
-            profileCtx.fillText(`${Math.round(tMed)}°`, x, tempY);
-          }
-          renderWeatherIcon(profileCtx, x, iconTop, iconClass, 20);
-          if (typeof lucky === 'boolean') {
-            profileCtx.beginPath();
-            profileCtx.arc(x, luckyY, 4.4, 0, Math.PI * 2);
-            profileCtx.fillStyle = lucky ? '#47d764' : '#b3b3b3';
-            profileCtx.fill();
-            profileCtx.strokeStyle = lucky ? 'rgba(20, 126, 56, 0.95)' : 'rgba(120, 132, 145, 0.72)';
-            profileCtx.lineWidth = 1.2;
-            profileCtx.stroke();
-          }
-          if (rainLabel) {
-            profileCtx.fillStyle = '#64748b';
-            profileCtx.font = '500 9px system-ui, -apple-system, sans-serif';
-            profileCtx.fillText(rainLabel, x, rainY);
-          }
-          profileCtx.fillStyle = '#334155';
-          profileCtx.font = '600 9px system-ui, -apple-system, sans-serif';
-          profileCtx.fillText(i18nT('tourbook.day', { n: dayIdx + 1 }), x, calDayY);
-          profileCtx.fillStyle = '#475569';
-          profileCtx.font = '600 10px system-ui, -apple-system, sans-serif';
-          profileCtx.fillText(calendarDateLabel || '—', x, calDateY);
-          profileCtx.fillStyle = '#64748b';
-          profileCtx.font = '500 9px system-ui, -apple-system, sans-serif';
-          profileCtx.fillText(calendarYearLabel || '', x, calYearY);
-        } catch (_) {
-          continue;
-        }
-      }
-      profileCtx.restore();
-    } catch (_) {}
   }
 
   function _drawRoadbookRestDayMarkers(profile, xAt, padTop, innerH) {
@@ -22821,9 +22679,601 @@
   }
 
   // Profile panel height management
+  // ---------------------------------------------------------------------------
+  // Profile window (Tour Planning): "Route Profile & Tour Weather".
+  // drawProfile stays the single chart engine: elevation, temperature, one
+  // precipitation bar per tour day, the day headers with good-weather symbols and
+  // the wind strip share its x-axis (distance, zoom window, day boundaries). Every
+  // per-day value comes from the TourBook model (_roadbookBuild), i.e. exactly the
+  // daily values the TourBook cards show; nothing is re-aggregated here.
+  // ---------------------------------------------------------------------------
+  const PW = {
+    dayHeadH: 56,          // day label, date and good-weather symbol above the plot
+    axisH: 22,             // distance axis labels
+    windH: 42,             // wind strip below the distance axis
+    minH: 320,             // smallest useful window height in Tour Planning
+    collapsedKey: 'wm_profile_collapsed',
+    heightKey: 'wm_profile_height_tour',
+    model: null,
+  };
+  // Existing weather classification (mapWeatherByProb of the day's rain probability,
+  // as the TourBook icons): only these two classes count as good weather.
+  const PW_FAVOURABLE = { sunny: 'pw.fav.sunny', partly_cloudy: 'pw.fav.partly' };
+  const PW_COLORS = {
+    elevFill: ['rgba(176, 152, 120, 0.24)', 'rgba(176, 152, 120, 0.34)'],
+    elevLine: '#7a6650',
+    temp: '#16a34a',
+    tempBand: 'rgba(34, 197, 94, ',
+    precip: 'rgba(59, 130, 246, 0.42)',
+    precipEdge: '#2563eb',
+    precipText: '#1e3a8a',
+    head: '#1d4ed8',
+    tail: '#16a34a',
+    calm: '#94a3b8',
+  };
+
+  function _pwActive() {
+    try { return _tourIsActive() && !_climateProfileIsActive(); } catch (_) { return false; }
+  }
+
+  function _pwCollapsed() {
+    return !!(profilePanel && profilePanel.classList.contains('is-collapsed'));
+  }
+
+  // Relative wind direction of a day: direction the wind comes FROM, relative to the
+  // direction of travel, in eight sectors (0 = from ahead).
+  const PW_REL_SECTORS = ['ahead', 'aheadRight', 'right', 'behindRight', 'behind', 'behindLeft', 'left', 'aheadLeft'];
+
+  function _pwDayModel(profile) {
+    const rb = _roadbookBuild(profile);
+    const days = Array.isArray(rb && rb.days) ? rb.days : [];
+    const entries = Array.isArray(rb && rb.rideEntries) ? rb.rideEntries : [];
+    const routePoints = Array.isArray(OVERLAY_POINTS) ? OVERLAY_POINTS : [];
+    const out = days.map((day) => {
+      const w = (day && day.weather) || {};
+      const ride = day.type === 'ride';
+      const forecastGap = ride && _tourForecastDayUnavailable(day.rideIdx);
+      const entry = ride ? (entries[day.rideIdx] || null) : null;
+      const rainProb = entry ? Number(entry.rainProb) : NaN;
+      const hasData = !!w.hasData && !forecastGap;
+      const cls = (ride && hasData && Number.isFinite(rainProb)) ? mapWeatherByProb(rainProb) : null;
+      const windMs = hasData ? _finiteOrNull(w.windMs) : null;
+      const eff = hasData ? _finiteOrNull(w.effMean) : null;
+      // Along-route component of the day = daily mean wind speed x daily mean
+      // alignment (mean cosine between wind and travel direction over the day's
+      // points: vector components, never averaged compass angles). + tailwind,
+      // - headwind. Rest days have no direction of travel.
+      const comp = (ride && Number.isFinite(windMs) && Number.isFinite(eff)) ? windMs * eff : null;
+      let relFromDeg = null;
+      if (comp !== null) {
+        const pts = _tourPointsForSegment(routePoints, day.rideIdx, Number(day.startKm), Number(day.endKm));
+        let sumSin = 0;
+        let n = 0;
+        for (const pt of pts) {
+          const ang = _tourRelativeWindAngle({ windDir: pt && pt.windDir }, Number(pt && pt.dist));
+          if (ang === null) continue;
+          sumSin += Math.sin(ang);
+          n += 1;
+        }
+        if (n) {
+          // to-direction relative to travel from (along, cross) components; +180 = from.
+          const toDeg = Math.atan2(sumSin / n, eff) * 180 / Math.PI;
+          relFromDeg = ((toDeg + 180) % 360 + 360) % 360;
+        }
+      }
+      return {
+        key: String(day.key || ''),
+        type: ride ? 'ride' : 'rest',
+        rideIdx: ride ? Number(day.rideIdx) : null,
+        n: Number(day.logicalIdx) + 1,
+        dateIso: String(day.dateIso || ''),
+        startKm: Number(day.startKm) || 0,
+        endKm: Number(day.endKm) || 0,
+        hasData,
+        tempC: hasData ? _finiteOrNull(w.tempC) : null,
+        rainMm: hasData ? _finiteOrNull(w.rainMm) : null,
+        windMs,
+        comp,
+        headMs: comp === null ? null : Math.max(0, -comp),
+        tailMs: comp === null ? null : Math.max(0, comp),
+        relFromDeg,
+        cls,
+        favourable: cls ? Object.prototype.hasOwnProperty.call(PW_FAVOURABLE, cls) : null,
+      };
+    });
+    PW.model = { days: out, rideCount: Number(rb && rb.rideCount) || 0 };
+    try { window.__WM_PROFILE_WINDOW__ = { model: PW.model, summary: () => _pwSummary(PW.model), geo: () => PW.geo || null }; } catch (_) {}
+    return PW.model;
+  }
+
+  function _pwRelSectorKey(relFromDeg) {
+    if (!Number.isFinite(Number(relFromDeg))) return '';
+    return PW_REL_SECTORS[Math.round(Number(relFromDeg) / 45) % 8];
+  }
+
+  function _pwTempBandKeys(points) {
+    const has = (lo, hi) => points.some((p) => Number.isFinite(Number(p && p[lo])) && Number.isFinite(Number(p && p[hi])));
+    if (has('temp_day_typical_min', 'temp_day_typical_max')) return ['temp_day_typical_min', 'temp_day_typical_max'];
+    if (has('temp_day_p25', 'temp_day_p75')) return ['temp_day_p25', 'temp_day_p75'];
+    if (has('temp_hist_p25', 'temp_hist_p75')) return ['temp_hist_p25', 'temp_hist_p75'];
+    return null;
+  }
+
+  // Summary metrics: the same daily values as the chart and the TourBook.
+  function _pwSummary(model) {
+    const days = (model && model.days) || [];
+    const mean = (vals) => (vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null);
+    const temps = days.map((d) => d.tempC).filter((v) => Number.isFinite(v));
+    const rains = days.map((d) => d.rainMm).filter((v) => Number.isFinite(v));
+    const heads = days.filter((d) => d.type === 'ride').map((d) => d.headMs).filter((v) => Number.isFinite(v));
+    // Typical range: the band drawn in the chart (same fields), averaged over the route points.
+    let tempLo = null;
+    let tempHi = null;
+    try {
+      const pts = Array.isArray(OVERLAY_POINTS) ? OVERLAY_POINTS : [];
+      const keys = _pwTempBandKeys(pts);
+      if (keys) {
+        const pairs = pts.map((p) => [Number(p[keys[0]]), Number(p[keys[1]])]).filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b));
+        tempLo = mean(pairs.map(([a, b]) => Math.min(a, b)));
+        tempHi = mean(pairs.map(([a, b]) => Math.max(a, b)));
+      }
+    } catch (_) {}
+    return {
+      tempMean: mean(temps),
+      tempLo,
+      tempHi,
+      rainMean: mean(rains),
+      rainTotal: rains.length ? rains.reduce((a, b) => a + b, 0) : null,
+      rainMissing: days.length - rains.length,
+      headMean: mean(heads),
+      rideDays: days.filter((d) => d.type === 'ride').length,
+      good: days.filter((d) => d.favourable === true).length,
+      unclassified: days.filter((d) => d.favourable === null).length,
+      total: days.length,
+    };
+  }
+
+  function _pwPeriodLabel() {
+    try {
+      const ys = (_strategicGetSelectedYears() || []).map(Number).filter(Number.isFinite);
+      if (!ys.length) return '';
+      return ys.length === 1 ? String(ys[0]) : `${Math.min(...ys)}–${Math.max(...ys)}`;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  const PW_ICONS = {
+    temp: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13.5V5a2 2 0 1 1 4 0v8.5a4 4 0 1 1-4 0Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="17" r="1.8" fill="currentColor"/></svg>',
+    precip: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5s6 6.6 6 10.6a6 6 0 0 1-12 0C6 10.1 12 3.5 12 3.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
+    wind: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9h11a3 3 0 1 0-3-3M3 15h15a3 3 0 1 1-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  };
+
+  // Header subtitle, tour summary strip and the four summary cards (HTML around the chart).
+  function _pwRenderChrome(model) {
+    try {
+      if (!profilePanel) return;
+      const head = document.getElementById('wmProfileHead');
+      if (!head) return;
+      const m = model || PW.model;
+      const days = (m && m.days) || [];
+      const sub = head.querySelector('[data-role=pw-sub]');
+      if (sub) {
+        const forecast = String((LAST_TOUR_SUMMARY && LAST_TOUR_SUMMARY.weather_mode) || getTourWeatherMode()) === 'forecast';
+        const period = _pwPeriodLabel();
+        _setText(sub, forecast ? i18nT('pw.subForecast') : (period ? i18nT('pw.subClimate', { period }) : i18nT('pw.subClimateNoPeriod')));
+      }
+      const strip = head.querySelector('[data-role=pw-strip]');
+      if (strip) {
+        const from = String((tourSidebarRouteStart && tourSidebarRouteStart.textContent) || '').trim() || i18nT('tour.route.start');
+        const to = String((tourSidebarRouteEnd && tourSidebarRouteEnd.textContent) || '').trim() || i18nT('tour.route.end');
+        const km = _finiteOrNull(_tourRouteDistanceKm());
+        const hm = (km !== null) ? _finiteOrNull(_tourRouteElevationHm()) : null;
+        const ride = days.filter((d) => d.type === 'ride').length;
+        const rest = days.length - ride;
+        const first = days.length ? days[0].dateIso : '';
+        const last = days.length ? days[days.length - 1].dateIso : '';
+        const dates = (first && last) ? `${_fmtIsoDayMonthCompact(first)} – ${_fmtIsoDayMonthCompact(last)}` : '';
+        const item = (role, text, title) => `<span class="wm-pw-strip-item" data-role="${role}"${title ? ` title="${_htmlEsc(title)}"` : ''}>${text}</span>`;
+        strip.innerHTML = [
+          item('route', `<b>${_htmlEsc(from)}</b><span class="wm-pw-arrow" aria-hidden="true">→</span><b>${_htmlEsc(to)}</b>`),
+          item('distance', _htmlEsc(km !== null ? `${fmtN(km, 0)} km` : '—'), i18nT('pw.strip.distance')),
+          item('ascent', _htmlEsc(hm !== null ? `↗ ${fmtN(Math.round(hm * 100), 0)} m` : '—'), i18nT('pw.strip.ascent')),
+          item('ride-days', _htmlEsc(i18nT(ride === 1 ? 'pw.strip.rideDay' : 'pw.strip.rideDays', { n: fmtN(ride, 0) }))),
+          item('rest-days', _htmlEsc(i18nT(rest === 1 ? 'pw.strip.restDay' : 'pw.strip.restDays', { n: fmtN(rest, 0) }))),
+          dates ? item('dates', _htmlEsc(dates), i18nT('pw.strip.dates')) : '',
+        ].join('<span class="wm-pw-dot" aria-hidden="true">·</span>');
+      }
+      const cards = document.getElementById('wmProfileCards');
+      if (cards) {
+        const s = _pwSummary(m);
+        const dash = '—';
+        const card = (metric, icon, title, value, note) => `<div class="wm-pw-card" data-metric="${metric}">`
+          + `<span class="wm-pw-card-icon" aria-hidden="true">${PW_ICONS[icon]}</span>`
+          + `<span class="wm-pw-card-body"><span class="wm-pw-card-k">${_htmlEsc(title)}</span>`
+          + `<span class="wm-pw-card-v" data-role="value">${_htmlEsc(value)}</span>`
+          + `<span class="wm-pw-card-n" data-role="note">${_htmlEsc(note)}</span></span></div>`;
+        const tempNote = (s.tempLo !== null && s.tempHi !== null)
+          ? i18nT('pw.card.tempRange', { lo: fmtN(s.tempLo, 0), hi: fmtN(s.tempHi, 0) })
+          : i18nT('pw.card.tempNote');
+        const rainNote = s.rainTotal !== null
+          ? i18nT('pw.card.precipTotal', { total: fmtN(s.rainTotal, 1) }) + (s.rainMissing > 0 ? ` · ${i18nT('pw.card.missing', { n: fmtN(s.rainMissing, 0) })}` : '')
+          : dash;
+        const goodNote = i18nT('pw.card.goodNote') + (s.unclassified > 0 ? ` · ${i18nT('pw.card.unclassified', { n: fmtN(s.unclassified, 0) })}` : '');
+        cards.innerHTML = [
+          card('temp', 'temp', i18nT('pw.card.temp'), s.tempMean !== null ? `${fmtN(s.tempMean, 1)} °C` : dash, tempNote),
+          card('precip', 'precip', i18nT('pw.card.precip'), s.rainMean !== null ? i18nT('pw.card.precipValue', { v: fmtN(s.rainMean, 1) }) : dash, rainNote),
+          card('headwind', 'wind', i18nT('pw.card.head'), s.headMean !== null ? `${fmtN(s.headMean, 1)} m/s` : dash, i18nT('pw.card.headNote')),
+          card('good', 'sun', i18nT('pw.card.good'), s.total ? i18nT('pw.card.goodValue', { n: fmtN(s.good, 0), total: fmtN(s.total, 0) }) : dash, goodNote),
+        ].join('');
+      }
+    } catch (_) {}
+  }
+
+  function _pwDateShort(iso) {
+    try {
+      return new Date(`${String(iso).slice(0, 10)}T00:00:00Z`).toLocaleDateString(_uiLocale(), { day: 'numeric', month: 'short', timeZone: 'UTC' });
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _setText(el, text) {
+    if (el && el.textContent !== text) el.textContent = text;
+  }
+
+  function _pwIcon(ctx, cx, top, cls, size) {
+    const img = preloadWeatherBitmap(cls);
+    if (img && img.complete && img.naturalWidth) {
+      ctx.drawImage(img, Math.round(cx - size / 2), Math.round(top), size, size);
+      return;
+    }
+    if (img && !img.__wmPwRedraw) {
+      img.__wmPwRedraw = true;
+      try { img.addEventListener('load', () => _scheduleProfileRedraw(), { once: true }); } catch (_) {}
+    }
+  }
+
+  function _pwDayX(d, xAt) {
+    return d.type === 'ride' ? xAt((d.startKm + d.endKm) / 2) : xAt(d.startKm);
+  }
+
+  function _pwVisible(d, view) {
+    const a = Math.min(d.startKm, d.endKm);
+    const b = Math.max(d.startKm, d.endKm);
+    return b >= view.minKm - 1e-6 && a <= view.maxKm + 1e-6;
+  }
+
+  // Day label, date and (only for good weather) a large weather symbol per day.
+  function _pwDrawDayHeaders(model, xAt, geo, view) {
+    const ctx = profileCtx;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    const placed = [];
+    const ordered = model.days.slice().sort((a, b) => (a.type === b.type ? 0 : (a.type === 'ride' ? -1 : 1)));
+    for (const d of ordered) {
+      if (!_pwVisible(d, view)) continue;
+      const x = _pwDayX(d, xAt);
+      if (!(x >= geo.padL - 2 && x <= geo.padL + geo.innerW + 2)) continue;
+      const span = d.type === 'ride' ? Math.abs(xAt(d.endKm) - xAt(d.startKm)) : 0;
+      const compact = d.type === 'ride' ? span < 74 : true;
+      const label = d.type === 'ride'
+        ? (compact ? i18nT('pw.dayShort', { n: d.n }) : i18nT('tourbook.day', { n: d.n }))
+        : i18nT('pw.rest');
+      const date = d.dateIso ? (compact ? _pwDateShort(d.dateIso) : _fmtIsoDayMonthCompact(d.dateIso)) : '';
+      ctx.font = '700 11px system-ui, -apple-system, sans-serif';
+      const w = Math.max(ctx.measureText(label).width, (ctx.font = '500 10px system-ui, -apple-system, sans-serif', ctx.measureText(date).width)) + 6;
+      if (placed.some((p) => Math.abs(p.x - x) < (p.w + w) / 2)) continue;
+      placed.push({ x, w });
+      ctx.font = '700 11px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = d.type === 'ride' ? '#0f172a' : '#64748b';
+      ctx.fillText(label, x, 13);
+      ctx.font = '500 10px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = '#64748b';
+      if (date) ctx.fillText(date, x, 25);
+      if (d.favourable) {
+        const size = Math.max(20, Math.min(30, geo.padTop - 32));
+        _pwIcon(ctx, x, 29, d.cls, size);
+      }
+    }
+    ctx.restore();
+  }
+
+  // One bar per tour day: the TourBook's daily precipitation, spanning the day's interval.
+  function _pwDrawPrecipBars(model, xAt, geo, view) {
+    const ctx = profileCtx;
+    const vals = model.days.map((d) => d.rainMm).filter((v) => Number.isFinite(v));
+    if (!vals.length) return;
+    const maxMm = Math.max(8, Math.max(...vals)) * 1.12;
+    const baseY = geo.padTop + geo.innerH;
+    const maxH = geo.innerH * 0.42;
+    ctx.save();
+    for (const d of model.days) {
+      if (!Number.isFinite(d.rainMm) || !_pwVisible(d, view)) continue;
+      let x0;
+      let x1;
+      if (d.type === 'ride') {
+        x0 = xAt(d.startKm);
+        x1 = xAt(d.endKm);
+        const inset = Math.min(8, Math.abs(x1 - x0) * 0.14);
+        x0 += inset;
+        x1 -= inset;
+      } else {
+        const xc = xAt(d.startKm);
+        x0 = xc - 6;
+        x1 = xc + 6;
+      }
+      const w = Math.max(3, x1 - x0);
+      const h = Math.max(1.5, (Math.max(0, d.rainMm) / maxMm) * maxH);
+      ctx.fillStyle = PW_COLORS.precip;
+      ctx.fillRect(x0, baseY - h, w, h);
+      ctx.fillStyle = PW_COLORS.precipEdge;
+      ctx.fillRect(x0, baseY - h, w, 1.5);
+      const label = w >= 40 ? `${fmtN(d.rainMm, 1)} mm` : fmtN(d.rainMm, d.rainMm < 10 ? 1 : 0);
+      ctx.font = '700 10px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.strokeText(label, x0 + w / 2, baseY - h - 4);
+      ctx.fillStyle = PW_COLORS.precipText;
+      ctx.fillText(label, x0 + w / 2, baseY - h - 4);
+    }
+    ctx.restore();
+  }
+
+  function _pwArrow(ctx, xc, yc, dir, len, width, color) {
+    const half = len / 2;
+    const head = Math.min(9, Math.max(6, width * 2.6));
+    const xa = xc - dir * half;
+    const xb = xc + dir * half;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(xa, yc);
+    ctx.lineTo(xb - dir * head * 0.8, yc);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(xb, yc);
+    ctx.lineTo(xb - dir * head, yc - head * 0.62);
+    ctx.lineTo(xb - dir * head, yc + head * 0.62);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Wind strip: one arrow per riding day for the along-route component (right =
+  // with the direction of travel = tailwind, green; left = against it = headwind,
+  // blue). Arrow length and thickness scale with the component, on one scale for
+  // the whole tour.
+  function _pwDrawWindStrip(model, xAt, geo, view) {
+    const ctx = profileCtx;
+    const y0 = geo.windTop;
+    const h = PW.windH;
+    ctx.save();
+    ctx.fillStyle = 'rgba(241, 245, 249, 0.9)';
+    ctx.fillRect(geo.padL, y0, geo.innerW, h);
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(geo.padL, y0 + 0.5);
+    ctx.lineTo(geo.padL + geo.innerW, y0 + 0.5);
+    ctx.stroke();
+    ctx.font = '700 9px system-ui, -apple-system, sans-serif';
+    ctx.fillStyle = '#64748b';
+    ctx.textAlign = 'left';
+    ctx.fillText(i18nT('pw.windStrip').toUpperCase(), geo.padL + 4, y0 + 11);
+    const comps = model.days.map((d) => Math.abs(Number(d.comp))).filter((v) => Number.isFinite(v));
+    const maxComp = Math.max(3, comps.length ? Math.max(...comps) : 0);
+    const yc = y0 + h * 0.5;
+    ctx.textAlign = 'center';
+    for (const d of model.days) {
+      if (!_pwVisible(d, view)) continue;
+      const x = _pwDayX(d, xAt);
+      if (!(x >= geo.padL && x <= geo.padL + geo.innerW)) continue;
+      if (d.type !== 'ride') {
+        ctx.fillStyle = PW_COLORS.calm;
+        ctx.font = '600 10px system-ui, -apple-system, sans-serif';
+        ctx.fillText('–', x, yc + 3);
+        continue;
+      }
+      if (!Number.isFinite(d.comp)) continue;
+      const span = Math.abs(xAt(d.endKm) - xAt(d.startKm));
+      const mag = Math.abs(d.comp);
+      if (mag < 0.25) {
+        ctx.fillStyle = PW_COLORS.calm;
+        ctx.beginPath();
+        ctx.arc(x, yc - 3, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = '600 9.5px system-ui, -apple-system, sans-serif';
+        ctx.fillText('≈ 0 m/s', x, yc + 14);
+        continue;
+      }
+      const lenMax = Math.max(18, Math.min(64, span * 0.78));
+      const len = 12 + (mag / maxComp) * (lenMax - 12);
+      const width = 1.8 + (mag / maxComp) * 2.6;
+      const color = d.comp < 0 ? PW_COLORS.head : PW_COLORS.tail;
+      _pwArrow(ctx, x, yc - 4, d.comp < 0 ? -1 : 1, len, width, color);
+      ctx.font = '700 9.5px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = color;
+      ctx.fillText(`${fmtN(mag, 1)} m/s`, x, yc + 15);
+    }
+    ctx.restore();
+  }
+
+  // Day boundaries through the header band and the wind strip, plus the hovered /
+  // selected day's interval over the full height.
+  function _pwDrawDayFrames(model, xAt, geo, view) {
+    const ctx = profileCtx;
+    ctx.save();
+    const hoverKey = String((ROADBOOK_STATE && ROADBOOK_STATE.hoverDayId) || '');
+    const activeKey = String(_roadbookCurrentActiveDayKey() || '');
+    const bottom = geo.windTop + PW.windH;
+    for (const d of model.days) {
+      if (d.type !== 'ride' || !_pwVisible(d, view)) continue;
+      const isActive = d.key === activeKey;
+      const isHover = d.key === hoverKey && !isActive;
+      if (!isActive && !isHover) continue;
+      const x0 = Math.max(geo.padL, xAt(d.startKm));
+      const x1 = Math.min(geo.padL + geo.innerW, xAt(d.endKm));
+      if (x1 <= x0) continue;
+      ctx.fillStyle = isActive ? 'rgba(15, 118, 110, 0.10)' : 'rgba(15, 118, 110, 0.06)';
+      ctx.fillRect(x0, 2, x1 - x0, geo.padTop - 2);
+      ctx.fillRect(x0, geo.windTop, x1 - x0, PW.windH);
+      if (isHover) ctx.fillRect(x0, geo.padTop, x1 - x0, geo.innerH);
+    }
+    ctx.strokeStyle = 'rgba(100, 116, 139, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    const marks = _tourNormalizedBoundaryKm(LAST_PROFILE, true);
+    for (const km of marks) {
+      const x = xAt(Number(km));
+      if (!(x > geo.padL && x < geo.padL + geo.innerW)) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, 4);
+      ctx.lineTo(x, geo.padTop);
+      ctx.moveTo(x, geo.windTop);
+      ctx.lineTo(x, bottom);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function _pwGeometry() {
+    const rect = profileCanvas.getBoundingClientRect();
+    const W = Math.max(1, Math.floor(rect.width));
+    const H = Math.max(1, Math.floor(rect.height));
+    const { padTop, padBot, padL, padR } = getPads();
+    const innerW = Math.max(1, W - padL - padR);
+    const innerH = Math.max(1, H - padTop - padBot);
+    return { W, H, padTop, padBot, padL, padR, innerW, innerH, windTop: padTop + innerH + PW.axisH };
+  }
+
+  // Cursor readout: position values plus the day's values (daily aggregation).
+  function _pwRenderReadout(dkm, xDisplay, elev, tempText) {
+    try {
+      const box = document.getElementById('wmProfileReadout');
+      if (!box || !_pwActive()) return;
+      let hovering = false;
+      try { hovering = !!(profileCanvas && profileCanvas.matches(':hover')); } catch (_) {}
+      if (!hovering) { box.hidden = true; return; }
+      const model = PW.model;
+      const days = (model && model.days) || [];
+      const day = days.find((d) => d.type === 'ride' && dkm >= Math.min(d.startKm, d.endKm) - 1e-6 && dkm <= Math.max(d.startKm, d.endKm) + 1e-6) || null;
+      const rows = [];
+      const headBits = [];
+      if (day) headBits.push(i18nT('tourbook.day', { n: day.n }));
+      if (day && day.dateIso) headBits.push(_fmtIsoDayMonthCompact(day.dateIso));
+      headBits.push(`${fmtN(dkm, 1)} km`);
+      if (Number.isFinite(Number(elev))) headBits.push(`${fmtN(Number(elev), 0)} m`);
+      rows.push(`<div class="wm-pw-ro-head">${_htmlEsc(headBits.join(' · '))}</div>`);
+      const row = (k, v, cls) => `<div class="wm-pw-ro-row${cls ? ` ${cls}` : ''}"><span>${_htmlEsc(k)}</span><b>${_htmlEsc(v)}</b></div>`;
+      if (tempText && tempText !== '—') rows.push(row(i18nT('pw.ro.temp'), tempText));
+      if (day) {
+        rows.push(row(i18nT('pw.ro.precipDay'), Number.isFinite(day.rainMm) ? `${fmtN(day.rainMm, 1)} mm` : '—'));
+        let wind = '—';
+        let cls = '';
+        if (Number.isFinite(day.comp)) {
+          const mag = Math.abs(day.comp);
+          wind = mag < 0.25 ? i18nT('pw.ro.windCalm') : i18nT(day.comp < 0 ? 'pw.ro.head' : 'pw.ro.tail', { v: fmtN(mag, 1) });
+          cls = mag < 0.25 ? '' : (day.comp < 0 ? 'is-head' : 'is-tail');
+          const sector = _pwRelSectorKey(day.relFromDeg);
+          if (sector) wind += ` · ${i18nT(`pw.rel.${sector}`)}`;
+        }
+        rows.push(row(i18nT('pw.ro.windDay'), wind, cls));
+        if (day.cls) rows.push(row(i18nT('pw.ro.sky'), i18nT(`pw.sky.${day.cls}`)));
+      }
+      box.innerHTML = rows.join('');
+      box.hidden = false;
+      const wrap = box.parentElement;
+      const wrapW = wrap ? wrap.clientWidth : 0;
+      const bw = box.offsetWidth || 220;
+      const left = (Number(xDisplay) + 14 + bw <= wrapW) ? Number(xDisplay) + 14 : Math.max(4, Number(xDisplay) - 14 - bw);
+      box.style.left = `${Math.round(left)}px`;
+      // below the day headers, so labels and symbols stay visible
+      box.style.top = `${Math.round(PW.dayHeadH + 6)}px`;
+    } catch (_) {}
+  }
+
+  function _pwHideReadout() {
+    try {
+      const box = document.getElementById('wmProfileReadout');
+      if (box) box.hidden = true;
+    } catch (_) {}
+  }
+
+  // Close / reopen: the window collapses to its header (the route stays loaded).
+  function _pwSetCollapsed(collapsed, opts = {}) {
+    try {
+      if (!profilePanel) return;
+      const on = !!collapsed;
+      const was = _pwCollapsed();
+      if (on && !was) {
+        PW.expandedH = profilePanel.offsetHeight || null;
+      }
+      profilePanel.classList.toggle('is-collapsed', on);
+      const btn = document.getElementById('wmProfileToggle');
+      if (btn) {
+        const label = i18nT(on ? 'pw.open' : 'pw.close');
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+        btn.setAttribute('aria-expanded', on ? 'false' : 'true');
+      }
+      if (on) {
+        const head = document.getElementById('wmProfileHead');
+        const hh = head ? Math.ceil(head.getBoundingClientRect().height) + 2 : 48;
+        profilePanel.style.height = `${Math.max(40, hh)}px`;
+        _pwHideReadout();
+        _reflowBottomLayout();
+      } else if (was) {
+        setProfileHeight(Math.max(PW.minH, Number(PW.expandedH) || _pwDefaultHeight()));
+      }
+      if (!opts.skipPersist) {
+        try { localStorage.setItem(PW.collapsedKey, on ? '1' : '0'); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  function _pwDefaultHeight() {
+    let stored = NaN;
+    try { stored = Number(localStorage.getItem(PW.heightKey)); } catch (_) {}
+    if (Number.isFinite(stored) && stored >= PW.minH) return stored;
+    return Math.max(PW.minH, Math.min(560, Math.round(window.innerHeight * 0.46)));
+  }
+
+  function _pwBind() {
+    try {
+      const btn = document.getElementById('wmProfileToggle');
+      if (btn && !btn.__wmBound) {
+        btn.__wmBound = true;
+        btn.addEventListener('click', () => _pwSetCollapsed(!_pwCollapsed()));
+      }
+      const head = document.getElementById('wmProfileHead');
+      if (head && !head.__wmBound) {
+        head.__wmBound = true;
+        // A closed window keeps its header: clicking it opens the window again.
+        head.addEventListener('click', (e) => {
+          if (e.target && e.target.closest && e.target.closest('button')) return;
+          if (_pwCollapsed()) _pwSetCollapsed(false);
+        });
+      }
+      try { _pwSetCollapsed(_pwCollapsed(), { skipPersist: true }); } catch (_) {}
+      window.addEventListener('wm:languagechange', () => {
+        try {
+          _pwSetCollapsed(_pwCollapsed(), { skipPersist: true });
+          _pwRenderChrome();
+          _scheduleProfileRedraw();
+        } catch (_) {}
+      });
+    } catch (_) {}
+  }
+
   function setProfileHeight(h) {
     try {
-      const minH = 120;
+      if (_pwActive() && _pwCollapsed()) return;
+      const minH = _pwActive() ? PW.minH : 120;
       const maxH = Math.max(minH, window.innerHeight - 220);
       const hh = Math.max(minH, Math.min(maxH, Math.round(Number(h) || 160)));
       if (profilePanel) profilePanel.style.height = `${hh}px`;
@@ -22846,7 +23296,7 @@
         drawProfile(LAST_PROFILE);
       }
       // Persist
-      try { localStorage.setItem('wm_profile_height', String(hh)); } catch(_) {}
+      try { localStorage.setItem(_pwActive() ? PW.heightKey : 'wm_profile_height', String(hh)); } catch(_) {}
     } catch (e) { console.warn('setProfileHeight error', e); }
   }
 
@@ -23386,10 +23836,12 @@
     await waitForSpacebar(DEBUG_STEP_COUNTER, 'Draw elevation tick labels');
     profileCtx.fillStyle = '#666';
     profileCtx.font = '10px system-ui, -apple-system, sans-serif';
-    profileCtx.textAlign = 'left';
+    // Profile window: labels in the left margin, clear of the precipitation labels.
+    const elevLabelsOutside = _pwActive();
+    profileCtx.textAlign = elevLabelsOutside ? 'right' : 'left';
     gridVals.forEach(({ v, y }) => {
       const txt = `${fmtN(v, 0)} m`;
-      profileCtx.fillText(txt, padL + 2, y + 3);
+      profileCtx.fillText(txt, elevLabelsOutside ? padL - 5 : padL + 2, y + 3);
     });
     // Removed explicit min/max labels to avoid overlap with grid labels
 
@@ -23418,7 +23870,9 @@
       if (idx > segIdx[segIdx.length - 1]) segIdx.push(idx);
     }
     if (segIdx[segIdx.length - 1] !== dist.length - 1) segIdx.push(dist.length - 1);
-    const fillColors = ['rgba(255,143,0,0.22)', 'rgba(255,183,77,0.22)'];
+    const pwOn = _pwActive();
+    const pwModel = pwOn ? _pwDayModel(profile) : null;
+    const fillColors = pwOn ? PW_COLORS.elevFill : ['rgba(255,143,0,0.22)', 'rgba(255,183,77,0.22)'];
     for (let s = 0; s < segIdx.length - 1; s++) {
       const i0 = segIdx[s];
       const i1 = segIdx[s+1];
@@ -23436,6 +23890,9 @@
       profileCtx.closePath();
       profileCtx.fillStyle = fillColors[s % fillColors.length];
       profileCtx.fill();
+    }
+    if (pwModel) {
+      try { _pwDrawPrecipBars(pwModel, xAt, { padTop, innerH, padL, innerW }, viewWin); } catch (_) {}
     }
     const activeRideDay = _roadbookActiveRideDay();
     if (activeRideDay) {
@@ -23492,8 +23949,8 @@
       if (i === 0) profileCtx.moveTo(x, y);
       else profileCtx.lineTo(x, y);
     }
-      profileCtx.strokeStyle = '#555';
-      profileCtx.lineWidth = 1.25;
+      profileCtx.strokeStyle = pwOn ? PW_COLORS.elevLine : '#555';
+      profileCtx.lineWidth = pwOn ? 1.5 : 1.25;
     profileCtx.stroke();
     // Overlay drawing (temperature/precipitation/wind)
     if (DEBUG_PROFILE_STEP) console.log(`%c[STEP ${++DEBUG_STEP_COUNTER}] Draw overlay data (mode=${OVERLAY_MODE})`, 'color: blue; font-weight: bold');
@@ -23513,11 +23970,12 @@
       const tickLen = 6;
       if (overlayAxisInfo.mode === 'temperature') {
         const { tmin, tmax, yAtT, colorFromTemperature } = overlayAxisInfo;
-        // Color bar next to ticks (draw first so grid lines can be on top)
+        // Color bar next to ticks (draw first so grid lines can be on top); the profile
+        // window draws temperature in one green, so it has no thermal colour bar.
         const barX = xScale + 2;
         const barW = 6;
         const barStep = 1;
-        for (let tv = Math.floor(tmin); tv <= Math.ceil(tmax - barStep); tv += barStep) {
+        for (let tv = Math.floor(tmin); !pwOn && tv <= Math.ceil(tmax - barStep); tv += barStep) {
           const y1 = yAtT(tv);
           const y2 = yAtT(tv + barStep);
           profileCtx.fillStyle = colorFromTemperature(tv + barStep * 0.5);
@@ -23631,7 +24089,14 @@
     // REQ20: Draw active segment highlight if dragging
     _drawTourActiveDragSegmentHighlight(profile, xAt, padTop, innerH, axisLen);
     
-    _drawTourProfileDayMarkers(profile, xAt, padTop, innerH, axisLen);
+    if (pwModel) {
+      const geo = { padTop, innerH, padL, innerW, windTop: padTop + innerH + PW.axisH };
+      PW.geo = { ...geo, windH: PW.windH, minKm: Number(viewWin.minKm) || 0, maxKm: Number(viewWin.maxKm) || axisLen };
+      try { _pwDrawDayFrames(pwModel, xAt, geo, viewWin); } catch (_) {}
+      try { _pwDrawDayHeaders(pwModel, xAt, geo, viewWin); } catch (_) {}
+      try { _pwDrawWindStrip(pwModel, xAt, geo, viewWin); } catch (_) {}
+      try { _pwRenderChrome(pwModel); } catch (_) {}
+    }
     _drawRoadbookRestDayMarkers(profile, xAt, padTop, innerH, axisLen);
     _drawTourSegmentationBoundaryPins(profile, xAt, padTop, innerH, axisLen);
 
@@ -24083,8 +24548,10 @@
     profileCursorCtx.shadowBlur = 2;
     profileCursorCtx.setLineDash([5,5]);
     profileCursorCtx.beginPath();
-    profileCursorCtx.moveTo(x, padTop);
-    profileCursorCtx.lineTo(x, padTop + innerH);
+    // Profile window: one cursor through day headers, chart and wind strip.
+    const pwCursor = _pwActive();
+    profileCursorCtx.moveTo(x, pwCursor ? 4 : padTop);
+    profileCursorCtx.lineTo(x, pwCursor ? padTop + innerH + PW.axisH + PW.windH : padTop + innerH);
     profileCursorCtx.stroke();
     profileCursorCtx.setLineDash([]);
     profileCursorCtx.shadowBlur = 0;
@@ -24215,6 +24682,7 @@
       windText,
       rainText,
     });
+    if (pwCursor) _pwRenderReadout(dkm, xDisplay, elev, tempText);
     if (routePointLatLng && locationKey && !STRATEGIC_LOCATION_LABEL_CACHE.has(locationKey)) {
       _requestLocationLabel(routePointLatLng.lat, routePointLatLng.lng, (label, key) => {
         try {
@@ -24336,6 +24804,7 @@
     const pts = (OVERLAY_POINTS || []).slice().filter(p => Number.isFinite(p.dist)).sort((a, b) => a.dist - b.dist);
     if (!pts.length) return;
     if (OVERLAY_MODE === 'temperature') {
+      const pwGreen = _pwActive();
       function colorFromTemperature(t) {
         // MUST match global palette used elsewhere.
         return tempColor(Number(t));
@@ -24385,7 +24854,8 @@
         return `rgba(0, 0, 0, ${a})`;
       }
       function tempColorRgba(t, alpha) {
-        return withAlpha(colorFromTemperature(t), alpha);
+        // Profile window: translucent green band; elsewhere the thermal palette.
+        return pwGreen ? `${PW_COLORS.tempBand}${alpha})` : withAlpha(colorFromTemperature(t), alpha);
       }
       function lerp(a, b, t) {
         return Number(a) + (Number(b) - Number(a)) * Number(t);
@@ -24550,8 +25020,8 @@
           const y0 = yAtT(t0);
           const y1 = yAtT(t1);
           const grad = profileCtx.createLinearGradient(x0, y0, x1, y1);
-          grad.addColorStop(0, colorFromTemperature(t0));
-          grad.addColorStop(1, colorFromTemperature(t1));
+          grad.addColorStop(0, (pwGreen ? PW_COLORS.temp : colorFromTemperature(t0)));
+          grad.addColorStop(1, (pwGreen ? PW_COLORS.temp : colorFromTemperature(t1)));
           profileCtx.beginPath();
           profileCtx.moveTo(x0, y0);
           profileCtx.lineTo(x1, y1);
@@ -25833,6 +26303,8 @@
       const resolvedSummary = _normalizeTourSummary(summary);
       LAST_TOUR_SUMMARY = resolvedSummary || null;
       try { _renderRoadbookPanel(); } catch (_) {}
+      // The profile window shows the same daily values: redraw it with the new day summaries.
+      try { _scheduleProfileRedraw(); } catch (_) {}
       _setBottomPanelUiMode('tour');
       const panel = document.getElementById('tourSummary');
       if (!panel) return;

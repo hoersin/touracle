@@ -26,14 +26,18 @@ def test_tour_route_day_card_date_label_returns_weekday_only():
     assert "return _weekdayShort(d.toISOString().slice(0, 10));" in source
 
 
-def test_profile_draws_three_line_calendar_block_below_weather_tile():
+def test_profile_draws_day_label_date_and_good_weather_symbol_per_day():
+    """The profile window replaced the per-day weather tiles (temperature, icon, rain) by
+    a day header: day label, date and a large symbol for good-weather days only; the
+    daily weather itself is drawn in the chart (precipitation bars, wind strip)."""
     source = _js()
-    assert "const calDayY = stackTop + 66;" in source
-    assert "const calDateY = stackTop + 78;" in source
-    assert "const calYearY = stackTop + 89;" in source
-    assert "profileCtx.fillText(i18nT('tourbook.day', { n: dayIdx + 1 }), x, calDayY);" in source
-    assert "profileCtx.fillText(calendarDateLabel || '—', x, calDateY);" in source
-    assert "profileCtx.fillText(calendarYearLabel || '', x, calYearY);" in source
+    assert "function _drawTourProfileDayMarkers(" not in source
+    assert "function _pwDrawDayHeaders(model, xAt, geo, view)" in source
+    assert "i18nT('tourbook.day', { n: d.n })" in source
+    assert "_fmtIsoDayMonthCompact(d.dateIso)" in source
+    assert "if (d.favourable) {" in source
+    assert "const PW_FAVOURABLE = { sunny: 'pw.fav.sunny', partly_cloudy: 'pw.fav.partly' };" in source
+    assert "mapWeatherByProb(rainProb)" in source
 
 
 def test_profile_calendar_format_helpers_exist():
