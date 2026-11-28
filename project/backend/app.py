@@ -232,6 +232,46 @@ def _detect_app_version() -> str:
 
 
 APP_VERSION = _detect_app_version()
+# What the running backend was started from: the version above, the start time and
+# the backend sources' modification times (to tell when the code on disk changed and
+# a restart is needed to run it).
+APP_STARTED_AT = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec='seconds')
+_BACKEND_SOURCE_DIR = Path(__file__).resolve().parent
+
+
+def _backend_source_mtimes() -> dict[str, int]:
+    out: dict[str, int] = {}
+    try:
+        for f in _BACKEND_SOURCE_DIR.glob('*.py'):
+            try:
+                out[f.name] = int(f.stat().st_mtime_ns)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+_BACKEND_SOURCE_MTIMES_AT_START = _backend_source_mtimes()
+_LIVE_CODE_VERSION: dict[str, Any] = {'at': 0.0, 'value': ''}
+
+
+def _live_code_version() -> str:
+    """Version of the code currently on disk (same rules as APP_VERSION, re-read at most every 2 s).
+
+    The client identifier uses it: the page and map.js are read from disk on every
+    load, so they belong to the current checkout, not to the backend's start state.
+    """
+    now = time.monotonic()
+    if _LIVE_CODE_VERSION['value'] and now - float(_LIVE_CODE_VERSION['at']) < 2.0:
+        return str(_LIVE_CODE_VERSION['value'])
+    value = _detect_app_version()
+    _LIVE_CODE_VERSION.update(at=now, value=value)
+    return value
+
+
+def _backend_code_changed_since_start() -> bool:
+    return _backend_source_mtimes() != _BACKEND_SOURCE_MTIMES_AT_START
 
 
 def _stats_has_rain_percentiles(stats: Any) -> bool:
@@ -4240,14 +4280,21 @@ def _frontend_bundle_version() -> str:
     try:
         map_path = Path(app.static_folder) / 'map.js'
         st = map_path.stat()
-        return f'{APP_VERSION}:{int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))}'
+        return f'{_live_code_version()}:{int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))}'
     except Exception:
         return str(APP_VERSION)
 
 
 @app.route('/api/frontend_version')
 def api_frontend_version():
-    resp = jsonify({'version': _frontend_bundle_version(), 'app_version': APP_VERSION})
+    # version: the client bundle served now (code on disk + map.js stamp);
+    # app_version: the running backend (code it was started from).
+    resp = jsonify({
+        'version': _frontend_bundle_version(),
+        'app_version': APP_VERSION,
+        'server_started_at': APP_STARTED_AT,
+        'server_code_changed': _backend_code_changed_since_start(),
+    })
     try:
         resp.headers['Cache-Control'] = 'no-store, max-age=0'
         resp.headers['Pragma'] = 'no-cache'

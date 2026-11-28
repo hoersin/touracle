@@ -4279,26 +4279,119 @@
   let PROFILE_POINTER_BOUND = false;
   let PROFILE_WINDOW_POINTER_BOUND = false;
 
+  // Version indicator: the client (bundle loaded in this page) and the server (backend
+  // as it was started). Both identifiers are selectable; a click copies a diagnostic
+  // block for bug reports. A warning marks a server that runs older code than the client.
+  const VERSION_DIAG = { serverCodeChanged: false, statusTimer: null };
+
+  function _versionCommit(v) {
+    return String(v || '').split(':')[0];
+  }
+
+  function _versionDiagnosticText() {
+    const server = String(CLIMATE_PROFILE_STATE.appVersion || '').trim() || 'unknown';
+    // Fixed English format, independent of the UI language (bug reports).
+    return `Touracle – Diagnostic Information\nClient:  ${CLIENT_APP_VERSION}\nServer:  ${server}`;
+  }
+
+  function _versionServerStale() {
+    const server = String(CLIMATE_PROFILE_STATE.appVersion || '').trim();
+    if (!server || server === 'unknown') return false;
+    if (VERSION_DIAG.serverCodeChanged) return true;
+    const client = _versionCommit(CLIENT_APP_VERSION);
+    return !!client && client !== 'unknown' && /^[0-9a-f]{7,}/i.test(client) && client !== _versionCommit(server);
+  }
+
+  function _versionSetStatus(text, kind) {
+    const badge = WM_VERSION_BADGE;
+    if (!badge) return;
+    const st = badge.querySelector('[data-role=version-status]');
+    if (!st) return;
+    st.textContent = text || '';
+    st.dataset.kind = kind || '';
+    st.hidden = !text;
+    if (VERSION_DIAG.statusTimer) clearTimeout(VERSION_DIAG.statusTimer);
+    if (text) VERSION_DIAG.statusTimer = setTimeout(() => { st.textContent = ''; st.hidden = true; }, kind === 'manual' ? 6000 : 1800);
+  }
+
+  function _versionLegacyCopy(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = !!(document.execCommand && document.execCommand('copy')); } catch (_) { ok = false; }
+      ta.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function _versionManualFallback() {
+    // Clipboard unavailable: select the identifiers so the user can copy them by hand.
+    try {
+      const badge = WM_VERSION_BADGE;
+      const ids = badge && badge.querySelector('[data-role=version-ids]');
+      if (ids) {
+        const range = document.createRange();
+        range.selectNodeContents(ids);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    } catch (_) {}
+    _versionSetStatus(i18nT('version.copyManual'), 'manual');
+  }
+
+  async function _copyVersionDiagnostics() {
+    const text = _versionDiagnosticText();
+    let ok = false;
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function' && window.isSecureContext !== false) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch (_) { ok = false; }
+    if (!ok) ok = _versionLegacyCopy(text);
+    if (ok) _versionSetStatus(i18nT('version.copied'), 'ok');
+    else _versionManualFallback();
+    try { window.__WM_VERSION_LAST_COPY__ = ok ? text : null; } catch (_) {}
+    return ok;
+  }
+
   function _ensureVersionBadge() {
     try {
       if (WM_VERSION_BADGE && WM_VERSION_BADGE.isConnected) return WM_VERSION_BADGE;
       const badge = document.createElement('div');
       badge.id = 'wmVersionBadge';
-      badge.style.position = 'fixed';
-      badge.style.right = '12px';
-      badge.style.bottom = '12px';
-      badge.style.zIndex = '12000';
-      badge.style.pointerEvents = 'none';
-      badge.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-      badge.style.fontSize = '11px';
-      badge.style.lineHeight = '1.35';
-      badge.style.color = '#0f172a';
-      badge.style.background = 'rgba(248,250,252,0.66)';
-      badge.style.border = '1px solid rgba(15,23,42,0.22)';
-      badge.style.borderRadius = '10px';
-      badge.style.padding = '6px 9px';
-      badge.style.boxShadow = '0 6px 14px rgba(15,23,42,0.12)';
-      badge.setAttribute('aria-live', 'polite');
+      badge.className = 'wm-version';
+      badge.setAttribute('role', 'group');
+      badge.innerHTML = '<span class="wm-version-ids" data-role="version-ids">'
+        + '<span class="wm-version-k" data-role="version-client-label"></span> <span class="wm-version-v" data-role="version-client"></span>'
+        + '<span class="wm-version-sep" aria-hidden="true"> | </span>'
+        + '<span class="wm-version-k" data-role="version-server-label"></span> <span class="wm-version-v" data-role="version-server"></span>'
+        + '</span>'
+        + '<span class="wm-version-warn" data-role="version-warn" hidden>!</span>'
+        + '<button type="button" class="wm-version-copy" data-role="version-copy">'
+        + '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false"><rect x="5" y="5" width="8.5" height="9" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/>'
+        + '<path d="M3.5 10.5h-.4A1.6 1.6 0 0 1 1.5 8.9V3.1A1.6 1.6 0 0 1 3.1 1.5h5.8A1.6 1.6 0 0 1 10.5 3.1v.4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>'
+        + '</button>'
+        + '<span class="wm-version-status" data-role="version-status" role="status" aria-live="polite" hidden></span>';
+      badge.addEventListener('click', (e) => {
+        // Selecting an identifier with the mouse must not trigger the copy.
+        try {
+          const sel = window.getSelection ? String(window.getSelection() || '') : '';
+          const onButton = !!(e.target && e.target.closest && e.target.closest('[data-role=version-copy]'));
+          if (sel && !onButton && badge.contains(window.getSelection().anchorNode)) return;
+        } catch (_) {}
+        _copyVersionDiagnostics();
+      });
       document.body.appendChild(badge);
       WM_VERSION_BADGE = badge;
       return badge;
@@ -4312,7 +4405,32 @@
       const badge = _ensureVersionBadge();
       if (!badge) return;
       const serverVersion = String(CLIMATE_PROFILE_STATE.appVersion || '').trim() || 'unknown';
-      badge.textContent = `Client: ${CLIENT_APP_VERSION} | Server: ${serverVersion}`;
+      const set = (role, text) => { const el = badge.querySelector(`[data-role=${role}]`); if (el && el.textContent !== text) el.textContent = text; };
+      set('version-client-label', i18nT('version.client'));
+      set('version-server-label', i18nT('version.server'));
+      set('version-client', CLIENT_APP_VERSION);
+      set('version-server', serverVersion);
+      const stale = _versionServerStale();
+      const warn = badge.querySelector('[data-role=version-warn]');
+      if (warn) {
+        warn.hidden = !stale;
+        warn.title = stale ? i18nT('version.staleServer') : '';
+      }
+      badge.classList.toggle('is-stale', stale);
+      badge.title = i18nT('version.tooltip') + (stale ? `\n${i18nT('version.staleServer')}` : '');
+      const btn = badge.querySelector('[data-role=version-copy]');
+      if (btn) btn.setAttribute('aria-label', i18nT('version.copy'));
+    } catch (_) {}
+  }
+
+  async function _refreshServerVersionInfo() {
+    try {
+      const resp = await fetch('/api/frontend_version', { cache: 'no-store' });
+      if (!resp.ok) return;
+      const j = await resp.json();
+      VERSION_DIAG.serverCodeChanged = !!(j && j.server_code_changed);
+      if (j && j.app_version) _setServerAppVersion(j.app_version);
+      else _renderVersionBadge();
     } catch (_) {}
   }
 
@@ -4345,6 +4463,8 @@
   }
 
   _renderVersionBadge();
+  _refreshServerVersionInfo();
+  try { window.addEventListener('wm:languagechange', () => _renderVersionBadge()); } catch (_) {}
 
   /** @typedef {'forecast'|'historical-year'|'historical-median'} WeatherMode */
 

@@ -4263,6 +4263,39 @@
       .wm-sim-cards { grid-template-columns: minmax(0, 1fr); }
       .wm-sim-card-value { font-size: 19px; }
     }
+
+    /* ---- Version indicator: selectable identifiers, click copies diagnostics ---- */
+    .wm-version {
+      position: fixed; right: 12px; bottom: 12px; z-index: 12000;
+      display: inline-flex; align-items: center; gap: 6px;
+      font: 11px/1.35 system-ui, -apple-system, sans-serif; color: #0f172a;
+      background: rgba(248, 250, 252, 0.72); border: 1px solid rgba(15, 23, 42, 0.18);
+      border-radius: 10px; padding: 4px 5px 4px 9px; box-shadow: 0 6px 14px rgba(15, 23, 42, 0.10);
+      cursor: pointer; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+    }
+    .wm-version:hover { background: rgba(248, 250, 252, 0.94); border-color: rgba(15, 118, 110, 0.45); }
+    .wm-version-ids { cursor: text; user-select: text; -webkit-user-select: text; }
+    .wm-version-k { color: #64748b; }
+    .wm-version-v { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+    .wm-version-sep { color: #94a3b8; }
+    .wm-version-warn {
+      display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%;
+      background: #d97706; color: #fff; font-weight: 700; font-size: 10px; line-height: 1;
+    }
+    .wm-version-warn[hidden] { display: none; }
+    .wm-version.is-stale { border-color: rgba(217, 119, 6, 0.6); }
+    .wm-version-copy {
+      display: inline-grid; place-items: center; width: 20px; height: 20px; padding: 0;
+      border: 0; border-radius: 6px; background: transparent; color: #475569; cursor: pointer;
+    }
+    .wm-version-copy:hover, .wm-version-copy:focus-visible { background: rgba(15, 118, 110, 0.12); color: #0f766e; outline: none; }
+    .wm-version-status {
+      position: absolute; right: 0; bottom: calc(100% + 6px); white-space: nowrap; max-width: 60vw;
+      padding: 3px 8px; border-radius: 7px; background: #0f766e; color: #fff; font-weight: 600;
+      box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18); pointer-events: none;
+    }
+    .wm-version-status[data-kind=manual] { background: #334155; white-space: normal; width: max-content; max-width: min(60vw, 340px); }
+    .wm-version-status[hidden] { display: none; }
   </style>
 </head>
 <body>

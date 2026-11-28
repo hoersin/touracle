@@ -736,5 +736,12 @@ window.WM_I18N_RESOURCES["zh-CN"] = {
   "sim.assess.favourable": "有利",
   "sim.assess.moderate": "一般",
   "sim.assess.unfavourable": "不利",
-  "sim.legend.typicalSmooth": "参考期数值（{period}），7 日平均"
+  "sim.legend.typicalSmooth": "参考期数值（{period}），7 日平均",
+  "version.client": "客户端：",
+  "version.server": "服务器：",
+  "version.copy": "复制诊断信息",
+  "version.tooltip": "客户端和服务器版本——报告问题时很有用。点击即可复制诊断信息。",
+  "version.copied": "已复制",
+  "version.copyManual": "此处无法复制——标识已选中，请按 Ctrl+C（⌘C）复制。",
+  "version.staleServer": "服务器运行的代码比客户端旧。请重启服务器以加载当前代码。"
 };

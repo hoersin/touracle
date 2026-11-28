@@ -736,5 +736,12 @@ window.WM_I18N_RESOURCES.en = {
   "sim.assess.favourable": "Favourable",
   "sim.assess.moderate": "Moderate",
   "sim.assess.unfavourable": "Unfavourable",
-  "sim.legend.typicalSmooth": "Value for the reference period ({period}), 7-day average"
+  "sim.legend.typicalSmooth": "Value for the reference period ({period}), 7-day average",
+  "version.client": "Client:",
+  "version.server": "Server:",
+  "version.copy": "Copy diagnostic information",
+  "version.tooltip": "Client and server version – useful when reporting a bug. Click to copy the diagnostic information.",
+  "version.copied": "Copied",
+  "version.copyManual": "Copying is not available here – the identifiers are selected, press Ctrl+C (⌘C) to copy them.",
+  "version.staleServer": "The server runs older code than the client. Restart the server to load the current code."
 };
