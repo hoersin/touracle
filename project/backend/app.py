@@ -12,7 +12,6 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import datetime as _dt
 import math
-import bisect
 import calendar
 import re
 import requests
@@ -840,17 +839,54 @@ def _store_tile_km(store: Any) -> float:
         return 50.0
 
 
-def _interpolation_tiles(store: Any, lat: float, lon: float) -> list[tuple[str, float, float, float]] | None:
-    """Tiles and weights for a point value interpolated like the Explore map overlay.
+def _row_layouts(store: Any, index: Any, row: int, tile_km: float) -> list[dict[str, Any]]:
+    """Grid layouts of one tile row, in the map overlay's order of preference.
 
-    Bilinear between the real tile centres around the point: per grid row the two
-    centres bracketing the longitude (linear in longitude), then the two rows around
-    the latitude (linear in latitude). This is the scheme of the map overlay
-    (_sampleInterpolated in map.js), so a clicked point shows the value the map draws
-    there and moving the point a few hundred metres never jumps to another tile.
-    Missing neighbours (coverage edge, gaps) drop out and the remaining weights are
-    renormalised. Returns [(tile_id, weight, tile_lat, tile_lon)] or None when the
-    store has no tile index (callers then use the nearest tile).
+    The yearly databases hold tiles of two column layouts (origins about -11 deg and
+    -28 deg) under the same r{row}_c{col} naming, sometimes both in one row (2023).
+    Each layout is identified by the column origin its centres imply, exactly as
+    _makeTileMap in map.js does, and the layouts are ordered by descending origin,
+    the map's tie-break, so the panel and the map always pick the same layout.
+    """
+    cache = getattr(store, '_wm_row_layouts', None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            setattr(store, '_wm_row_layouts', cache)
+        except Exception:
+            pass
+    if row in cache:
+        return cache[row]
+    layouts: list[dict[str, Any]] = []
+    lst = index.get(int(row)) if isinstance(index, dict) else None
+    for c_lon, c_lat, tid in (lst or []):
+        try:
+            col = int(str(tid).rsplit('_c', 1)[1])
+        except Exception:
+            continue
+        step = float(tile_km) / (111.32 * max(0.05, math.cos(math.radians(float(c_lat)))))
+        origin = float(c_lon) - (col + 0.5) * step
+        g = next((g for g in layouts if abs(g['origin'] - origin) < 0.05 * g['step']), None)
+        if g is None:
+            g = {'origin': origin, 'step': step, 'cols': {}}
+            layouts.append(g)
+        g['cols'][col] = (str(tid), float(c_lat), float(c_lon))
+    layouts.sort(key=lambda g: -g['origin'])
+    cache[row] = layouts
+    return layouts
+
+
+def _interpolation_tiles(store: Any, lat: float, lon: float) -> list[tuple[str, float, float, float]] | None:
+    """Tiles and weights for a point value interpolated exactly like the Explore map overlay.
+
+    Same scheme as _sampleInterpolated in map.js: per grid row the two tile centres of
+    one column layout bracketing the longitude (linear in longitude; a layout with both
+    neighbours is preferred, ties go to the layout with the larger origin), then the two
+    rows around the latitude (linear in latitude). A clicked point therefore shows the
+    value the map draws there, and moving it a few hundred metres never jumps to another
+    tile. Missing neighbours (coverage edge, gaps) drop out and the remaining weights are
+    renormalised. Returns [(tile_id, weight, tile_lat, tile_lon)] or None when the store
+    has no tile index (callers then use the nearest tile).
     """
     try:
         cfg = getattr(store, 'cfg', None)
@@ -868,26 +904,29 @@ def _interpolation_tiles(store: Any, lat: float, lon: float) -> list[tuple[str, 
     fr = (float(lat) - lat_min) / step_lat - 0.5
     row0 = int(math.floor(fr))
     t_lat = fr - row0
-    coslat = max(0.05, math.cos(math.radians(float(lat))))
-    step_lon = tile_km / (111.32 * coslat)
 
     def row_parts(row: int) -> list[tuple[str, float, float, float]]:
-        lst = index.get(int(row)) if isinstance(index, dict) else None
-        if not lst:
+        best = None
+        best_dist = math.inf
+        for g in _row_layouts(store, index, row, tile_km):
+            fc = (float(lon) - g['origin']) / g['step'] - 0.5
+            col0 = int(math.floor(fc))
+            t_lon = fc - col0
+            q0 = g['cols'].get(col0)
+            q1 = g['cols'].get(col0 + 1)
+            if q0 is None and q1 is None:
+                continue
+            dist = 0.0 if (q0 is not None and q1 is not None) else (t_lon if q0 is not None else 1.0 - t_lon)
+            if dist < best_dist:
+                best_dist = dist
+                best = (q0, q1, t_lon)
+        if best is None:
             return []
-        i = bisect.bisect_left(lst, (float(lon), -math.inf, ''))
-        left = lst[i - 1] if i > 0 else None
-        right = lst[i] if i < len(lst) else None
-        # A neighbour further than one grid step away is not part of the cell around the point.
-        if left is not None and float(lon) - left[0] > 1.05 * step_lon:
-            left = None
-        if right is not None and right[0] - float(lon) > 1.05 * step_lon:
-            right = None
-        if left is not None and right is not None and right[0] > left[0]:
-            t = (float(lon) - left[0]) / (right[0] - left[0])
-            return [(left[2], 1.0 - t, left[1], left[0]), (right[2], t, right[1], right[0])]
-        one = left or right
-        return [(one[2], 1.0, one[1], one[0])] if one is not None else []
+        q0, q1, t_lon = best
+        if q0 is not None and q1 is not None:
+            return [(q0[0], 1.0 - t_lon, q0[1], q0[2]), (q1[0], t_lon, q1[1], q1[2])]
+        one = q0 or q1
+        return [(one[0], 1.0, one[1], one[2])]
 
     parts: list[tuple[str, float, float, float]] = []
     for row, w_row in ((row0, 1.0 - t_lat), (row0 + 1, t_lat)):

@@ -6434,10 +6434,13 @@
       const v = Number(x);
       return Number.isFinite(v) ? (Math.round(v * 1000) / 1000).toFixed(3) : 'nan';
     };
+    // The server version is part of the key: values computed by an older backend
+    // (e.g. before a restart that loaded a calculation fix) are never shown again.
     return [
       q3(p.lat),
       q3(p.lon),
       _strategicGetSelectedYears().join(','),
+      String(CLIMATE_PROFILE_STATE.appVersion || ''),
     ].join('|');
   }
 
@@ -18810,6 +18813,10 @@
       }
       g.cols.set(col, p);
     }
+    // Deterministic layout preference (ties in _sampleInterpolated go to the first
+    // layout): larger column origin first. The climate panel (_row_layouts in app.py)
+    // uses the same order, so a clicked point shows the value the map draws there.
+    for (const r of rows.values()) r.layouts.sort((a, b) => b.origin - a.origin);
     let rowA = null;
     let rowB = null;
     for (const row of rows.keys()) {
