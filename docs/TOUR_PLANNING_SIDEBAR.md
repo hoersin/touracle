@@ -282,3 +282,71 @@ The climate legend is shown in Explore only (`_updateStrategicLegend`); Tour Pla
 
 - `tests/regression/test_simulation_results.py` (9 tests, real UI).
 - `tests/test_tour_slot_optimizer.py`: per-year values leave the ranking unchanged; reliability levels.
+
+## 8. Profile window, Freiburg climate continuity, version diagnostics
+
+### 8.1 Profile window ("Route Profile & Tour Weather")
+
+The Tour Planning profile is one window: header (title, reference period, close
+button), tour summary strip (start → destination, distance, elevation gain, riding
+days, rest days, dates), legend, chart, four summary cards. `drawProfile` remains the
+only chart engine, so elevation, temperature, precipitation, day headers and the wind
+strip share one x-axis, zoom window and day boundaries.
+
+Data semantics (no new aggregation; every per-day value is the TourBook's):
+
+| Element | Source |
+|---|---|
+| Daily precipitation bar | `day.weather.rainMm` of the TourBook day = mean over the day's route points of the daily total (never a sum over sampling points); spans the day's distance interval; rest days are a narrow bar at their position |
+| Temperature line / band | unchanged per-point values (`temp_day_median`; band `temp_day_typical_min/max`, else p25/p75), drawn in green |
+| Good-weather symbol | existing classification `mapWeatherByProb(day rain probability)` (as the TourBook icons): symbol only for `sunny` and `partly_cloudy`; empty without a rain probability (rest days) |
+| Wind arrow | along-route component = daily mean wind speed × daily mean alignment (mean cosine between wind-to direction and travel direction over the day's points; vector components, never averaged angles). Right/green = tailwind, left/blue = headwind; one scale for the tour. Reverses with the route because headings reverse. The readout adds the relative direction (eight sectors) from the mean sine/cosine |
+| Cards | mean temperature of the tour days (+ mean typical band); precipitation mean per tour day and total; headwind = mean over riding days of max(0, −component) (tailwind counts 0, as in the simulation); good-weather days / tour days |
+
+The former per-day weather tiles inside the chart are removed. Hovering the chart shows
+one cursor through headers, chart and wind strip and a readout with the day's values;
+TourBook hover/selection tints the day. Closing collapses the window to its header
+(click to reopen); the state and the Tour Planning height are stored
+(`wm_profile_collapsed`, `wm_profile_height_tour`). The profile redraws when the tour
+summary arrives. Tests: `tests/regression/test_profile_window.py` (14).
+
+### 8.2 Freiburg climate discontinuity
+
+Observed: Kronenbrücke 14.6 °C / 1,123 mm, Schwabentorbrücke 12.0 °C / 1,308 mm
+(reference 2023–2025). Root cause: the server on port 5002 was started before the
+interpolation commit (1c161d00) and still took each year's **nearest** tile; it also
+ignored the `years` parameter. In the 2024/2025 grid the tile centres west and east of
+Freiburg lie at 7.513° E (Rhine plain) and 8.186° E (Black Forest); their midpoint
+7.8495° E lies between the two bridges, so ~500 m switched every year's tile.
+Reproduced exactly on 5002; the current code is continuous (last three years:
+12.74 → 12.67 °C, 1,235 → 1,241 mm).
+
+Remaining inconsistency found and fixed: rows that hold both grid layouts (2023
+database) were bracketed with centres of different layouts in the panel, while the map
+uses one layout per row. `_interpolation_tiles` now picks the layout exactly like
+`_sampleInterpolated` (layout with both neighbours, ties to the larger column origin;
+the map's tie-break is now explicit). Single years now use identical cells and weights
+in map and panel. Multi-year selections: the map overlay pools samples per tile
+position, so where the yearly databases use different layouts a map position holds
+only some of the years (Freiburg, last three years: 2024+2025 in row 31); the panel
+interpolates each year and averages them (e.g. 1,212 vs 1,235 mm). Changing the overlay
+aggregation is left as a decision. The client climate cache key includes the server
+version. Tests: `tests/regression/test_freiburg_climate_continuity.py` (17, real
+databases where installed).
+
+### 8.3 Version diagnostics
+
+Client identifier = code on disk when the page was loaded + map.js stamp (no longer the
+backend's start commit); server identifier = `APP_VERSION` of the running backend.
+`/api/frontend_version` also returns `server_started_at` and `server_code_changed`.
+The badge has selectable identifiers, a copy button (a click anywhere copies), "Copied"
+feedback, a select-and-Ctrl+C fallback, a warning when the server runs older code than
+the client, and texts in five languages. Copied text (fixed English format):
+
+```
+Touracle – Diagnostic Information
+Client:  <client identifier>
+Server:  <server identifier>
+```
+
+Tests: `tests/regression/test_version_diagnostics.py` (6).
