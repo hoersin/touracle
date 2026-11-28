@@ -12,6 +12,7 @@ import signal
 import shlex
 import sqlite3
 import subprocess
+import sys
 import threading
 import uuid
 
@@ -51,11 +52,8 @@ REGION_PRESETS: List[Dict[str, Any]] = [
         "label": "South America",
         "bbox": {"lat_min": -56.0, "lat_max": 14.0, "lon_min": -92.0, "lon_max": -34.0},
     },
-    {
-        "slug": "africa",
-        "label": "Africa",
-        "bbox": {"lat_min": -36.0, "lat_max": 38.0, "lon_min": -20.0, "lon_max": 55.0},
-    },
+    # Africa is not a rectangle job any more: it is a region download on the existing
+    # grid into the yearly databases (see /api/regions and region_job.py).
     {
         "slug": "asia",
         "label": "Asia",
@@ -69,6 +67,7 @@ REGION_PRESETS: List[Dict[str, Any]] = [
 ]
 
 LOCK = threading.RLock()
+REGION_JOB_SCRIPT = OFFLINE_DIR / "region_job.py"
 PROCESS_BY_JOB_ID: Dict[str, subprocess.Popen[Any]] = {}
 EXPECTED_TILE_COUNT_CACHE: Dict[str, int] = {}
 
@@ -1086,6 +1085,121 @@ def api_dataset_control():
     except ValueError:
         return jsonify({"error": "dataset_missing"}), 400
     return jsonify({"ok": True, "job": updated_job, "dataset": dataset})
+
+
+# ------------------------------------------------------------------ region downloads
+def _region_years(slug: str, payload: Optional[Dict[str, Any]] = None) -> List[int]:
+    import regions as _regions
+    raw = (payload or {}).get("years") or _regions.REGION_DEFS[slug]["years"]
+    return sorted({int(y) for y in raw})
+
+
+def _region_paths(slug: str, years: List[int]) -> Dict[str, Path]:
+    name = f"{slug}-{min(years)}-{max(years)}"
+    state = CACHE_DIR / "offline_jobs" / f"{name}.sqlite"
+    return {
+        "state": state,
+        "status": state.with_suffix(".status.json"),
+        "lock": state.with_suffix(".lock"),
+        "stop": state.with_suffix(".stop"),
+        "log": DEBUG_DIR / f"offline_region_{name}.log",
+    }
+
+
+def _region_running(paths: Dict[str, Path]) -> bool:
+    """The job holds an exclusive lock on its lock file while it runs."""
+    import fcntl
+    lock = paths["lock"]
+    if not lock.exists():
+        return False
+    try:
+        with open(lock, "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(f, fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return False
+
+
+def _region_overview(slug: str) -> Dict[str, Any]:
+    import regions as _regions
+    d = _regions.REGION_DEFS[slug]
+    years = _region_years(slug)
+    paths = _region_paths(slug, years)
+    status = None
+    if paths["status"].exists():
+        try:
+            status = json.loads(paths["status"].read_text(encoding="utf-8"))
+        except Exception:
+            status = None
+    try:
+        n_tiles = len(_regions.load_region(slug))
+    except Exception:
+        n_tiles = None
+    running = _region_running(paths)
+    return {
+        "slug": slug,
+        "label": d["label"],
+        "note": d.get("note"),
+        "years": years,
+        "tiles": n_tiles,
+        "tile_years": (n_tiles or 0) * len(years),
+        "running": running,
+        "stop_requested": paths["stop"].exists(),
+        "status": status,
+        "state_path": str(paths["state"].relative_to(REPO_DIR)),
+        "log_path": str(paths["log"].relative_to(REPO_DIR)),
+        "log_tail": _tail_log(paths["log"], max_lines=40),
+    }
+
+
+@app.get("/api/regions")
+def api_regions():
+    import regions as _regions
+    return jsonify({"regions": [_region_overview(slug) for slug in sorted(_regions.REGION_DEFS)]})
+
+
+@app.post("/api/regions/<slug>/start")
+def api_region_start(slug: str):
+    import regions as _regions
+    if slug not in _regions.REGION_DEFS:
+        return jsonify({"error": "region_not_found"}), 404
+    payload = _parse_json_request()
+    years = _region_years(slug, payload)
+    paths = _region_paths(slug, years)
+    if _region_running(paths):
+        return jsonify({"error": "already_running", "region": _region_overview(slug)}), 409
+    cmd = [sys.executable, str(REGION_JOB_SCRIPT), "--region", slug, "--years", ",".join(str(y) for y in years),
+           "--budget-per-minute", str(max(1.0, _safe_float(payload.get("budget_per_minute"), 20.0))),
+           "--budget-per-hour", str(max(1, _safe_int(payload.get("budget_per_hour"), 900))),
+           "--budget-per-day", str(max(1, _safe_int(payload.get("budget_per_day"), 4000))),
+           "--calls-per-hour", str(max(1.0, _safe_float(payload.get("calls_per_hour"), 2000.0))),
+           "--calls-per-day", str(max(1.0, _safe_float(payload.get("calls_per_day"), 4000.0)))]
+    if _safe_int(payload.get("max_tiles"), 0) > 0:
+        cmd += ["--max-tiles", str(_safe_int(payload.get("max_tiles"), 0))]
+    if bool(payload.get("retry_errors")):
+        cmd.append("--retry-errors")
+    paths["log"].parent.mkdir(parents=True, exist_ok=True)
+    if paths["stop"].exists():
+        paths["stop"].unlink()
+    with paths["log"].open("ab") as log_file:
+        proc = subprocess.Popen(cmd, cwd=str(REPO_DIR), stdout=log_file, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    return jsonify({"ok": True, "pid": proc.pid, "command": cmd, "region": _region_overview(slug)}), 202
+
+
+@app.post("/api/regions/<slug>/stop")
+def api_region_stop(slug: str):
+    import regions as _regions
+    if slug not in _regions.REGION_DEFS:
+        return jsonify({"error": "region_not_found"}), 404
+    paths = _region_paths(slug, _region_years(slug))
+    paths["stop"].parent.mkdir(parents=True, exist_ok=True)
+    paths["stop"].write_text(utc_now_iso(), encoding="utf-8")
+    return jsonify({"ok": True, "region": _region_overview(slug)})
 
 
 @app.get("/api/health")

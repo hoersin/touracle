@@ -8,6 +8,7 @@
     formInteractionDepth: 0,
     overviewError: '',
     jobLogScroll: {},
+    regions: [],
   };
 
   const els = {
@@ -36,6 +37,8 @@
     datasetsList: document.getElementById('datasetsList'),
     jobsStatus: document.getElementById('jobsStatus'),
     datasetsStatus: document.getElementById('datasetsStatus'),
+    regionsList: document.getElementById('regionsList'),
+    regionsStatus: document.getElementById('regionsStatus'),
   };
 
   function isComposerActive() {
@@ -421,8 +424,58 @@
     }).join('');
   }
 
+  function renderRegions() {
+    if (!els.regionsList) return;
+    const regions = state.regions || [];
+    els.regionsStatus.textContent = regions.some((r) => r.running) ? 'download running' : '';
+    els.regionsList.innerHTML = regions.map((r) => {
+      const st = r.status || {};
+      const ses = st.session || {};
+      const req = (st.requests || {}).telemetry || {};
+      const ledger = (st.requests || {}).ledger || {};
+      const counts = ledger.requests || {};
+      const calls = ledger.calls_weighted || {};
+      const est = st.budget_estimate || {};
+      const done = Number(st.tile_years_done || 0);
+      const total = Number(st.tile_years_total || r.tile_years || 0);
+      const pct = total > 0 ? (100 * done / total) : 0;
+      const badge = r.running ? (r.stop_requested ? 'stopping' : 'running') : (st.state || 'not started');
+      const years = (r.years || []).map((y) => {
+        const py = (st.per_year || {})[String(y)] || {};
+        return `<div class="meta-box"><div class="k">${escapeHtml(String(y))}</div><div class="v">${fmtNumber(py.done || 0)} / ${fmtNumber(py.total || r.tiles || 0)}${py.error ? ` · ${fmtNumber(py.error)} err` : ''}</div></div>`;
+      }).join('');
+      const events = (st.recent_events || []).slice(0, 6).map((e) => `${e.ts} ${e.level}: ${e.message}`).join('\n');
+      return `
+        <article class="panel job-card" data-region="${escapeHtml(r.slug)}">
+          <div class="card-top">
+            <div>
+              <h3 class="card-title">${escapeHtml(r.label)} · ${escapeHtml((r.years || []).join(', '))}</h3>
+              <div class="card-subtitle">${fmtNumber(r.tiles || 0)} tiles × ${(r.years || []).length} years = ${fmtNumber(total)} tile-years · ${escapeHtml(r.note || '')}</div>
+            </div>
+            <span class="badge ${escapeHtml(statusClass(r.running ? 'running' : (st.state === 'finished' ? 'completed' : 'stopped')))}">${escapeHtml(badge)}</span>
+          </div>
+          <div class="meta-grid">
+            ${years}
+            <div class="meta-box"><div class="k">Session rate</div><div class="v">${fmtNumber(ses.tiles_per_minute || 0)} tiles/min · ${fmtNumber(ses.requests_per_minute || 0)} req/min</div></div>
+            <div class="meta-box"><div class="k">ETA (daily call budget)</div><div class="v">${est.eta_days != null ? `${fmtNumber(est.eta_days)} days · ${fmtNumber(est.tiles_per_day)} tiles/day` : '–'}</div></div>
+            <div class="meta-box"><div class="k">Requests (all jobs)</div><div class="v">${fmtNumber(counts.last_minute || 0)}/min · ${fmtNumber(counts.last_hour || 0)}/h · ${fmtNumber(counts.last_day || 0)}/day</div></div>
+            <div class="meta-box"><div class="k">Weighted calls (all jobs)</div><div class="v">${fmtNumber(Math.round(calls.last_hour || 0))}/h · ${fmtNumber(Math.round(calls.last_day || 0))}/day of ${fmtNumber(est.calls_per_day_budget || 0)}</div></div>
+            <div class="meta-box"><div class="k">429 · retries</div><div class="v">${fmtNumber(req.http_429 || 0)} · ${fmtNumber(req.retries || 0)}</div></div>
+          </div>
+          <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, pct))}%;"></div></div>
+          <div class="card-subtitle">${fmtPct(pct)} · ${fmtNumber(done)} done · ${fmtNumber(st.tile_years_error || 0)} errors · updated ${escapeHtml(fmtDate(st.updated_at))}${ledger.cooldown_until ? ` · paused until ${escapeHtml(fmtDate(ledger.cooldown_until))} (${escapeHtml(ledger.cooldown_reason || '')})` : ''}</div>
+          <div class="actions" data-region-actions="${escapeHtml(r.slug)}">
+            ${r.running ? '<button class="ghost" data-region-action="stop">Stop (after current tile)</button>' : `<button class="secondary" data-region-action="start">${done > 0 ? 'Resume' : 'Start'}</button>`}
+          </div>
+          <pre>${escapeHtml(events || '')}${events ? '\n\n' : ''}${escapeHtml(r.log_tail || 'No log output yet.')}</pre>
+          <div class="card-subtitle">State: ${escapeHtml(r.state_path || '')} · log: ${escapeHtml(r.log_path || '')}</div>
+        </article>`;
+    }).join('');
+  }
+
   function renderAll() {
     renderHero();
+    renderRegions();
     renderEstimate();
     renderJobs();
     renderDatasets();
@@ -437,6 +490,12 @@
       state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
       state.datasets = Array.isArray(data.datasets) ? data.datasets : [];
       state.presets = Array.isArray(data.presets) ? data.presets : [];
+      try {
+        const reg = await api('/api/regions');
+        state.regions = Array.isArray(reg.regions) ? reg.regions : [];
+      } catch (_) {
+        state.regions = [];
+      }
       state.overviewError = '';
       if (!els.regionPreset.options.length) {
         els.regionPreset.innerHTML = state.presets.map((preset) => `<option value="${escapeHtml(preset.slug)}">${escapeHtml(preset.label)}</option>`).join('');
@@ -647,6 +706,25 @@
         window.alert(err.message || String(err));
       }
     });
+
+    if (els.regionsList) {
+      els.regionsList.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-region-action]');
+        if (!button) return;
+        const slug = button.closest('[data-region-actions]')?.getAttribute('data-region-actions');
+        const action = button.getAttribute('data-region-action');
+        if (!slug || !action) return;
+        try {
+          const response = await fetch(`/api/regions/${encodeURIComponent(slug)}/${action}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          });
+          if (!response.ok) throw new Error(await readApiError(response));
+          await loadOverview();
+        } catch (err) {
+          window.alert(err.message || String(err));
+        }
+      });
+    }
 
     els.datasetsList.addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-action]');

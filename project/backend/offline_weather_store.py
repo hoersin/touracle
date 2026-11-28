@@ -31,6 +31,23 @@ class OfflineTileConfig:
     tile_km: float
     bbox: Tuple[float, float, float, float]  # (lat_min, lat_max, lon_min, lon_max)
     years: Optional[Tuple[int, int]] = None  # (start_year, end_year)
+    # Grid origin latitude of the tile rows (meta "grid_origin"); without it the grid
+    # starts at bbox lat_min, as every database built by the plain builder does. A
+    # region appended south of the origin (Africa) has negative rows.
+    grid_lat_origin: Optional[float] = None
+    # Areas covered by tiles (meta "coverage_bboxes"); without it just the bbox.
+    coverage: Tuple[Tuple[float, float, float, float], ...] = ()
+
+    @property
+    def grid_origin_lat(self) -> float:
+        return float(self.grid_lat_origin) if self.grid_lat_origin is not None else float(self.bbox[0])
+
+    @property
+    def coverage_boxes(self) -> Tuple[Tuple[float, float, float, float], ...]:
+        return self.coverage or (self.bbox,)
+
+    def covers(self, lat: float, lon: float) -> bool:
+        return any(b[0] <= lat <= b[1] and b[2] <= lon <= b[3] for b in self.coverage_boxes)
 
 
 def _parse_bbox(raw: str) -> Tuple[float, float, float, float]:
@@ -190,7 +207,23 @@ class OfflineWeatherStore:
         except Exception:
             years = None
 
-        return OfflineTileConfig(db_path=db_path, tile_km=tile_km, bbox=bbox, years=years)
+        grid_lat_origin: Optional[float] = None
+        try:
+            raw = meta.get("grid_origin")
+            if raw:
+                grid_lat_origin = float(json.loads(str(raw))["lat"])
+        except Exception:
+            grid_lat_origin = None
+        coverage: Tuple[Tuple[float, float, float, float], ...] = ()
+        try:
+            raw = meta.get("coverage_bboxes")
+            if raw:
+                coverage = tuple(_parse_bbox(json.dumps(b)) for b in json.loads(str(raw)))
+        except Exception:
+            coverage = ()
+
+        return OfflineTileConfig(db_path=db_path, tile_km=tile_km, bbox=bbox, years=years,
+                                 grid_lat_origin=grid_lat_origin, coverage=coverage)
 
     # Tiles whose centre lies further than this (in tile widths) do not cover a point.
     TILE_MATCH_MAX_TILES = 0.75
@@ -213,7 +246,7 @@ class OfflineWeatherStore:
         return index
 
     def _nearest_tile(self, lat: float, lon: float, index: Dict[int, List[Tuple[float, float, str]]]) -> Optional[str]:
-        lat_min = self.cfg.bbox[0]
+        lat_min = self.cfg.grid_origin_lat
         step_lat = self.cfg.tile_km / 111.32
         row = int(math.floor((lat - lat_min) / step_lat))
         coslat = max(0.05, math.cos(math.radians(lat)))
@@ -241,8 +274,7 @@ class OfflineWeatherStore:
         origin -11 deg and -28 deg), so a computed id can name a tile ~10-17 deg away.
         Rows are consistent, so only the computed row and its neighbours are searched.
         """
-        lat_min, lat_max, lon_min, lon_max = self.cfg.bbox
-        if not (lat_min <= lat <= lat_max and lon_min <= lon <= lon_max):
+        if not self.cfg.covers(float(lat), float(lon)):
             return None
         index = getattr(self, "_tile_index", None)
         if index is None:

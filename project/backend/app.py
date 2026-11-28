@@ -726,15 +726,27 @@ def _get_offline_store_for_path(path: Path | str | None) -> Optional[Any]:
         return None
 
 
-def _store_bbox(store: Any) -> tuple[float, float, float, float] | None:
+def _store_coverage_boxes(store: Any) -> list[tuple[float, float, float, float]]:
+    """Areas a store covers: meta coverage_bboxes (e.g. Europe + Africa) or its bbox."""
     try:
         cfg = getattr(store, 'cfg', None)
-        bbox = getattr(cfg, 'bbox', None) if cfg is not None else None
-        if not bbox or len(bbox) != 4:
-            return None
-        return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        boxes = list(getattr(cfg, 'coverage', ()) or ()) if cfg is not None else []
+        if not boxes:
+            bbox = getattr(cfg, 'bbox', None) if cfg is not None else None
+            if not bbox or len(bbox) != 4:
+                return []
+            boxes = [bbox]
+        return [(float(b[0]), float(b[1]), float(b[2]), float(b[3])) for b in boxes if b and len(b) == 4]
     except Exception:
+        return []
+
+
+def _store_bbox(store: Any) -> tuple[float, float, float, float] | None:
+    """Bounding box of everything a store covers (union of its coverage boxes)."""
+    boxes = _store_coverage_boxes(store)
+    if not boxes:
         return None
+    return (min(b[0] for b in boxes), max(b[1] for b in boxes), min(b[2] for b in boxes), max(b[3] for b in boxes))
 
 
 def _store_supports_year(store: Any, year: int) -> bool:
@@ -750,11 +762,7 @@ def _store_supports_year(store: Any, year: int) -> bool:
 
 
 def _store_covers_point(store: Any, lat: float, lon: float) -> bool:
-    bbox = _store_bbox(store)
-    if bbox is None:
-        return False
-    lat_min, lat_max, lon_min, lon_max = bbox
-    return lat_min <= float(lat) <= lat_max and lon_min <= float(lon) <= lon_max
+    return any(b[0] <= float(lat) <= b[1] and b[2] <= float(lon) <= b[3] for b in _store_coverage_boxes(store))
 
 
 def _store_intersects_bbox(store: Any, lat_min: float, lat_max: float, lon_min: float, lon_max: float) -> bool:
@@ -786,14 +794,18 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         return float('inf')
 
 
+def _nearest_coverage_box(store: Any, lat: float, lon: float) -> tuple[tuple[float, float, float, float] | None, float]:
+    best: tuple[float, float, float, float] | None = None
+    best_d = float('inf')
+    for b in _store_coverage_boxes(store):
+        d = _haversine_km(float(lat), float(lon), min(max(float(lat), b[0]), b[1]), min(max(float(lon), b[2]), b[3]))
+        if d < best_d:
+            best, best_d = b, d
+    return best, best_d
+
+
 def _distance_point_to_bbox_km(store: Any, lat: float, lon: float) -> float:
-    bbox = _store_bbox(store)
-    if bbox is None:
-        return float('inf')
-    lat_min, lat_max, lon_min, lon_max = bbox
-    clamped_lat = min(max(float(lat), lat_min), lat_max)
-    clamped_lon = min(max(float(lon), lon_min), lon_max)
-    return _haversine_km(float(lat), float(lon), clamped_lat, clamped_lon)
+    return _nearest_coverage_box(store, lat, lon)[1]
 
 
 def _resolve_offline_store_for_year(year: int | None, *, point: tuple[float, float] | None = None, bounds: tuple[float, float, float, float] | None = None) -> Optional[Any]:
@@ -845,31 +857,36 @@ def _tile_id_for_point_or_edge(store: Any, lat: float, lon: float, *, max_distan
         tile_id = None
     if tile_id:
         return str(tile_id)
-    bbox = _store_bbox(store)
-    if bbox is None:
-        return None
-    if _distance_point_to_bbox_km(store, float(lat), float(lon)) > float(max_distance_km):
-        return None
-    lat_min, lat_max, lon_min, lon_max = bbox
+    # Clamp into the covered areas, nearest first (a store can cover several, e.g.
+    # Europe and Africa); a point just outside keeps using an area's edge tile.
     try:
         cfg = getattr(store, 'cfg', None)
         tile_km = float(getattr(cfg, 'tile_km', 50.0)) if cfg is not None else 50.0
     except Exception:
         tile_km = 50.0
     step_lat = max(1e-6, float(tile_km) / 111.32)
-    inner_lat_min = min(lat_max, lat_min + 0.5 * step_lat)
-    inner_lat_max = max(lat_min, lat_max - 0.5 * step_lat)
-    clamped_lat = min(max(float(lat), inner_lat_min), inner_lat_max)
-    c = max(0.05, math.cos(math.radians(clamped_lat)))
-    step_lon = max(1e-6, float(tile_km) / (111.32 * c))
-    inner_lon_min = min(lon_max, lon_min + 0.5 * step_lon)
-    inner_lon_max = max(lon_min, lon_max - 0.5 * step_lon)
-    clamped_lon = min(max(float(lon), inner_lon_min), inner_lon_max)
-    try:
-        tile_id = store._tile_id_for_point(clamped_lat, clamped_lon)  # type: ignore[attr-defined]
-    except Exception:
-        tile_id = None
-    return str(tile_id) if tile_id else None
+    boxes = []
+    for b in _store_coverage_boxes(store):
+        d = _haversine_km(float(lat), float(lon), min(max(float(lat), b[0]), b[1]), min(max(float(lon), b[2]), b[3]))
+        boxes.append((d, b))
+    for dist_km, (lat_min, lat_max, lon_min, lon_max) in sorted(boxes):
+        if dist_km > float(max_distance_km):
+            break
+        inner_lat_min = min(lat_max, lat_min + 0.5 * step_lat)
+        inner_lat_max = max(lat_min, lat_max - 0.5 * step_lat)
+        clamped_lat = min(max(float(lat), inner_lat_min), inner_lat_max)
+        c = max(0.05, math.cos(math.radians(clamped_lat)))
+        step_lon = max(1e-6, float(tile_km) / (111.32 * c))
+        inner_lon_min = min(lon_max, lon_min + 0.5 * step_lon)
+        inner_lon_max = max(lon_min, lon_max - 0.5 * step_lon)
+        clamped_lon = min(max(float(lon), inner_lon_min), inner_lon_max)
+        try:
+            tile_id = store._tile_id_for_point(clamped_lat, clamped_lon)  # type: ignore[attr-defined]
+        except Exception:
+            tile_id = None
+        if tile_id:
+            return str(tile_id)
+    return None
 
 
 def _store_tile_km(store: Any) -> float:
@@ -889,10 +906,12 @@ def _row_layouts(store: Any, index: Any, row: int, tile_km: float) -> list[dict[
     the map's tie-break, so the panel and the map always pick the same layout.
     """
     cache = getattr(store, '_wm_row_layouts', None)
-    if not isinstance(cache, dict):
+    if not isinstance(cache, dict) or getattr(store, '_wm_row_layouts_index', None) is not index:
+        # A reloaded tile index (tiles appended by the offline builder) starts a new cache.
         cache = {}
         try:
             setattr(store, '_wm_row_layouts', cache)
+            setattr(store, '_wm_row_layouts_index', index)
         except Exception:
             pass
     if row in cache:
@@ -936,7 +955,7 @@ def _interpolation_tiles(store: Any, lat: float, lon: float) -> list[tuple[str, 
         index = getattr(store, '_tile_index', None)
         if index is None:
             index = load()
-        lat_min = float(cfg.bbox[0])
+        lat_min = float(getattr(cfg, 'grid_origin_lat', cfg.bbox[0]))
         tile_km = float(getattr(cfg, 'tile_km', 50.0) or 50.0)
     except Exception:
         return None
@@ -944,6 +963,14 @@ def _interpolation_tiles(store: Any, lat: float, lon: float) -> list[tuple[str, 
     fr = (float(lat) - lat_min) / step_lat - 0.5
     row0 = int(math.floor(fr))
     t_lat = fr - row0
+    if row0 not in index and (row0 + 1) not in index:
+        # Rows may have been appended since the index was loaded (background download).
+        refresh_s = float(getattr(store, 'TILE_INDEX_REFRESH_S', 60.0))
+        if time.monotonic() - float(getattr(store, '_tile_index_loaded_at', 0.0) or 0.0) > refresh_s:
+            try:
+                index = load()
+            except Exception:
+                pass
 
     def row_parts(row: int) -> list[tuple[str, float, float, float]]:
         best = None
