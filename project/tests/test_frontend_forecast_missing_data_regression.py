@@ -41,8 +41,9 @@ def test_route_and_roadbook_cards_use_null_safe_numeric_checks():
 def test_profile_day_markers_also_blank_out_beyond_horizon_forecast_days():
     source = _source()
     assert 'const forecastUnavailable = _tourForecastDayUnavailable(dayIdx);' in source
-    assert 'const tMed = forecastUnavailable' in source
-    assert 'const rainMm = forecastUnavailable' in source
+    # profile window day model: days beyond the forecast horizon carry no weather
+    assert 'const forecastGap = ride && _tourForecastDayUnavailable(day.rideIdx);' in source
+    assert 'const hasData = !!w.hasData && !forecastGap;' in source
     assert "const iconClass = Number.isFinite(rainProb) ? mapWeatherByProb(rainProb) : 'cloudy';" in source
 
 
