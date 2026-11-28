@@ -37,7 +37,7 @@ def open_page(versions, chromium):
     contexts = []
     leaflet = (HERE / 'vendor' / 'leaflet-1.9.4.js').read_text(encoding='utf-8')
 
-    def open_(clipboard=True, init_script=None):
+    def open_(clipboard=True, init_script=None, legacy_server=False):
         ctx = chromium.new_context(viewport={'width': 1440, 'height': 900})
         contexts.append(ctx)
         if clipboard:
@@ -45,7 +45,11 @@ def open_page(versions, chromium):
 
         def route(r):
             url = r.request.url
-            if url.startswith(versions.url):
+            if legacy_server and '/api/frontend_version' in url:
+                # a server from before the diagnostics change: no start time, no change report
+                body = r.fetch().json()
+                r.fulfill(json={'version': body['version'], 'app_version': body['app_version']})
+            elif url.startswith(versions.url):
                 r.continue_()
             elif 'leaflet' in url and url.endswith('.js'):
                 r.fulfill(body=leaflet, content_type='text/javascript')
@@ -133,21 +137,40 @@ def test_without_clipboard_access_the_identifiers_are_selected(open_page):
 
 
 def test_server_running_older_code_is_flagged(open_page, versions):
-    versions.set_versions(server='0badc0de', disk='1a2b3c4d-dirty')
+    # backend sources changed on disk after the server started -> restart needed
+    versions.set_versions(server='1a2b3c4d-dirty', disk='1a2b3c4d-dirty', changed=True)
+    tp = open_page()
+    tp.page.wait_for_timeout(500)
+    b = badge(tp.page)
+    assert b['warn'] and 'Restart the server' in b['title'], b
+    # a newer commit that did not touch the backend (e.g. docs): no false alarm
+    versions.set_versions(server='0badc0de', disk='1a2b3c4d-dirty', changed=False)
+    tp2 = open_page()
+    tp2.page.wait_for_function("() => document.querySelector('#wmVersionBadge [data-role=version-server]').textContent === '0badc0de'")
+    tp2.page.wait_for_timeout(300)
+    assert not badge(tp2.page)['warn']
+    # an older server that cannot report changes: compared by commit
+    tp3 = open_page(legacy_server=True)
+    tp3.page.wait_for_timeout(500)
+    assert badge(tp3.page)['warn']
+    versions.set_versions(server='1a2b3c4d-dirty', disk='1a2b3c4d-dirty', changed=False)
+    tp4 = open_page(legacy_server=True)
+    tp4.page.wait_for_timeout(500)
+    assert not badge(tp4.page)['warn']
+
+
+def test_badge_never_covers_the_bottom_panel_or_overlay_panels(open_page, versions):
     tp = open_page()
     page = tp.page
-    page.wait_for_function("() => document.querySelector('#wmVersionBadge [data-role=version-server]').textContent === '0badc0de'")
-    b = badge(page)
-    assert b['warn'] and 'Restart the server' in b['title'], b
-    # same commit, but the backend sources changed on disk after the start
-    versions.set_versions(server='1a2b3c4d-dirty', disk='1a2b3c4d-dirty', changed=True)
-    tp2 = open_page()
-    tp2.page.wait_for_timeout(500)
-    assert badge(tp2.page)['warn']
-    versions.set_versions(changed=False)
-    tp3 = open_page()
-    tp3.page.wait_for_timeout(500)
-    assert not badge(tp3.page)['warn']
+    for mode in ('#navClimate', '#navTour'):
+        page.click(mode)
+        page.wait_for_timeout(600)
+        over = page.evaluate("""() => { const a = document.getElementById('wmVersionBadge').getBoundingClientRect();
+            const b = document.getElementById('profilePanel').getBoundingClientRect();
+            return b.height > 0 && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom; }""")
+        assert not over, mode
+    z = page.evaluate("Number(getComputedStyle(document.getElementById('wmVersionBadge')).zIndex)")
+    assert z < 1950                                            # below the simulation results panel
 
 
 def test_version_indicator_in_all_five_languages(open_page):

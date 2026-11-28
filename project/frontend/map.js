@@ -4282,7 +4282,7 @@
   // Version indicator: the client (bundle loaded in this page) and the server (backend
   // as it was started). Both identifiers are selectable; a click copies a diagnostic
   // block for bug reports. A warning marks a server that runs older code than the client.
-  const VERSION_DIAG = { serverCodeChanged: false, statusTimer: null };
+  const VERSION_DIAG = { serverCodeChanged: false, serverReportsChange: false, statusTimer: null };
 
   function _versionCommit(v) {
     return String(v || '').split(':')[0];
@@ -4297,7 +4297,10 @@
   function _versionServerStale() {
     const server = String(CLIMATE_PROFILE_STATE.appVersion || '').trim();
     if (!server || server === 'unknown') return false;
-    if (VERSION_DIAG.serverCodeChanged) return true;
+    // A server that reports whether its backend sources changed since its start is
+    // trusted on that (a docs-only commit must not raise a false alarm); an older
+    // server without that report is compared by commit.
+    if (VERSION_DIAG.serverReportsChange) return !!VERSION_DIAG.serverCodeChanged;
     const client = _versionCommit(CLIENT_APP_VERSION);
     return !!client && client !== 'unknown' && /^[0-9a-f]{7,}/i.test(client) && client !== _versionCommit(server);
   }
@@ -4429,6 +4432,7 @@
       const resp = await fetch('/api/frontend_version', { cache: 'no-store' });
       if (!resp.ok) return;
       const j = await resp.json();
+      VERSION_DIAG.serverReportsChange = !!(j && Object.prototype.hasOwnProperty.call(j, 'server_code_changed'));
       VERSION_DIAG.serverCodeChanged = !!(j && j.server_code_changed);
       if (j && j.app_version) _setServerAppVersion(j.app_version);
       else _renderVersionBadge();
@@ -5914,10 +5918,17 @@
     const badge = WM_VERSION_BADGE;
     if (!badge) return;
     let r = null;
-    try { r = (_pwActive() && mapEl) ? mapEl.getBoundingClientRect() : null; } catch (_) { r = null; }
+    let panelShown = false;
+    try {
+      panelShown = !!(profilePanel && getComputedStyle(profilePanel).display !== 'none' && profilePanel.offsetHeight > 0);
+      r = (panelShown && mapEl) ? mapEl.getBoundingClientRect() : null;
+    } catch (_) { r = null; }
     if (r && r.width > 0 && r.height > 0) {
-      badge.style.left = `${Math.round(r.left + 10)}px`;
-      badge.style.right = 'auto';
+      // Above the bottom panel: bottom-left in Tour Planning (the profile zoom buttons
+      // sit bottom-right), bottom-right otherwise (Explore's legend sits bottom-left).
+      const left = _pwActive();
+      badge.style.left = left ? `${Math.round(r.left + 10)}px` : 'auto';
+      badge.style.right = left ? 'auto' : `${Math.max(12, Math.round(window.innerWidth - r.right + 10))}px`;
       badge.style.bottom = `${Math.max(12, Math.round(window.innerHeight - r.bottom + 10))}px`;
     } else {
       badge.style.left = '';
